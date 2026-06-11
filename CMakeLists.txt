@@ -33,3 +33,10 @@ target_compile_definitions(machmallow PRIVATE
 # Phase 1: 1D Sod shock tube validation (CPU only).
 add_executable(sod1d src/drivers/sod1d.cpp)
 target_include_directories(sod1d PRIVATE src)
+
+# Phase 2: 2D uniform-grid drivers (CPU only).
+add_executable(sod2d src/drivers/sod2d.cpp)
+target_include_directories(sod2d PRIVATE src)
+
+add_executable(dmr src/drivers/dmr.cpp)
+target_include_directories(dmr PRIVATE src)
