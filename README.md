@@ -61,4 +61,10 @@ mono-thread) ; AMR hybride ≈4× l'AMR CPU mono-thread à résolution égale.
 ## Validation
 
 Tubes à choc de Sod 1D/2D (vs solution exacte de Riemann), Double Mach
-Reflection (Woodward & Colella 1984).
+Reflection (Woodward & Colella 1984), couche de cisaillement visqueuse
+(vs profil erf exact).
+
+## Et après ?
+
+Les extensions envisagées (AMR multi-niveaux, WENO, NS sur AMR, rendu
+temps réel, CI…) sont détaillées dans [ROADMAP.md](ROADMAP.md).
