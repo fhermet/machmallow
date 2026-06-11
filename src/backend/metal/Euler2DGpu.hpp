@@ -11,6 +11,7 @@
 #include <bit>
 #include <cstdint>
 #include <initializer_list>
+#include <utility>
 
 namespace mm {
 
@@ -57,10 +58,30 @@ public:
 
     // CFL time step from a GPU wave-speed reduction.
     Real maxStableDt(Real cfl) {
+        zeroWave();
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeWave(cmd);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+        const auto [sx, sy] = waveSpeeds();
+        return cfl * std::min(dx_ / sx, dy_ / sy);
+    }
+
+    // One full step. Ghosts must be filled (via data()) by the caller.
+    void step(Real dt) {
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeStep(cmd, dt);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+
+    // Composable pieces for callers building combined command buffers
+    // (e.g. AMR coarse + patch pool in one submission).
+    void zeroWave() {
         auto* sm = static_cast<std::uint32_t*>(smax_->contents());
         sm[0] = sm[1] = 0;
-
-        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+    }
+    void encodeWave(MTL::CommandBuffer* cmd) const {
         MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
         enc->setComputePipelineState(wave_);
         enc->setBuffer(q_, 0, 0);
@@ -69,35 +90,33 @@ public:
         enc->setBytes(&p, sizeof(p), 2);
         dispatch(enc, nx_, ny_);
         enc->endEncoding();
-        cmd->commit();
-        cmd->waitUntilCompleted();
-
-        const Real sx = std::bit_cast<float>(sm[0]);
-        const Real sy = std::bit_cast<float>(sm[1]);
-        return cfl * std::min(dx_ / sx, dy_ / sy);
     }
-
-    // One full step. Ghosts must be filled (via data()) by the caller.
-    void step(Real dt) {
+    std::pair<Real, Real> waveSpeeds() const {
+        const auto* sm = static_cast<const std::uint32_t*>(smax_->contents());
+        return {std::bit_cast<float>(sm[0]), std::bit_cast<float>(sm[1])};
+    }
+    void encodeStep(MTL::CommandBuffer* cmd, Real dt) const {
         const Params p = params(dt);
-        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
         encode(cmd, predictor_, {q_, xL_, xR_, yB_, yT_}, p, tx_ - 2,
                ty_ - 2);
         encode(cmd, fluxX_, {xL_, xR_, Fx_}, p, nx_ + 1, ny_);
         encode(cmd, fluxY_, {yB_, yT_, Fy_}, p, nx_, ny_ + 1);
         encode(cmd, update_, {q_, Fx_, Fy_}, p, nx_, ny_);
-        cmd->commit();
-        cmd->waitUntilCompleted();
     }
 
-private:
+    // Step fluxes, CPU-visible (needed by AMR refluxing).
+    const Cons* fx() const { return static_cast<const Cons*>(Fx_->contents()); }
+    const Cons* fy() const { return static_cast<const Cons*>(Fy_->contents()); }
+
     struct Params {
         std::int32_t tx, ty, nx, ny;
         float dx, dy, dt;
+        std::int32_t stride; // pool kernels only; 0 here
     };
 
+private:
     Params params(Real dt) const {
-        return {tx_, ty_, nx_, ny_, dx_, dy_, dt};
+        return {tx_, ty_, nx_, ny_, dx_, dy_, dt, 0};
     }
 
     static void dispatch(MTL::ComputeCommandEncoder* enc, int w, int h) {

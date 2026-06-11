@@ -46,3 +46,7 @@ target_include_directories(sod_amr PRIVATE src)
 # Phase 3: GPU step, validated against the CPU path.
 add_executable(dmr_gpu src/drivers/dmr_gpu.cpp)
 target_link_libraries(dmr_gpu PRIVATE mm_metal)
+
+# Phase 5: hybrid CPU/GPU AMR on the double Mach reflection.
+add_executable(dmr_amr src/drivers/dmr_amr.cpp)
+target_link_libraries(dmr_amr PRIVATE mm_metal)

@@ -32,26 +32,34 @@ void init(G& g) {
             g.at(i, j) = behindShock(g.xc(i), g.yc(j), 0) ? POST : PRE;
 }
 
+// Physical ghosts on the requested domain sides only (AMR patches pass
+// the sides they touch; full grids pass all four).
+template <class G>
+void fillGhostsSides(G& g, double t, unsigned sides) {
+    if (sides & SideLeft) // post-shock inflow
+        for (int j = 0; j < g.toty(); ++j)
+            for (int gi = 0; gi < NG; ++gi) g.at(gi, j) = POST;
+    if (sides & SideRight) fillTransmissiveRight(g);
+
+    if (sides & SideBottom) {
+        // Post-shock inflow ahead of the wall start, reflecting wall
+        // after it.
+        fillReflectiveBottom(g);
+        for (int i = 0; i < g.totx(); ++i)
+            if (g.xc(i) < XWALL)
+                for (int gj = 0; gj < NG; ++gj) g.at(i, gj) = POST;
+    }
+    if (sides & SideTop) // exact shock position (time dependent)
+        for (int i = 0; i < g.totx(); ++i)
+            for (int gj = 0; gj < NG; ++gj) {
+                const int j = NG + g.ny + gj;
+                g.at(i, j) = behindShock(g.xc(i), g.yc(j), t) ? POST : PRE;
+            }
+}
+
 template <class G>
 void fillGhosts(G& g, double t) {
-    // Left: post-shock inflow.
-    for (int j = 0; j < g.toty(); ++j)
-        for (int gi = 0; gi < NG; ++gi) g.at(gi, j) = POST;
-    fillTransmissiveRight(g);
-
-    // Bottom: post-shock inflow ahead of the wall start, reflecting wall
-    // after it.
-    fillReflectiveBottom(g);
-    for (int i = 0; i < g.totx(); ++i)
-        if (g.xc(i) < XWALL)
-            for (int gj = 0; gj < NG; ++gj) g.at(i, gj) = POST;
-
-    // Top: exact shock position (time dependent).
-    for (int i = 0; i < g.totx(); ++i)
-        for (int gj = 0; gj < NG; ++gj) {
-            const int j = NG + g.ny + gj;
-            g.at(i, j) = behindShock(g.xc(i), g.yc(j), t) ? POST : PRE;
-        }
+    fillGhostsSides(g, t, SideLeft | SideRight | SideBottom | SideTop);
 }
 
 } // namespace mm::dmr

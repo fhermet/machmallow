@@ -10,6 +10,7 @@
 // coarse-fine faces, restrict fine onto covered coarse cells, regrid
 // every cfg.regridEvery steps.
 
+#include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "numerics/Limiter.hpp"
 #include "solver/Muscl2D.hpp"
@@ -41,9 +42,14 @@ public:
     Grid coarse;
     std::vector<Patch> patches;
 
-    // Case-supplied physical BC fill for the coarse grid. Fine patches at
-    // the domain boundary inherit it through prolongation of coarse ghosts.
-    std::function<void(Grid&)> fillPhysicalGhosts;
+    // Case-supplied physical BC fill for the coarse grid (time-dependent
+    // BCs receive t).
+    std::function<void(Grid&, double)> fillPhysicalGhosts;
+
+    // Optional fine-level physical BC for patches touching the domain
+    // boundary (side bitmask). When unset, those ghosts come from
+    // prolongated coarse ghosts.
+    std::function<void(Grid&, double, unsigned)> fillPatchPhysical;
 
     Amr2(int nx, int ny, Real x0, Real y0, Real lx, Real ly, AmrConfig cfg)
         : coarse(nx, ny, x0, y0, lx, ly), cfg_(cfg), nbx_(nx / cfg.blockC),
@@ -55,11 +61,25 @@ public:
         return blockOf_[std::size_t(bj) * nbx_ + bi] >= 0;
     }
 
+    // View interface shared with AmrGpu (writers, composite tooling).
+    GridRef coarseRef() const {
+        return GridRef{coarse.nx, coarse.ny, coarse.x0,
+                       coarse.y0, coarse.dx, coarse.dy,
+                       const_cast<Cons*>(coarse.q.data())};
+    }
+    GridRef patchRef(const Patch& p) const {
+        return GridRef{p.grid.nx, p.grid.ny, p.grid.x0,
+                       p.grid.y0, p.grid.dx, p.grid.dy,
+                       const_cast<Cons*>(p.grid.q.data())};
+    }
+    int fineCells() const { return 2 * cfg_.blockC; }
+
     template <class IC>
     void init(IC ic) {
         for (int j = NG; j < NG + coarse.ny; ++j)
             for (int i = NG; i < NG + coarse.nx; ++i)
                 coarse.at(i, j) = ic(coarse.xc(i), coarse.yc(j));
+        fillPhysicalGhosts(coarse, 0); // regrid prolongation reads ghosts
         regrid();
         for (Patch& p : patches)
             for (int j = NG; j < NG + p.grid.ny; ++j)
@@ -75,9 +95,21 @@ public:
         return dt;
     }
 
-    void step(Real dt) {
-        fillPhysicalGhosts(coarse);
-        for (Patch& p : patches) fillPatchGhosts_(p);
+    unsigned domainSides(const Patch& p) const {
+        return (p.bi == 0 ? SideLeft : 0u) |
+               (p.bi == nbx_ - 1 ? SideRight : 0u) |
+               (p.bj == 0 ? SideBottom : 0u) |
+               (p.bj == nby_ - 1 ? SideTop : 0u);
+    }
+
+    void step(Real dt, double t) {
+        fillPhysicalGhosts(coarse, t);
+        for (Patch& p : patches) {
+            fillPatchGhosts_(p);
+            if (fillPatchPhysical)
+                if (const unsigned sides = domainSides(p))
+                    fillPatchPhysical(p.grid, t, sides);
+        }
 
         step2D(coarse, dt, scratchC_); // keeps coarse fluxes for refluxing
         for (Patch& p : patches) {
@@ -86,7 +118,10 @@ public:
         }
         restrictFine_();
 
-        if (++stepCount_ % cfg_.regridEvery == 0) regrid();
+        if (++stepCount_ % cfg_.regridEvery == 0) {
+            fillPhysicalGhosts(coarse, t + dt); // for edge-block prolongation
+            regrid();
+        }
     }
 
     // Composite mass (uncovered coarse + fine), accumulated in double.

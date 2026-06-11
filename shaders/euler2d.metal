@@ -1,6 +1,10 @@
 // GPU port of the unsplit MUSCL-Hancock + HLLC step. Conserved state is a
 // float4 (rho, mx, my, E), primitive is a float4 (rho, u, v, p) — same
 // memory layout as the C++ Cons struct.
+//
+// Each kernel exists in two forms: the plain one operating on a single
+// grid, and a `_pool` variant where gid.z selects a patch slot inside
+// pooled buffers (all AMR patches advanced in one dispatch).
 
 #include <metal_stdlib>
 using namespace metal;
@@ -14,6 +18,7 @@ struct Params {
     int tx, ty;   // total cells including ghosts
     int nx, ny;   // interior cells
     float dx, dy, dt;
+    int stride;   // cells per pool slot (0 for plain kernels)
 };
 
 // ---- physics ------------------------------------------------------------
@@ -101,20 +106,13 @@ inline float4 hllcFluxY(float4 L, float4 R) {
     return float4(f.x, f.z, f.y, f.w);
 }
 
-// ---- kernels ------------------------------------------------------------
+// ---- kernel bodies --------------------------------------------------------
 
-// Time-advanced face states; runs on all cells with a full neighbour ring.
-kernel void predictor(device const float4* q [[buffer(0)]],
-                      device float4* xL [[buffer(1)]],
-                      device float4* xR [[buffer(2)]],
-                      device float4* yB [[buffer(3)]],
-                      device float4* yT [[buffer(4)]],
-                      constant Params& P [[buffer(5)]],
-                      uint2 g [[thread_position_in_grid]])
-{
-    const int i = int(g.x) + 1;
-    const int j = int(g.y) + 1;
-    const int id = j * P.tx + i;
+inline void predictorBody(device const float4* q, device float4* xL,
+                          device float4* xR, device float4* yB,
+                          device float4* yT, constant Params& P, int base,
+                          int i, int j) {
+    const int id = base + j * P.tx + i;
 
     const float4 q0 = q[id];
     const float4 dqx = limitedSlope(q[id - 1], q0, q[id + 1]);
@@ -136,56 +134,33 @@ kernel void predictor(device const float4* q [[buffer(0)]],
     yT[id] = yt + adv;
 }
 
-// HLLC flux through x-face (i+1/2, j); grid is (nx+1) x ny.
-kernel void flux_x(device const float4* xL [[buffer(0)]],
-                   device const float4* xR [[buffer(1)]],
-                   device float4* Fx [[buffer(2)]],
-                   constant Params& P [[buffer(3)]],
-                   uint2 g [[thread_position_in_grid]])
-{
-    const int i = int(g.x) + NG - 1;
-    const int j = int(g.y) + NG;
-    const int id = j * P.tx + i;
+inline void fluxXBody(device const float4* xL, device const float4* xR,
+                      device float4* Fx, constant Params& P, int base,
+                      int i, int j) {
+    const int id = base + j * P.tx + i;
     Fx[id] = hllcFluxX(toPrim(xR[id]), toPrim(xL[id + 1]));
 }
 
-// HLLC flux through y-face (i, j+1/2); grid is nx x (ny+1).
-kernel void flux_y(device const float4* yB [[buffer(0)]],
-                   device const float4* yT [[buffer(1)]],
-                   device float4* Fy [[buffer(2)]],
-                   constant Params& P [[buffer(3)]],
-                   uint2 g [[thread_position_in_grid]])
-{
-    const int i = int(g.x) + NG;
-    const int j = int(g.y) + NG - 1;
-    const int id = j * P.tx + i;
+inline void fluxYBody(device const float4* yB, device const float4* yT,
+                      device float4* Fy, constant Params& P, int base,
+                      int i, int j) {
+    const int id = base + j * P.tx + i;
     Fy[id] = hllcFluxY(toPrim(yT[id]), toPrim(yB[id + P.tx]));
 }
 
-// Conservative update of the interior.
-kernel void update_cons(device float4* q [[buffer(0)]],
-                        device const float4* Fx [[buffer(1)]],
-                        device const float4* Fy [[buffer(2)]],
-                        constant Params& P [[buffer(3)]],
-                        uint2 g [[thread_position_in_grid]])
-{
-    const int i = int(g.x) + NG;
-    const int j = int(g.y) + NG;
-    const int id = j * P.tx + i;
+inline void updateBody(device float4* q, device const float4* Fx,
+                       device const float4* Fy, constant Params& P,
+                       int base, int i, int j) {
+    const int id = base + j * P.tx + i;
     q[id] += (P.dt / P.dx) * (Fx[id - 1] - Fx[id]) +
              (P.dt / P.dy) * (Fy[id - P.tx] - Fy[id]);
 }
 
 // Max wave speed per direction: simdgroup reduction, then one atomic max
 // per simdgroup. Positive float bit patterns compare like uints.
-kernel void wave_speed(device const float4* q [[buffer(0)]],
-                       device atomic_uint* smax [[buffer(1)]],
-                       constant Params& P [[buffer(2)]],
-                       uint2 g [[thread_position_in_grid]])
-{
-    const int i = int(g.x) + NG;
-    const int j = int(g.y) + NG;
-    const float4 w = toPrim(q[j * P.tx + i]);
+inline void waveBody(device const float4* q, device atomic_uint* smax,
+                     constant Params& P, int base, int i, int j) {
+    const float4 w = toPrim(q[base + j * P.tx + i]);
     const float c = soundSpeed(w);
 
     const float sx = simd_max(fabs(w.y) + c);
@@ -196,4 +171,110 @@ kernel void wave_speed(device const float4* q [[buffer(0)]],
         atomic_fetch_max_explicit(&smax[1], as_type<uint>(sy),
                                   memory_order_relaxed);
     }
+}
+
+// ---- plain kernels (one grid) ---------------------------------------------
+
+kernel void predictor(device const float4* q [[buffer(0)]],
+                      device float4* xL [[buffer(1)]],
+                      device float4* xR [[buffer(2)]],
+                      device float4* yB [[buffer(3)]],
+                      device float4* yT [[buffer(4)]],
+                      constant Params& P [[buffer(5)]],
+                      uint2 g [[thread_position_in_grid]])
+{
+    predictorBody(q, xL, xR, yB, yT, P, 0, int(g.x) + 1, int(g.y) + 1);
+}
+
+kernel void flux_x(device const float4* xL [[buffer(0)]],
+                   device const float4* xR [[buffer(1)]],
+                   device float4* Fx [[buffer(2)]],
+                   constant Params& P [[buffer(3)]],
+                   uint2 g [[thread_position_in_grid]])
+{
+    fluxXBody(xL, xR, Fx, P, 0, int(g.x) + NG - 1, int(g.y) + NG);
+}
+
+kernel void flux_y(device const float4* yB [[buffer(0)]],
+                   device const float4* yT [[buffer(1)]],
+                   device float4* Fy [[buffer(2)]],
+                   constant Params& P [[buffer(3)]],
+                   uint2 g [[thread_position_in_grid]])
+{
+    fluxYBody(yB, yT, Fy, P, 0, int(g.x) + NG, int(g.y) + NG - 1);
+}
+
+kernel void update_cons(device float4* q [[buffer(0)]],
+                        device const float4* Fx [[buffer(1)]],
+                        device const float4* Fy [[buffer(2)]],
+                        constant Params& P [[buffer(3)]],
+                        uint2 g [[thread_position_in_grid]])
+{
+    updateBody(q, Fx, Fy, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+
+kernel void wave_speed(device const float4* q [[buffer(0)]],
+                       device atomic_uint* smax [[buffer(1)]],
+                       constant Params& P [[buffer(2)]],
+                       uint2 g [[thread_position_in_grid]])
+{
+    waveBody(q, smax, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+
+// ---- pool kernels (all AMR patches in one dispatch) -----------------------
+
+kernel void predictor_pool(device const float4* q [[buffer(0)]],
+                           device float4* xL [[buffer(1)]],
+                           device float4* xR [[buffer(2)]],
+                           device float4* yB [[buffer(3)]],
+                           device float4* yT [[buffer(4)]],
+                           constant Params& P [[buffer(5)]],
+                           device const uint* slots [[buffer(6)]],
+                           uint3 g [[thread_position_in_grid]])
+{
+    predictorBody(q, xL, xR, yB, yT, P, int(slots[g.z]) * P.stride,
+                  int(g.x) + 1, int(g.y) + 1);
+}
+
+kernel void flux_x_pool(device const float4* xL [[buffer(0)]],
+                        device const float4* xR [[buffer(1)]],
+                        device float4* Fx [[buffer(2)]],
+                        constant Params& P [[buffer(3)]],
+                        device const uint* slots [[buffer(4)]],
+                        uint3 g [[thread_position_in_grid]])
+{
+    fluxXBody(xL, xR, Fx, P, int(slots[g.z]) * P.stride,
+              int(g.x) + NG - 1, int(g.y) + NG);
+}
+
+kernel void flux_y_pool(device const float4* yB [[buffer(0)]],
+                        device const float4* yT [[buffer(1)]],
+                        device float4* Fy [[buffer(2)]],
+                        constant Params& P [[buffer(3)]],
+                        device const uint* slots [[buffer(4)]],
+                        uint3 g [[thread_position_in_grid]])
+{
+    fluxYBody(yB, yT, Fy, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
+              int(g.y) + NG - 1);
+}
+
+kernel void update_pool(device float4* q [[buffer(0)]],
+                        device const float4* Fx [[buffer(1)]],
+                        device const float4* Fy [[buffer(2)]],
+                        constant Params& P [[buffer(3)]],
+                        device const uint* slots [[buffer(4)]],
+                        uint3 g [[thread_position_in_grid]])
+{
+    updateBody(q, Fx, Fy, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
+               int(g.y) + NG);
+}
+
+kernel void wave_pool(device const float4* q [[buffer(0)]],
+                      device atomic_uint* smax [[buffer(1)]],
+                      constant Params& P [[buffer(2)]],
+                      device const uint* slots [[buffer(3)]],
+                      uint3 g [[thread_position_in_grid]])
+{
+    waveBody(q, smax, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
+             int(g.y) + NG);
 }

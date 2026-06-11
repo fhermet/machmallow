@@ -34,7 +34,7 @@ Cons sodIc(Real x, Real /*y*/) {
     return toCons({Real(s.rho), 0, 0, Real(s.p)});
 }
 
-void transmissiveAll(Grid& g) {
+void transmissiveAll(Grid& g, double /*t*/) {
     fillTransmissiveLeft(g);
     fillTransmissiveRight(g);
     fillTransmissiveBottom(g);
@@ -60,7 +60,7 @@ struct AmrRun {
         while (t < TEND) {
             const Real dt =
                 std::min(amr.maxStableDtAll(CFL), Real(TEND - t));
-            amr.step(dt);
+            amr.step(dt, t);
             t += dt;
             ++steps;
             cellSteps += amr.cellCount();
@@ -127,7 +127,7 @@ int main() {
     std::size_t uniCellSteps = 0;
     double tu = 0;
     while (tu < TEND) {
-        transmissiveAll(uni);
+        transmissiveAll(uni, tu);
         const Real dt = std::min(maxStableDt(uni, CFL), Real(TEND - tu));
         step2D(uni, dt, scratch);
         tu += dt;

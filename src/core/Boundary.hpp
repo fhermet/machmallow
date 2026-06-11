@@ -4,6 +4,15 @@
 
 namespace mm {
 
+// Domain-side bitmask, used to tell patch-level BC callbacks which of a
+// patch's sides touch the physical boundary.
+enum : unsigned {
+    SideLeft = 1u,
+    SideRight = 2u,
+    SideBottom = 4u,
+    SideTop = 8u,
+};
+
 // Zero-gradient (transmissive) ghost fill, one side at a time.
 template <class G>
 inline void fillTransmissiveLeft(G& g) {
