@@ -11,9 +11,11 @@
 #include "backend/metal/MetalContext.hpp"
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
+#include "core/Parallel.hpp"
 #include "numerics/Limiter.hpp"
 
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -32,6 +34,15 @@ public:
 
     std::function<void(GridRef&, double)> fillPhysicalGhosts;
     std::function<void(GridRef&, double, unsigned)> fillPatchPhysical;
+
+    // Cumulative wall time per step section (seconds).
+    struct Timings {
+        double ghost = 0, gpu = 0, reflux = 0, restrict_ = 0, regrid = 0;
+        double total() const {
+            return ghost + gpu + reflux + restrict_ + regrid;
+        }
+    };
+    Timings timings;
 
     AmrGpu(MetalContext& ctx, int nx, int ny, Real x0, Real y0, Real lx,
            Real ly, AmrConfig cfg)
@@ -147,16 +158,28 @@ public:
     }
 
     void step(Real dt, double t) {
+        using Clk = std::chrono::steady_clock;
+        auto mark = Clk::now();
+        const auto lap = [&](double& acc) {
+            const auto now = Clk::now();
+            acc += std::chrono::duration<double>(now - mark).count();
+            mark = now;
+        };
+
         GridRef c = coarseRef();
         fillPhysicalGhosts(c, t);
-        for (const Patch& p : patches) {
+        // Each patch writes only its own ghosts and reads pre-step
+        // neighbour interiors: embarrassingly parallel.
+        parallelFor(patches.size(), [&](std::size_t k) {
+            const Patch& p = patches[k];
             fillPatchGhosts_(p);
             if (fillPatchPhysical)
                 if (const unsigned sides = domainSides(p)) {
                     GridRef g = patchRef(p);
                     fillPatchPhysical(g, t, sides);
                 }
-        }
+        });
+        lap(timings.ghost);
 
         // GPU: coarse + all patches + next-step wave reduction, one
         // command buffer, one sync.
@@ -180,11 +203,14 @@ public:
         cmd->waitUntilCompleted();
         readWave_(); // post-step speeds; regrid below only prolongates
                      // coarse data, so they remain a valid dt bound
+        lap(timings.gpu);
 
         // CPU: conservation fix-up and synchronization.
         if (cfg_.reflux)
             for (const Patch& p : patches) reflux_(p, dt);
+        lap(timings.reflux);
         restrictFine_();
+        lap(timings.restrict_);
 
         if (++stepCount_ % cfg_.regridEvery == 0) {
             const bool hadPatches = !patches.empty();
@@ -193,6 +219,7 @@ public:
             // The cached wave speeds lack a fine-level bound if the pool
             // was empty when they were measured.
             if (!hadPatches && !patches.empty()) haveWave_ = false;
+            lap(timings.regrid);
         }
     }
 
@@ -229,7 +256,8 @@ public:
         const int nx = c.nx, ny = c.ny, bc = cfg_.blockC;
 
         std::vector<std::uint8_t> tag(std::size_t(nx) * ny, 0);
-        for (int j = 0; j < ny; ++j)
+        parallelFor(std::size_t(ny), [&](std::size_t row) {
+            const int j = int(row);
             for (int i = 0; i < nx; ++i) {
                 const int ip = std::min(i + 1, nx - 1),
                           im = std::max(i - 1, 0);
@@ -243,6 +271,7 @@ public:
                 tag[std::size_t(j) * nx + i] =
                     std::max(ex, ey) / r0 > cfg_.tagThreshold;
             }
+        });
 
         std::vector<std::uint8_t> want(std::size_t(nbx_) * nby_, 0);
         for (int j = 0; j < ny; ++j)
@@ -349,29 +378,36 @@ private:
         GridRef g = patchRef(p);
         const GridRef c = coarseRef();
         const int nxf = 2 * c.nx, nyf = 2 * c.ny;
-        for (int j = 0; j < g.toty(); ++j)
-            for (int i = 0; i < g.totx(); ++i) {
-                if (i >= NG && i < NG + nf_ && j >= NG && j < NG + nf_)
-                    continue;
-                const int gfi = 2 * p.ci0 + (i - NG);
-                const int gfj = 2 * p.cj0 + (j - NG);
 
-                if (gfi >= 0 && gfi < nxf && gfj >= 0 && gfj < nyf) {
-                    const int bi = gfi / (2 * cfg_.blockC);
-                    const int bj = gfj / (2 * cfg_.blockC);
-                    const int pi = blockOf_[std::size_t(bj) * nbx_ + bi];
-                    if (pi >= 0) {
-                        const GridRef s = patchRef(patches[pi]);
-                        g.at(i, j) =
-                            s.at(NG + gfi - 2 * patches[pi].ci0,
-                                 NG + gfj - 2 * patches[pi].cj0);
-                        continue;
-                    }
+        const auto fillCell = [&](int i, int j) {
+            const int gfi = 2 * p.ci0 + (i - NG);
+            const int gfj = 2 * p.cj0 + (j - NG);
+
+            if (gfi >= 0 && gfi < nxf && gfj >= 0 && gfj < nyf) {
+                const int bi = gfi / (2 * cfg_.blockC);
+                const int bj = gfj / (2 * cfg_.blockC);
+                const int pi = blockOf_[std::size_t(bj) * nbx_ + bi];
+                if (pi >= 0) {
+                    const GridRef s = patchRef(patches[pi]);
+                    g.at(i, j) = s.at(NG + gfi - 2 * patches[pi].ci0,
+                                      NG + gfj - 2 * patches[pi].cj0);
+                    return;
                 }
-                const int ci = (gfi >= 0) ? gfi / 2 : (gfi - 1) / 2;
-                const int cj = (gfj >= 0) ? gfj / 2 : (gfj - 1) / 2;
-                g.at(i, j) = prolong_(ci, cj, gfi - 2 * ci, gfj - 2 * cj);
             }
+            const int ci = (gfi >= 0) ? gfi / 2 : (gfi - 1) / 2;
+            const int cj = (gfj >= 0) ? gfj / 2 : (gfj - 1) / 2;
+            g.at(i, j) = prolong_(ci, cj, gfi - 2 * ci, gfj - 2 * cj);
+        };
+
+        // Ghost bands only (bottom/top full width, then side strips).
+        for (int j = 0; j < NG; ++j)
+            for (int i = 0; i < g.totx(); ++i) fillCell(i, j);
+        for (int j = NG + nf_; j < g.toty(); ++j)
+            for (int i = 0; i < g.totx(); ++i) fillCell(i, j);
+        for (int j = NG; j < NG + nf_; ++j) {
+            for (int i = 0; i < NG; ++i) fillCell(i, j);
+            for (int i = NG + nf_; i < g.totx(); ++i) fillCell(i, j);
+        }
     }
 
     void reflux_(const Patch& p, Real dt) {
@@ -424,9 +460,11 @@ private:
             }
     }
 
+    // Patches cover disjoint coarse blocks: parallel-safe.
     void restrictFine_() {
         GridRef c = coarseRef();
-        for (const Patch& p : patches) {
+        parallelFor(patches.size(), [&](std::size_t k) {
+            const Patch& p = patches[k];
             const GridRef g = patchRef(p);
             for (int b = 0; b < cfg_.blockC; ++b)
                 for (int a = 0; a < cfg_.blockC; ++a) {
@@ -437,7 +475,7 @@ private:
                     c.at(NG + p.ci0 + a, NG + p.cj0 + b) =
                         Real(0.25) * sum;
                 }
-        }
+        });
     }
 
     MetalContext& ctx_;

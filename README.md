@@ -34,8 +34,26 @@ Prérequis : macOS 15+, Command Line Tools, CMake ≥ 3.24.
 - [x] Phase 3 — port GPU du solveur 2D (écart fp32 ~1e-5 vs CPU, 298 Mcell/s à 2880×720, ~10× CPU)
 - [x] Phase 4 — AMR 2 niveaux CPU (L1 = 1.05× l'uniforme fin pour 63% du travail, conservation au plancher fp32)
 - [x] Phase 5 — AMR hybride CPU/GPU (DMR 1/512 : 150 Mcell/s, 30% du travail uniforme, 4.4× l'AMR CPU)
-- [ ] Phase 6 — profiling et consolidation
+- [x] Phase 6 — profiling et consolidation (ghost fill par bandes + CPU parallèle via GCD)
 - [ ] Phase 7 — subcycling, termes visqueux (Navier-Stokes)
+
+## Performances (Apple M4, 10 cœurs GPU, 16 GB)
+
+Double Mach Reflection AMR 2 niveaux, t = 0.2, CFL 0.4, `dmr_amr` :
+
+| Résolution fine | Pas | Temps | Débit | Travail vs uniforme |
+|---|---|---|---|---|
+| 1/256 (coarse 512×128) | 2706 | ~1.8–2.8 s | 86–135 Mcell/s | 34 % |
+| 1/512 (coarse 1024×256) | 5624 | ~9.7 s | ~180 Mcell/s | 30 % |
+
+Répartition d'un pas hybride (1/512) : GPU ~80 % (calcul + 1 sync/pas),
+ghost fill ~10 %, regrid ~6 %, reflux + restriction ~4 %. Taille de bloc
+optimale : 8 cellules grossières (sweep 4/8/16). Attention à la variance
+run-à-run sur Apple Silicon (gouverneur de fréquence GPU) : ±30 % sur les
+petits cas.
+
+Jalons intermédiaires : solveur 2D uniforme GPU ~300 Mcell/s (≈10× le CPU
+mono-thread) ; AMR hybride ≈4× l'AMR CPU mono-thread à résolution égale.
 
 ## Validation
 

@@ -24,9 +24,11 @@ using Clock = std::chrono::steady_clock;
 
 constexpr Real CFL = Real(0.4);
 
+int g_blockC = 8; // overridable from argv for block-size tuning
+
 AmrConfig dmrConfig() {
     AmrConfig cfg;
-    cfg.blockC = 8;
+    cfg.blockC = g_blockC;
     cfg.tagThreshold = Real(0.12);
     cfg.regridEvery = 4;
     return cfg;
@@ -129,6 +131,7 @@ int main(int argc, char** argv) {
     const int nxc = 4 * nyc;
     const bool gpuOnly =
         (argc > 2) && std::string_view(argv[2]) == "gpu";
+    if (argc > 3) g_blockC = std::atoi(argv[3]);
 
     MetalContext ctx;
     std::printf("GPU: %s\n", ctx.device()->name()->utf8String());
@@ -149,6 +152,13 @@ int main(int argc, char** argv) {
                 "max %zu/%d patches\n",
                 g.steps, g.wall, g.cellSteps / g.wall / 1e6, g.maxPatches,
                 gpu.blockCount());
+    const auto& tm = gpu.timings;
+    std::printf("breakdown: ghost %.0f%% | gpu %.0f%% | reflux %.0f%% | "
+                "restrict %.0f%% | regrid %.0f%% (%.2f s timed)\n",
+                100 * tm.ghost / tm.total(), 100 * tm.gpu / tm.total(),
+                100 * tm.reflux / tm.total(),
+                100 * tm.restrict_ / tm.total(),
+                100 * tm.regrid / tm.total(), tm.total());
 
     // Equivalent-resolution uniform work for context.
     const double uniWork =
