@@ -29,3 +29,7 @@ target_link_libraries(machmallow PRIVATE
 target_compile_definitions(machmallow PRIVATE
   MACHMALLOW_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
 )
+
+# Phase 1: 1D Sod shock tube validation (CPU only).
+add_executable(sod1d src/drivers/sod1d.cpp)
+target_include_directories(sod1d PRIVATE src)
