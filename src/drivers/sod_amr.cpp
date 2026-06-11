@@ -41,6 +41,16 @@ void transmissiveAll(Grid& g, double /*t*/) {
     fillTransmissiveTop(g);
 }
 
+// Fine-level physical BCs: essential — mirroring the *fine* interior keeps
+// the boundary consistent where waves touch it (prolongated coarse ghosts
+// there cost ~2 decades of mass conservation).
+void transmissiveSides(Grid& g, double /*t*/, unsigned sides) {
+    if (sides & SideLeft) fillTransmissiveLeft(g);
+    if (sides & SideRight) fillTransmissiveRight(g);
+    if (sides & SideBottom) fillTransmissiveBottom(g);
+    if (sides & SideTop) fillTransmissiveTop(g);
+}
+
 double exactRho(double x) {
     return exact::sample(SOD_L, SOD_R, (x - X0) / TEND).rho;
 }
@@ -54,6 +64,7 @@ struct AmrRun {
     explicit AmrRun(AmrConfig cfg)
         : amr(128, 32, 0, 0, 1, Real(0.25), cfg) {
         amr.fillPhysicalGhosts = transmissiveAll;
+        amr.fillPatchPhysical = transmissiveSides;
         amr.init(sodIc);
         const double m0 = amr.totalMass();
         double t = 0;
@@ -99,6 +110,14 @@ int main() {
                 "without (%.0fx worse)\n",
                 tight.massDrift, leaky.massDrift,
                 leaky.massDrift / tight.massDrift);
+
+    // Subcycled run: coarse at dt, fine at 2 x dt/2. Must stay
+    // conservative and as accurate, for fewer coarse cell-steps.
+    AmrConfig sub;
+    sub.subcycle = true;
+    AmrRun subRun{sub};
+    std::printf("subcycled: %d coarse steps (vs %d), mass drift %.3e\n",
+                subRun.steps, run.steps, subRun.massDrift);
 
     // Composite L1(rho) vs exact, normalized to 1D units (/ height).
     double errAmr = 0;
@@ -151,11 +170,35 @@ int main() {
     std::filesystem::create_directories("out");
     writeVti("out/sod_amr_coarse.vti", amr.coarse);
 
+    // Subcycled composite L1 vs exact (same metric as the single-rate
+    // run computed below).
+    double errSub = 0;
+    for (int j = 0; j < NYC; ++j)
+        for (int i = 0; i < NXC; ++i)
+            if (!subRun.amr.covered(i / 8, j / 8)) {
+                const Grid& g = subRun.amr.coarse;
+                errSub += std::fabs(double(toPrim(g.at(NG + i, NG + j)).rho) -
+                                    exactRho(g.xc(NG + i))) *
+                          g.dx * g.dy;
+            }
+    for (const auto& p : subRun.amr.patches)
+        for (int j = NG; j < NG + p.grid.ny; ++j)
+            for (int i = NG; i < NG + p.grid.nx; ++i)
+                errSub += std::fabs(double(toPrim(p.grid.at(i, j)).rho) -
+                                    exactRho(p.grid.xc(i))) *
+                          p.grid.dx * p.grid.dy;
+    errSub /= 0.25;
+    std::printf("L1(rho) subcycled: %.4e (single-rate %.4e)\n", errSub,
+                errAmr);
+
     // Gates: refluxed drift at the fp32 floor even when waves cross the
     // coarse-fine interfaces, the unrefluxed frozen run must leak at
-    // least 10x more, and accuracy must match uniform fine.
-    if (run.massDrift > 5e-4 || tight.massDrift > 5e-4 ||
-        leaky.massDrift < 5 * tight.massDrift ||
+    // least 10x more, and accuracy must match uniform fine (subcycled
+    // included).
+    // With fine-level BCs the refluxed drift sits at the true fp32 floor.
+    if (run.massDrift > 1e-6 || tight.massDrift > 1e-6 ||
+        leaky.massDrift < 100 * tight.massDrift ||
+        subRun.massDrift > 1e-6 || errSub > 1.4 * errUni ||
         errAmr > 1.4 * errUni) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;

@@ -29,6 +29,7 @@ struct AmrConfig {
     Real tagThreshold = Real(0.03); // relative density gradient
     int regridEvery = 4;
     bool reflux = true;         // off only to demonstrate the leak
+    bool subcycle = false;      // coarse at dt, fine at 2 x dt/2
 };
 
 class Amr2 {
@@ -90,8 +91,11 @@ public:
 
     Real maxStableDtAll(Real cfl) const {
         Real dt = maxStableDt(coarse, cfl);
-        for (const Patch& p : patches)
-            dt = std::min(dt, maxStableDt(p.grid, cfl));
+        for (const Patch& p : patches) {
+            Real dtF = maxStableDt(p.grid, cfl);
+            if (cfg_.subcycle) dtF *= 2; // fine takes two half steps
+            dt = std::min(dt, dtF);
+        }
         return dt;
     }
 
@@ -103,19 +107,10 @@ public:
     }
 
     void step(Real dt, double t) {
-        fillPhysicalGhosts(coarse, t);
-        for (Patch& p : patches) {
-            fillPatchGhosts_(p);
-            if (fillPatchPhysical)
-                if (const unsigned sides = domainSides(p))
-                    fillPatchPhysical(p.grid, t, sides);
-        }
-
-        step2D(coarse, dt, scratchC_); // keeps coarse fluxes for refluxing
-        for (Patch& p : patches) {
-            step2D(p.grid, dt, scratchF_);
-            if (cfg_.reflux) reflux_(p, dt, scratchF_);
-        }
+        if (cfg_.subcycle && !patches.empty())
+            stepSubcycled_(dt, t);
+        else
+            stepSingleRate_(dt, t);
         restrictFine_();
 
         if (++stepCount_ % cfg_.regridEvery == 0) {
@@ -210,6 +205,55 @@ public:
     }
 
 private:
+    void fillAllPatchGhosts_(double t, Real theta) {
+        for (Patch& p : patches) {
+            fillPatchGhosts_(p, theta);
+            if (fillPatchPhysical)
+                if (const unsigned sides = domainSides(p))
+                    fillPatchPhysical(p.grid, t, sides);
+        }
+    }
+
+    void stepSingleRate_(Real dt, double t) {
+        fillPhysicalGhosts(coarse, t);
+        fillAllPatchGhosts_(t, Real(-1));
+
+        step2D(coarse, dt, scratchC_); // keeps coarse fluxes for refluxing
+        for (Patch& p : patches) {
+            step2D(p.grid, dt, scratchF_);
+            if (cfg_.reflux) {
+                refluxCoarse_(p, dt);
+                refluxFine_(p, dt, scratchF_);
+            }
+        }
+    }
+
+    // Berger-Colella subcycling: coarse advances dt, fine takes two dt/2
+    // substeps with time-interpolated coarse ghosts; refluxing accumulates
+    // dt*Fc against both substeps' dt/2*<Ff>.
+    void stepSubcycled_(Real dtC, double t) {
+        const Real dtF = dtC / 2;
+        coarseOld_ = coarse.q; // t^n copy for the theta-blend prolongation
+
+        fillPhysicalGhosts(coarse, t);
+        fillAllPatchGhosts_(t, Real(-1)); // substep 1 ghosts at t^n
+
+        step2D(coarse, dtC, scratchC_);
+        for (Patch& p : patches) {
+            if (cfg_.reflux) refluxCoarse_(p, dtC);
+            step2D(p.grid, dtF, scratchF_);
+            if (cfg_.reflux) refluxFine_(p, dtF, scratchF_);
+        }
+
+        // Substep 2: sibling copies are current; coarse prolongation uses
+        // the half-time blend of t^n and t^{n+1}.
+        fillAllPatchGhosts_(t + dtF, Real(0.5));
+        for (Patch& p : patches) {
+            step2D(p.grid, dtF, scratchF_);
+            if (cfg_.reflux) refluxFine_(p, dtF, scratchF_);
+        }
+    }
+
     Patch makePatch_(int bi, int bj) {
         const int bc = cfg_.blockC, nf = 2 * bc;
         const int ci0 = bi * bc, cj0 = bj * bc;
@@ -227,21 +271,31 @@ private:
         return p;
     }
 
+    // Coarse value at (I, J): current state, or the theta-blend between
+    // the saved t^n copy and the current state (subcycled ghosts).
+    Cons coarseAt_(int I, int J, Real theta) const {
+        const Cons& cur = coarse.at(I, J);
+        if (theta < 0) return cur;
+        const Cons& old = coarseOld_[coarse.idx(I, J)];
+        return (1 - theta) * old + theta * cur;
+    }
+
     // Conservative limited-linear interpolation of fine cell (offset
     // ox, oy in {0,1} within coarse cell ci, cj; ci/cj may index ghosts).
-    Cons prolong_(int ci, int cj, int ox, int oy) const {
+    Cons prolong_(int ci, int cj, int ox, int oy,
+                  Real theta = Real(-1)) const {
         const int I = NG + ci, J = NG + cj;
-        const Cons& q0 = coarse.at(I, J);
-        const Cons dqx =
-            limitedSlope(coarse.at(I - 1, J), q0, coarse.at(I + 1, J));
-        const Cons dqy =
-            limitedSlope(coarse.at(I, J - 1), q0, coarse.at(I, J + 1));
+        const Cons q0 = coarseAt_(I, J, theta);
+        const Cons dqx = limitedSlope(coarseAt_(I - 1, J, theta), q0,
+                                      coarseAt_(I + 1, J, theta));
+        const Cons dqy = limitedSlope(coarseAt_(I, J - 1, theta), q0,
+                                      coarseAt_(I, J + 1, theta));
         const Real sx = ox ? Real(0.25) : Real(-0.25);
         const Real sy = oy ? Real(0.25) : Real(-0.25);
         return q0 + sx * dqx + sy * dqy;
     }
 
-    void fillPatchGhosts_(Patch& p) {
+    void fillPatchGhosts_(Patch& p, Real theta = Real(-1)) {
         const int nf = p.grid.nx;
         const int nxf = 2 * coarse.nx, nyf = 2 * coarse.ny;
         for (int j = 0; j < p.grid.toty(); ++j)
@@ -268,13 +322,41 @@ private:
                 const int ci = (gfi >= 0) ? gfi / 2 : (gfi - 1) / 2;
                 const int cj = (gfj >= 0) ? gfj / 2 : (gfj - 1) / 2;
                 p.grid.at(i, j) =
-                    prolong_(ci, cj, gfi - 2 * ci, gfj - 2 * cj);
+                    prolong_(ci, cj, gfi - 2 * ci, gfj - 2 * cj, theta);
             }
     }
 
-    // Replace the coarse flux with the area-averaged fine flux on every
-    // coarse-fine face, correcting the uncovered coarse neighbour.
-    void reflux_(const Patch& p, Real dt, const Scratch2D& sf) {
+    // Refluxing, split so subcycling can accumulate several fine substeps
+    // against one coarse step: refluxCoarse_ backs the coarse flux out of
+    // the uncovered neighbour, refluxFine_ applies a substep's
+    // area-averaged fine flux. Single-rate calls both once.
+    void refluxCoarse_(const Patch& p, Real dt) {
+        const int bc = cfg_.blockC;
+        const Real lx = dt / coarse.dx, ly = dt / coarse.dy;
+
+        if (p.bi > 0 && !covered(p.bi - 1, p.bj)) // left side
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + p.ci0 - 1, NG + p.cj0 + r) +=
+                    lx * scratchC_.Fx[coarse.idx(NG + p.ci0 - 1,
+                                                 NG + p.cj0 + r)];
+        if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj)) // right side
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + p.ci0 + bc, NG + p.cj0 + r) -=
+                    lx * scratchC_.Fx[coarse.idx(NG + p.ci0 + bc - 1,
+                                                 NG + p.cj0 + r)];
+        if (p.bj > 0 && !covered(p.bi, p.bj - 1)) // bottom side
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + p.ci0 + r, NG + p.cj0 - 1) +=
+                    ly * scratchC_.Fy[coarse.idx(NG + p.ci0 + r,
+                                                 NG + p.cj0 - 1)];
+        if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1)) // top side
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + p.ci0 + r, NG + p.cj0 + bc) -=
+                    ly * scratchC_.Fy[coarse.idx(NG + p.ci0 + r,
+                                                 NG + p.cj0 + bc - 1)];
+    }
+
+    void refluxFine_(const Patch& p, Real dt, const Scratch2D& sf) {
         const int bc = cfg_.blockC, nf = 2 * bc;
         const Real lx = dt / coarse.dx, ly = dt / coarse.dy;
 
@@ -283,9 +365,7 @@ private:
                 const Cons ff =
                     Real(0.5) * (sf.Fx[p.grid.idx(NG - 1, NG + 2 * r)] +
                                  sf.Fx[p.grid.idx(NG - 1, NG + 2 * r + 1)]);
-                const Cons& fc =
-                    scratchC_.Fx[coarse.idx(NG + p.ci0 - 1, NG + p.cj0 + r)];
-                coarse.at(NG + p.ci0 - 1, NG + p.cj0 + r) += lx * (fc - ff);
+                coarse.at(NG + p.ci0 - 1, NG + p.cj0 + r) += Real(-1) * lx * ff;
             }
         if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj)) // right side
             for (int r = 0; r < bc; ++r) {
@@ -293,18 +373,14 @@ private:
                     Real(0.5) *
                     (sf.Fx[p.grid.idx(NG + nf - 1, NG + 2 * r)] +
                      sf.Fx[p.grid.idx(NG + nf - 1, NG + 2 * r + 1)]);
-                const Cons& fc = scratchC_.Fx[coarse.idx(
-                    NG + p.ci0 + bc - 1, NG + p.cj0 + r)];
-                coarse.at(NG + p.ci0 + bc, NG + p.cj0 + r) += lx * (ff - fc);
+                coarse.at(NG + p.ci0 + bc, NG + p.cj0 + r) += lx * ff;
             }
         if (p.bj > 0 && !covered(p.bi, p.bj - 1)) // bottom side
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (sf.Fy[p.grid.idx(NG + 2 * r, NG - 1)] +
                                  sf.Fy[p.grid.idx(NG + 2 * r + 1, NG - 1)]);
-                const Cons& fc =
-                    scratchC_.Fy[coarse.idx(NG + p.ci0 + r, NG + p.cj0 - 1)];
-                coarse.at(NG + p.ci0 + r, NG + p.cj0 - 1) += ly * (fc - ff);
+                coarse.at(NG + p.ci0 + r, NG + p.cj0 - 1) += Real(-1) * ly * ff;
             }
         if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1)) // top side
             for (int r = 0; r < bc; ++r) {
@@ -312,9 +388,7 @@ private:
                     Real(0.5) *
                     (sf.Fy[p.grid.idx(NG + 2 * r, NG + nf - 1)] +
                      sf.Fy[p.grid.idx(NG + 2 * r + 1, NG + nf - 1)]);
-                const Cons& fc = scratchC_.Fy[coarse.idx(
-                    NG + p.ci0 + r, NG + p.cj0 + bc - 1)];
-                coarse.at(NG + p.ci0 + r, NG + p.cj0 + bc) += ly * (ff - fc);
+                coarse.at(NG + p.ci0 + r, NG + p.cj0 + bc) += ly * ff;
             }
     }
 
@@ -337,6 +411,7 @@ private:
     int nbx_, nby_;
     std::vector<int> blockOf_; // block -> patch index, -1 if unrefined
     Scratch2D scratchC_, scratchF_;
+    std::vector<Cons> coarseOld_; // coarse t^n copy (subcycled ghosts)
     int stepCount_ = 0;
 };
 

@@ -18,6 +18,10 @@ struct Cons {
         rho += o.rho; mx += o.mx; my += o.my; E += o.E;
         return *this;
     }
+    Cons& operator-=(const Cons& o) {
+        rho -= o.rho; mx -= o.mx; my -= o.my; E -= o.E;
+        return *this;
+    }
 };
 
 inline Cons operator+(Cons a, const Cons& b) { return a += b; }

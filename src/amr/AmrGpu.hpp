@@ -151,9 +151,11 @@ public:
             readWave_();
         }
         Real dt = cfl * std::min(dxc_() / sxC_, dyc_() / syC_);
-        if (sxF_ > 0)
-            dt = std::min(dt, cfl * std::min(dxc_() / 2 / sxF_,
-                                             dyc_() / 2 / syF_));
+        if (sxF_ > 0) {
+            Real dtF = cfl * std::min(dxc_() / 2 / sxF_, dyc_() / 2 / syF_);
+            if (cfg_.subcycle) dtF *= 2; // fine takes two half steps
+            dt = std::min(dt, dtF);
+        }
         return dt;
     }
 
@@ -167,48 +169,11 @@ public:
         };
 
         GridRef c = coarseRef();
-        fillPhysicalGhosts(c, t);
-        // Each patch writes only its own ghosts and reads pre-step
-        // neighbour interiors: embarrassingly parallel.
-        parallelFor(patches.size(), [&](std::size_t k) {
-            const Patch& p = patches[k];
-            fillPatchGhosts_(p);
-            if (fillPatchPhysical)
-                if (const unsigned sides = domainSides(p)) {
-                    GridRef g = patchRef(p);
-                    fillPatchPhysical(g, t, sides);
-                }
-        });
-        lap(timings.ghost);
+        if (cfg_.subcycle && !patches.empty())
+            stepSubcycled_(dt, t, lap);
+        else
+            stepSingleRate_(dt, t, lap);
 
-        // GPU: coarse + all patches + next-step wave reduction, one
-        // command buffer, one sync.
-        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
-        coarse_.encodeStep(cmd, dt);
-        if (!patches.empty()) {
-            encodePool_(cmd, predictorP_, {qP_, xLP_, xRP_, yBP_, yTP_},
-                        dt, pTot_ - 2, pTot_ - 2, 1, 1);
-            encodePool_(cmd, fluxXP_, {xLP_, xRP_, FxP_}, dt, nf_ + 1, nf_,
-                        NG - 1, NG);
-            encodePool_(cmd, fluxYP_, {yBP_, yTP_, FyP_}, dt, nf_, nf_ + 1,
-                        NG, NG - 1);
-            encodePool_(cmd, updateP_, {qP_, FxP_, FyP_}, dt, nf_, nf_, NG,
-                        NG);
-        }
-        coarse_.zeroWave();
-        auto* smp = static_cast<std::uint32_t*>(smaxP_->contents());
-        smp[0] = smp[1] = 0;
-        encodeWaveAll_(cmd); // hazard tracking runs it after the updates
-        cmd->commit();
-        cmd->waitUntilCompleted();
-        readWave_(); // post-step speeds; regrid below only prolongates
-                     // coarse data, so they remain a valid dt bound
-        lap(timings.gpu);
-
-        // CPU: conservation fix-up and synchronization.
-        if (cfg_.reflux)
-            for (const Patch& p : patches) reflux_(p, dt);
-        lap(timings.reflux);
         restrictFine_();
         lap(timings.restrict_);
 
@@ -314,6 +279,109 @@ private:
     Real dxc_() const { return coarseRef().dx; }
     Real dyc_() const { return coarseRef().dy; }
 
+    void fillAllPatchGhosts_(double t, Real theta) {
+        parallelFor(patches.size(), [&](std::size_t k) {
+            const Patch& p = patches[k];
+            fillPatchGhosts_(p, theta);
+            if (fillPatchPhysical)
+                if (const unsigned sides = domainSides(p)) {
+                    GridRef g = patchRef(p);
+                    fillPatchPhysical(g, t, sides);
+                }
+        });
+    }
+
+    void encodePoolStep_(MTL::CommandBuffer* cmd, Real dt) const {
+        encodePool_(cmd, predictorP_, {qP_, xLP_, xRP_, yBP_, yTP_}, dt,
+                    pTot_ - 2, pTot_ - 2, 1, 1);
+        encodePool_(cmd, fluxXP_, {xLP_, xRP_, FxP_}, dt, nf_ + 1, nf_,
+                    NG - 1, NG);
+        encodePool_(cmd, fluxYP_, {yBP_, yTP_, FyP_}, dt, nf_, nf_ + 1, NG,
+                    NG - 1);
+        encodePool_(cmd, updateP_, {qP_, FxP_, FyP_}, dt, nf_, nf_, NG, NG);
+    }
+
+    void zeroWaveAll_() {
+        coarse_.zeroWave();
+        auto* smp = static_cast<std::uint32_t*>(smaxP_->contents());
+        smp[0] = smp[1] = 0;
+    }
+
+    template <class Lap>
+    void stepSingleRate_(Real dt, double t, Lap&& lap) {
+        GridRef c = coarseRef();
+        fillPhysicalGhosts(c, t);
+        fillAllPatchGhosts_(t, Real(-1));
+        lap(timings.ghost);
+
+        // GPU: coarse + all patches + next-step wave reduction, one
+        // command buffer, one sync.
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        coarse_.encodeStep(cmd, dt);
+        if (!patches.empty()) encodePoolStep_(cmd, dt);
+        zeroWaveAll_();
+        encodeWaveAll_(cmd); // hazard tracking runs it after the updates
+        cmd->commit();
+        cmd->waitUntilCompleted();
+        readWave_(); // post-step speeds; regrid below only prolongates
+                     // coarse data, so they remain a valid dt bound
+        lap(timings.gpu);
+
+        if (cfg_.reflux)
+            for (const Patch& p : patches) {
+                refluxCoarse_(p, dt);
+                refluxFine_(p, dt);
+            }
+        lap(timings.reflux);
+    }
+
+    // Berger-Colella subcycling: coarse and fine substep 1 share the
+    // first submission (independent buffers), substep 2 rides with the
+    // wave reduction — still two syncs per coarse step, half the coarse
+    // work of two single-rate steps.
+    template <class Lap>
+    void stepSubcycled_(Real dtC, double t, Lap&& lap) {
+        const Real dtF = dtC / 2;
+        GridRef c = coarseRef();
+
+        coarseOld_.assign(c.q, c.q + std::size_t(c.totx()) * c.toty());
+        fillPhysicalGhosts(c, t);
+        fillAllPatchGhosts_(t, Real(-1)); // substep 1 ghosts at t^n
+        lap(timings.ghost);
+
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        coarse_.encodeStep(cmd, dtC);
+        encodePoolStep_(cmd, dtF); // substep 1
+        cmd->commit();
+        cmd->waitUntilCompleted();
+        lap(timings.gpu);
+
+        if (cfg_.reflux)
+            for (const Patch& p : patches) {
+                refluxCoarse_(p, dtC);
+                refluxFine_(p, dtF);
+            }
+        lap(timings.reflux);
+
+        // Substep 2 ghosts: siblings are current, coarse prolongation
+        // blends t^n and t^{n+1} at the half time.
+        fillAllPatchGhosts_(t + dtF, Real(0.5));
+        lap(timings.ghost);
+
+        cmd = ctx_.queue()->commandBuffer();
+        encodePoolStep_(cmd, dtF); // substep 2
+        zeroWaveAll_();
+        encodeWaveAll_(cmd);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+        readWave_();
+        lap(timings.gpu);
+
+        if (cfg_.reflux)
+            for (const Patch& p : patches) refluxFine_(p, dtF);
+        lap(timings.reflux);
+    }
+
     void encodeWaveAll_(MTL::CommandBuffer* cmd) const {
         coarse_.encodeWave(cmd);
         if (!patches.empty())
@@ -363,18 +431,30 @@ private:
         return p;
     }
 
-    Cons prolong_(int ci, int cj, int ox, int oy) const {
+    // Coarse value at (I, J): current state, or the theta-blend between
+    // the saved t^n copy and the current state (subcycled ghosts).
+    Cons coarseAt_(const GridRef& c, int I, int J, Real theta) const {
+        const Cons& cur = c.at(I, J);
+        if (theta < 0) return cur;
+        const Cons& old = coarseOld_[c.idx(I, J)];
+        return (1 - theta) * old + theta * cur;
+    }
+
+    Cons prolong_(int ci, int cj, int ox, int oy,
+                  Real theta = Real(-1)) const {
         const GridRef c = coarseRef();
         const int I = NG + ci, J = NG + cj;
-        const Cons& q0 = c.at(I, J);
-        const Cons dqx = limitedSlope(c.at(I - 1, J), q0, c.at(I + 1, J));
-        const Cons dqy = limitedSlope(c.at(I, J - 1), q0, c.at(I, J + 1));
+        const Cons q0 = coarseAt_(c, I, J, theta);
+        const Cons dqx = limitedSlope(coarseAt_(c, I - 1, J, theta), q0,
+                                      coarseAt_(c, I + 1, J, theta));
+        const Cons dqy = limitedSlope(coarseAt_(c, I, J - 1, theta), q0,
+                                      coarseAt_(c, I, J + 1, theta));
         const Real sx = ox ? Real(0.25) : Real(-0.25);
         const Real sy = oy ? Real(0.25) : Real(-0.25);
         return q0 + sx * dqx + sy * dqy;
     }
 
-    void fillPatchGhosts_(const Patch& p) const {
+    void fillPatchGhosts_(const Patch& p, Real theta = Real(-1)) const {
         GridRef g = patchRef(p);
         const GridRef c = coarseRef();
         const int nxf = 2 * c.nx, nyf = 2 * c.ny;
@@ -396,7 +476,8 @@ private:
             }
             const int ci = (gfi >= 0) ? gfi / 2 : (gfi - 1) / 2;
             const int cj = (gfj >= 0) ? gfj / 2 : (gfj - 1) / 2;
-            g.at(i, j) = prolong_(ci, cj, gfi - 2 * ci, gfj - 2 * cj);
+            g.at(i, j) =
+                prolong_(ci, cj, gfi - 2 * ci, gfj - 2 * cj, theta);
         };
 
         // Ghost bands only (bottom/top full width, then side strips).
@@ -410,53 +491,73 @@ private:
         }
     }
 
-    void reflux_(const Patch& p, Real dt) {
+    // Refluxing split as in Amr2: refluxCoarse_ backs the coarse flux out
+    // of uncovered neighbours, refluxFine_ applies one substep's fine flux
+    // (read straight from the pool buffers).
+    void refluxCoarse_(const Patch& p, Real dt) {
         GridRef c = coarseRef();
         const int bc = cfg_.blockC;
         const Real lx = dt / c.dx, ly = dt / c.dy;
         const int ctx = c.totx();
         const Cons* fxC = coarse_.fx();
         const Cons* fyC = coarse_.fy();
+        const auto cid = [&](int i, int j) { return j * ctx + i; };
+
+        if (p.bi > 0 && !covered(p.bi - 1, p.bj))
+            for (int r = 0; r < bc; ++r)
+                c.at(NG + p.ci0 - 1, NG + p.cj0 + r) +=
+                    lx * fxC[cid(NG + p.ci0 - 1, NG + p.cj0 + r)];
+        if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj))
+            for (int r = 0; r < bc; ++r)
+                c.at(NG + p.ci0 + bc, NG + p.cj0 + r) -=
+                    lx * fxC[cid(NG + p.ci0 + bc - 1, NG + p.cj0 + r)];
+        if (p.bj > 0 && !covered(p.bi, p.bj - 1))
+            for (int r = 0; r < bc; ++r)
+                c.at(NG + p.ci0 + r, NG + p.cj0 - 1) +=
+                    ly * fyC[cid(NG + p.ci0 + r, NG + p.cj0 - 1)];
+        if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1))
+            for (int r = 0; r < bc; ++r)
+                c.at(NG + p.ci0 + r, NG + p.cj0 + bc) -=
+                    ly * fyC[cid(NG + p.ci0 + r, NG + p.cj0 + bc - 1)];
+    }
+
+    void refluxFine_(const Patch& p, Real dt) {
+        GridRef c = coarseRef();
+        const int bc = cfg_.blockC;
+        const Real lx = dt / c.dx, ly = dt / c.dy;
         const Cons* fxF = static_cast<const Cons*>(FxP_->contents()) +
                           std::size_t(p.slot) * stride_;
         const Cons* fyF = static_cast<const Cons*>(FyP_->contents()) +
                           std::size_t(p.slot) * stride_;
         const auto fid = [&](int i, int j) { return j * pTot_ + i; };
-        const auto cid = [&](int i, int j) { return j * ctx + i; };
 
         if (p.bi > 0 && !covered(p.bi - 1, p.bj))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fxF[fid(NG - 1, NG + 2 * r)] +
                                  fxF[fid(NG - 1, NG + 2 * r + 1)]);
-                const Cons& fc = fxC[cid(NG + p.ci0 - 1, NG + p.cj0 + r)];
-                c.at(NG + p.ci0 - 1, NG + p.cj0 + r) += lx * (fc - ff);
+                c.at(NG + p.ci0 - 1, NG + p.cj0 + r) -= lx * ff;
             }
         if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fxF[fid(NG + nf_ - 1, NG + 2 * r)] +
                                  fxF[fid(NG + nf_ - 1, NG + 2 * r + 1)]);
-                const Cons& fc =
-                    fxC[cid(NG + p.ci0 + bc - 1, NG + p.cj0 + r)];
-                c.at(NG + p.ci0 + bc, NG + p.cj0 + r) += lx * (ff - fc);
+                c.at(NG + p.ci0 + bc, NG + p.cj0 + r) += lx * ff;
             }
         if (p.bj > 0 && !covered(p.bi, p.bj - 1))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fyF[fid(NG + 2 * r, NG - 1)] +
                                  fyF[fid(NG + 2 * r + 1, NG - 1)]);
-                const Cons& fc = fyC[cid(NG + p.ci0 + r, NG + p.cj0 - 1)];
-                c.at(NG + p.ci0 + r, NG + p.cj0 - 1) += ly * (fc - ff);
+                c.at(NG + p.ci0 + r, NG + p.cj0 - 1) -= ly * ff;
             }
         if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fyF[fid(NG + 2 * r, NG + nf_ - 1)] +
                                  fyF[fid(NG + 2 * r + 1, NG + nf_ - 1)]);
-                const Cons& fc =
-                    fyC[cid(NG + p.ci0 + r, NG + p.cj0 + bc - 1)];
-                c.at(NG + p.ci0 + r, NG + p.cj0 + bc) += ly * (ff - fc);
+                c.at(NG + p.ci0 + r, NG + p.cj0 + bc) += ly * ff;
             }
     }
 
@@ -485,6 +586,7 @@ private:
     int nbx_, nby_, nf_ = 0, pTot_ = 0, stride_ = 0, capacity_ = 0;
     std::vector<int> blockOf_;
     std::vector<int> freeSlots_;
+    std::vector<Cons> coarseOld_; // coarse t^n copy (subcycled ghosts)
     int stepCount_ = 0;
     bool haveWave_ = false;
     Real sxC_ = 0, syC_ = 0, sxF_ = 0, syF_ = 0;

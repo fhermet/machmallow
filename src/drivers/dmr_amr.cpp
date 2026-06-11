@@ -52,8 +52,9 @@ Real startupDt(Real dt, int step) {
     return step < 10 ? dt * Real(0.3) : dt;
 }
 
-bool checkCorrectness(MetalContext& ctx, int nsteps) {
-    const AmrConfig cfg = dmrConfig();
+bool checkCorrectness(MetalContext& ctx, int nsteps, bool subcycle) {
+    AmrConfig cfg = dmrConfig();
+    cfg.subcycle = subcycle;
     Amr2 cpu(128, 32, 0, 0, 4, 1, cfg);
     AmrGpu gpu(ctx, 128, 32, 0, 0, 4, 1, cfg);
     setDmrCallbacks(cpu);
@@ -82,9 +83,10 @@ bool checkCorrectness(MetalContext& ctx, int nsteps) {
                                   std::fabs(double(pa[k]) - pb[k]) /
                                       (std::fabs(double(pa[k])) + 1e-3));
         }
-    std::printf("correctness (%d lock-steps): max rel diff = %.3e, "
+    std::printf("correctness (%d lock-steps%s): max rel diff = %.3e, "
                 "patches CPU %zu | GPU %zu\n",
-                nsteps, maxRel, cpu.patches.size(), gpu.patches.size());
+                nsteps, subcycle ? ", subcycled" : "", maxRel,
+                cpu.patches.size(), gpu.patches.size());
     return maxRel < 1e-2 && cpu.patches.size() == gpu.patches.size();
 }
 
@@ -136,7 +138,8 @@ int main(int argc, char** argv) {
     MetalContext ctx;
     std::printf("GPU: %s\n", ctx.device()->name()->utf8String());
 
-    if (!checkCorrectness(ctx, 30)) {
+    if (!checkCorrectness(ctx, 30, false) ||
+        !checkCorrectness(ctx, 30, true)) {
         std::fprintf(stderr, "FAIL: hybrid AMR diverges from CPU AMR\n");
         return EXIT_FAILURE;
     }
@@ -166,6 +169,16 @@ int main(int argc, char** argv) {
     std::printf("work vs uniform 1/%d: %.0f vs %.0f Mcell-steps (%.0f%%)\n",
                 2 * nyc, g.cellSteps / 1e6, uniWork,
                 100.0 * g.cellSteps / 1e6 / uniWork);
+
+    // Subcycled hybrid: half the coarse steps for the same physics.
+    AmrConfig subCfg = dmrConfig();
+    subCfg.subcycle = true;
+    AmrGpu gpuSub(ctx, nxc, nyc, 0, 0, 4, 1, subCfg);
+    setDmrCallbacks(gpuSub);
+    const BenchResult s = runDmr(gpuSub, false);
+    std::printf("hybrid subcycled: %d coarse steps in %.2f s (%.2fx vs "
+                "single-rate)\n",
+                s.steps, s.wall, g.wall / s.wall);
 
     if (!gpuOnly) {
         Amr2 cpu(nxc, nyc, 0, 0, 4, 1, dmrConfig());
