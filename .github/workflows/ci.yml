@@ -25,6 +25,7 @@ jobs:
           ./build/sod1d
           ./build/sod2d
           ./build/sod_amr
+          ./build/ml_amr
 
       # GPU harnesses: GitHub macOS runners expose a paravirtualized
       # Metal device that normally supports compute. If no device exists
@@ -46,4 +47,5 @@ jobs:
           ./build/kh_amr
           ./build/dmr_gpu 60
           ./build/dmr_amr 32 gpu
+          ./build/mlgpu_amr 32
           ./build/run cases/sod.ini

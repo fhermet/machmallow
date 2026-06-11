@@ -7,12 +7,17 @@ possibles, par thème et avec leur point d'entrée dans le code.
 
 ## Numérique
 
-- [ ] **AMR multi-niveaux (3+)** — généraliser `Amr2`/`AmrGpu` (2 niveaux)
-  en hiérarchie récursive : niveau L+1 raffine des blocs du niveau L.
-  Le subcycling devient récursif (2 sous-pas par niveau). Les briques
-  (prolongation, restriction, refluxing, ghosts θ-blendés) sont déjà
-  par-niveau ; le travail est surtout structurel.
-  *Entrée : `src/amr/Amr2.hpp`, `src/amr/AmrGpu.hpp`.*
+- [x] ~~AMR multi-niveaux (3+)~~ — fait : `AmrML` (CPU) + `AmrGpuML`
+  (hybride, un seul pool de slots pour tous les niveaux), récursion
+  Berger-Colella complète (subcycling, ghosts θ-blendés, refluxing par
+  paire, nesting forcé au regrid, cadence de regrid par niveau), clé
+  `amr.levels` dans `run`. Validé : AmrML(2) ≡ Amr2 bit-exact ; DMR
+  3 niveaux finest 1/1024 en 31 s (rouleaux KH de la ligne de glissement
+  résolus) ; conservation périodique au plancher fp32 à 3 niveaux.
+  **Restes** : checkpoint multi-niveaux ; perf des petits patchs profonds
+  (sync par niveau par sous-pas) ; précision ratio ~1.4 vs uniforme-fin
+  (churn de déraffinement + mémoire du contact → estimateur de
+  Richardson).
 - [ ] **Schémas d'ordre élevé** — WENO5 + RK3-SSP en option du
   MUSCL-Hancock. Demande 3 ghosts (NG=3) et des stencils plus larges →
   impact sur le ghost fill AMR et les kernels Metal.

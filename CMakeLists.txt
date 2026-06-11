@@ -59,6 +59,10 @@ target_link_libraries(shear PRIVATE mm_metal)
 add_executable(ml_amr src/drivers/ml_amr.cpp)
 target_include_directories(ml_amr PRIVATE src)
 
+# Hybrid multi-level AMR validation + 3-level DMR showcase.
+add_executable(mlgpu_amr src/drivers/mlgpu_amr.cpp)
+target_link_libraries(mlgpu_amr PRIVATE mm_metal)
+
 # Velocity tagging + periodic AMR validation (Kelvin-Helmholtz).
 add_executable(kh_amr src/drivers/kh_amr.cpp)
 target_link_libraries(kh_amr PRIVATE mm_metal)

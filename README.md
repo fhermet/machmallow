@@ -10,10 +10,11 @@ Apple Silicon.
 
 - **Schéma** : MUSCL-Hancock ordre 2 + solveur de Riemann HLLC ;
   flux visqueux centrés optionnels (Navier-Stokes compressible, Pr = 0.72)
-- **AMR** : hiérarchie de patchs block-structured (style AMReX) —
-  le CPU gère le regridding, le GPU calcule les flux ; subcycling
-  Berger-Colella optionnel (coarse à dt, fin à 2 × dt/2, ghosts
-  interpolés en temps, refluxing accumulé)
+- **AMR** : hiérarchie de patchs block-structured (style AMReX) à
+  profondeur arbitraire (`amr.levels`) — le CPU gère le regridding, le
+  GPU calcule les flux (tous les niveaux partagent un pool de slots) ;
+  subcycling Berger-Colella récursif (ghosts interpolés en temps,
+  refluxing par paire de niveaux, nesting garanti au regrid)
 - **GPU** : Metal via metal-cpp, shaders compilés au runtime (pas de Xcode requis),
   buffers partagés zéro-copie (mémoire unifiée)
 - **Précision** : float32

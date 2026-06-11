@@ -6,6 +6,8 @@
 
 #include "amr/Amr2.hpp"
 #include "amr/AmrGpu.hpp"
+#include "amr/AmrGpuML.hpp"
+#include "amr/AmrML.hpp"
 #include "backend/metal/MetalContext.hpp"
 #include "cases/Dmr.hpp"
 #include "core/Boundary.hpp"
@@ -125,6 +127,25 @@ void wireCase(const std::string& name, const Config& cfg, AMR& amr,
     }
 }
 
+// Bridge over the 2-level and multi-level interfaces.
+template <class AMR>
+std::size_t patchTotal(const AMR& amr) {
+    if constexpr (requires { amr.patches; }) {
+        return amr.patches.size();
+    } else {
+        std::size_t n = 0;
+        for (int l = 1; l < amr.numLevels(); ++l) n += amr.patchCount(l);
+        return n;
+    }
+}
+template <class AMR>
+void writeFrame(const std::string& base, const AMR& amr) {
+    if constexpr (requires { amr.patches; })
+        writeVthb(base, amr);
+    else
+        writeVthbML(base, amr);
+}
+
 template <class AMR>
 int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     const Real cfl = Real(cfg.getReal("cfl", 0.4));
@@ -139,11 +160,15 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     double t = 0;
     if (restart.empty()) {
         amr.init(s.ic);
-    } else {
+    } else if constexpr (requires { amr.patches; }) {
         amr.init(s.ic); // builds a valid hierarchy; then overwritten
         t = loadCheckpoint(restart, amr);
         std::printf("restarted from %s at t = %.6f\n", restart.c_str(),
                     t);
+    } else {
+        throw std::runtime_error(
+            "restart requires amr.levels = 2 (multi-level checkpoint is "
+            "on the roadmap)");
     }
     const double m0 = amr.totalMass();
 
@@ -159,12 +184,12 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
         t += dt;
         ++steps;
         cellSteps += amr.cellCount();
-        maxPatches = std::max(maxPatches, amr.patches.size());
+        maxPatches = std::max(maxPatches, patchTotal(amr));
         if (frames > 0 && (t >= nextFrame - 1e-12 || t >= tEnd)) {
             char name[256];
             std::snprintf(name, sizeof(name), "%s_%04d", prefix.c_str(),
                           ++frame);
-            writeVthb(name, amr);
+            writeFrame(name, amr);
             nextFrame += tEnd / frames;
         }
     }
@@ -191,9 +216,14 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
 
     const std::string ckPath = cfg.getString("output.checkpoint", "");
     if (!ckPath.empty()) {
-        saveCheckpoint(ckPath, amr, t);
-        std::printf("checkpoint: %s (restart = %s to resume)\n",
-                    ckPath.c_str(), ckPath.c_str());
+        if constexpr (requires { amr.patches; }) {
+            saveCheckpoint(ckPath, amr, t);
+            std::printf("checkpoint: %s (restart = %s to resume)\n",
+                        ckPath.c_str(), ckPath.c_str());
+        } else {
+            std::printf("warning: checkpoint requires amr.levels = 2 — "
+                        "skipped\n");
+        }
     }
     if (frame > 0)
         std::printf("output: %s_0001..%04d (.vthb, ParaView)\n",
@@ -208,6 +238,7 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
 AmrConfig amrConfigFrom(const Config& cfg) {
     AmrConfig a;
     a.blockC = cfg.getInt("amr.block", 8);
+    a.maxLevels = cfg.getInt("amr.levels", 2);
     a.tagThreshold = Real(cfg.getReal("amr.tag_threshold", 0.08));
     a.tagVelocity = Real(cfg.getReal("amr.tag_velocity", 0));
     a.regridEvery = cfg.getInt("amr.regrid_every", 4);
@@ -245,19 +276,33 @@ int main(int argc, char** argv) {
             throw std::runtime_error(
                 "grid.nx must be a multiple of amr.block");
 
-        std::printf("case %s | backend %s | grid %dx%d%s%s | mu %g\n",
+        std::printf("case %s | backend %s | grid %dx%d%s%s | levels %d | "
+                    "mu %g\n",
                     caseName.c_str(), backend.c_str(), nx, ny,
                     cfg.getBool("amr.enabled", true) ? " | AMR" : "",
-                    acfg.subcycle ? "+subcycle" : "", double(acfg.mu));
+                    acfg.subcycle ? "+subcycle" : "", acfg.maxLevels,
+                    double(acfg.mu));
 
+        // levels == 2 keeps the battle-tested pair classes (and their
+        // checkpoint support); deeper hierarchies use the ML classes.
         if (backend == "cpu") {
-            Amr2 amr(nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
+            if (acfg.maxLevels == 2) {
+                Amr2 amr(nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
+                wireCase(caseName, cfg, amr, s);
+                return runCase(amr, s, cfg);
+            }
+            AmrML amr(nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
             wireCase(caseName, cfg, amr, s);
             return runCase(amr, s, cfg);
         }
         if (backend == "hybrid") {
             MetalContext ctx;
-            AmrGpu amr(ctx, nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
+            if (acfg.maxLevels == 2) {
+                AmrGpu amr(ctx, nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
+                wireCase(caseName, cfg, amr, s);
+                return runCase(amr, s, cfg);
+            }
+            AmrGpuML amr(ctx, nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
             wireCase(caseName, cfg, amr, s);
             return runCase(amr, s, cfg);
         }
