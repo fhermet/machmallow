@@ -27,6 +27,7 @@ namespace mm {
 
 struct AmrConfig {
     int blockC = 8;             // block size in coarse cells
+    int maxLevels = 2;          // total levels incl. base (AmrML only)
     Real tagThreshold = Real(0.03); // relative density gradient
     Real tagVelocity = 0;       // velocity jump / sound speed (0 = off)
     int regridEvery = 4;
