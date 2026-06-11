@@ -200,8 +200,9 @@ inline void updateBody(device float4* q, device const float4* Fx,
              (P.dt / P.dy) * (Fy[id - P.tx] - Fy[id]);
 }
 
-// Max wave speed per direction: simdgroup reduction, then one atomic max
-// per simdgroup. Positive float bit patterns compare like uints.
+// Max wave speed per direction + min density (viscous dt limit):
+// simdgroup reduction, then one atomic per simdgroup. Positive float bit
+// patterns compare like uints.
 inline void waveBody(device const float4* q, device atomic_uint* smax,
                      constant Params& P, int base, int i, int j) {
     const float4 w = toPrim(q[base + j * P.tx + i]);
@@ -209,10 +210,13 @@ inline void waveBody(device const float4* q, device atomic_uint* smax,
 
     const float sx = simd_max(fabs(w.y) + c);
     const float sy = simd_max(fabs(w.z) + c);
+    const float rmn = simd_min(w.x);
     if (simd_is_first()) {
         atomic_fetch_max_explicit(&smax[0], as_type<uint>(sx),
                                   memory_order_relaxed);
         atomic_fetch_max_explicit(&smax[1], as_type<uint>(sy),
+                                  memory_order_relaxed);
+        atomic_fetch_min_explicit(&smax[2], as_type<uint>(rmn),
                                   memory_order_relaxed);
     }
 }

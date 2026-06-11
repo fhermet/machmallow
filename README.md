@@ -29,6 +29,22 @@ cmake --build build
 
 Prérequis : macOS 15+, Command Line Tools, CMake ≥ 3.24.
 
+## Lancer un cas
+
+```sh
+./build/run cases/dmr.ini      # DMR, AMR hybride subcyclé, sorties .vthb
+./build/run cases/sod.ini      # tube à choc de Sod
+./build/run cases/shear.ini    # couche de cisaillement visqueuse (NS)
+```
+
+Le fichier de cas (INI) choisit le preset physique (`case = sod | dmr |
+shear`), le backend (`cpu | hybrid`), la résolution, la viscosité `mu`,
+les paramètres AMR (`[amr]` : block, seuil de tagging, subcycling) et la
+cadence de sortie (`[output]`). Voir `cases/*.ini` pour des exemples
+commentés. Les exécutables `sod1d`, `sod2d`, `sod_amr`, `dmr_gpu`,
+`dmr_amr`, `shear` restent les harnais de validation (avec portes de
+régression).
+
 ## Feuille de route
 
 - [x] Phase 0 — socle : CMake, metal-cpp, benchmark saxpy

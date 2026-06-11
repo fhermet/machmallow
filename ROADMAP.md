@@ -29,12 +29,11 @@ possibles, par thème et avec leur point d'entrée dans le code.
 
 ## Physique
 
-- [ ] **Cas visqueux sur AMR** — la plomberie existe (les flux visqueux
-  vivent dans les mêmes tableaux de faces, le refluxing les traite
-  automatiquement ; `Params.mu` est câblé dans le pool). Il manque :
-  un `mu` exposé dans `AmrConfig`, la contrainte de dt visqueuse côté
-  `maxStableDtAll` GPU (réduction de ρ_min), et un cas de validation
-  (couche limite sur plaque plane, blasius).
+- [x] ~~Plomberie visqueuse AMR~~ — `AmrConfig.mu` câblé partout (CPU et
+  GPU, dt visqueux avec réduction ρ_min sur GPU). **Reste** : un cas de
+  validation visqueux *avec raffinement* (couche limite plaque plane /
+  Blasius) — le tagging actuel (gradient de ρ) ne raffine pas les
+  écoulements isochores, voir « tagging plus riche ».
 - [ ] **Parois no-slip** — BC réfléchissante actuelle = slip ; ajouter le
   miroir complet (u, v inversés) + paroi isotherme/adiabatique pour les
   cas NS muraux. *Entrée : `core/Boundary.hpp`.*
@@ -64,9 +63,11 @@ possibles, par thème et avec leur point d'entrée dans le code.
 - [ ] **CI** — GitHub Actions runner macOS : build + suite de régression
   (`sod1d`, `sod2d`, `sod_amr`, `shear`, `dmr_gpu`, `dmr_amr` en petit).
   Tous les drivers retournent déjà un code d'échec exploitable.
-- [ ] **Configs de cas en fichiers** — le dossier `cases/` prévu au départ
-  est vide ; les paramètres sont en dur dans les drivers. Un parseur
-  TOML/INI simple suffirait.
+- [x] ~~Configs de cas en fichiers~~ — fait : parseur INI header-only
+  (`core/Config.hpp`) + driver générique `run` (`./build/run
+  cases/dmr.ini`), presets sod/dmr/shear, backends cpu/hybrid, AMR et μ
+  configurables. Extension naturelle : nouveaux presets dans
+  `caseGeometry`/`wireCase` (src/drivers/run.cpp).
 - [ ] **Rendu temps réel** — fenêtre Metal affichant ρ pendant la simu
   (les données sont déjà dans des buffers GPU partagés — il ne manque
   qu'une passe de rendu et une boucle d'événements).

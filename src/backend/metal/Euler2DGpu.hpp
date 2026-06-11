@@ -11,6 +11,7 @@
 #include <bit>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <utility>
 
 namespace mm {
@@ -34,7 +35,8 @@ public:
         };
         q_ = mk(); xL_ = mk(); xR_ = mk(); yB_ = mk(); yT_ = mk();
         Fx_ = mk(); Fy_ = mk();
-        smax_ = ctx.device()->newBuffer(2 * sizeof(std::uint32_t),
+        // [0] = max sx, [1] = max sy, [2] = min rho (uint-ordered floats)
+        smax_ = ctx.device()->newBuffer(3 * sizeof(std::uint32_t),
                                         MTL::ResourceStorageModeShared);
     }
 
@@ -56,7 +58,7 @@ public:
         return GridRef{nx_, ny_, x0, y0, dx_, dy_, data()};
     }
 
-    // CFL time step from a GPU wave-speed reduction.
+    // CFL time step from a GPU reduction (convective + viscous limits).
     Real maxStableDt(Real cfl) {
         zeroWave();
         MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
@@ -64,7 +66,18 @@ public:
         cmd->commit();
         cmd->waitUntilCompleted();
         const auto [sx, sy] = waveSpeeds();
-        return cfl * std::min(dx_ / sx, dy_ / sy);
+        Real dt = cfl * std::min(dx_ / sx, dy_ / sy);
+        if (mu_ > 0)
+            dt = std::min(dt, viscousDtLimit(cfl, dx_, dy_,
+                                             mu_ / rhoMin()));
+        return dt;
+    }
+
+    static Real viscousDtLimit(Real cfl, Real dx, Real dy, Real nu) {
+        const Real nuEff =
+            nu * std::max(Real(4.0 / 3.0), GAMMA / PRANDTL);
+        return cfl * Real(0.5) /
+               (nuEff * (1 / (dx * dx) + 1 / (dy * dy)));
     }
 
     // One full step. Ghosts must be filled (via data()) by the caller.
@@ -80,6 +93,8 @@ public:
     void zeroWave() {
         auto* sm = static_cast<std::uint32_t*>(smax_->contents());
         sm[0] = sm[1] = 0;
+        sm[2] = std::bit_cast<std::uint32_t>(
+            std::numeric_limits<float>::max());
     }
     void encodeWave(MTL::CommandBuffer* cmd) const {
         MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
@@ -94,6 +109,10 @@ public:
     std::pair<Real, Real> waveSpeeds() const {
         const auto* sm = static_cast<const std::uint32_t*>(smax_->contents());
         return {std::bit_cast<float>(sm[0]), std::bit_cast<float>(sm[1])};
+    }
+    Real rhoMin() const {
+        const auto* sm = static_cast<const std::uint32_t*>(smax_->contents());
+        return std::bit_cast<float>(sm[2]);
     }
     void encodeStep(MTL::CommandBuffer* cmd, Real dt) const {
         const Params p = params(dt);

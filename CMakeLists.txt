@@ -54,3 +54,7 @@ target_link_libraries(dmr_amr PRIVATE mm_metal)
 # Phase 7: viscous (Navier-Stokes) validation, CPU + GPU parity.
 add_executable(shear src/drivers/shear.cpp)
 target_link_libraries(shear PRIVATE mm_metal)
+
+# Generic case runner driven by cases/*.ini files.
+add_executable(run src/drivers/run.cpp)
+target_link_libraries(run PRIVATE mm_metal)

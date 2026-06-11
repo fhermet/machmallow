@@ -64,8 +64,9 @@ public:
         };
         qP_ = mk(); xLP_ = mk(); xRP_ = mk(); yBP_ = mk(); yTP_ = mk();
         FxP_ = mk(); FyP_ = mk();
-        smaxP_ = ctx.device()->newBuffer(2 * sizeof(std::uint32_t),
+        smaxP_ = ctx.device()->newBuffer(3 * sizeof(std::uint32_t),
                                          MTL::ResourceStorageModeShared);
+        coarse_.setViscosity(cfg.mu);
         slotsBuf_ = ctx.device()->newBuffer(
             std::size_t(capacity_) * sizeof(std::uint32_t),
             MTL::ResourceStorageModeShared);
@@ -141,18 +142,25 @@ public:
     // except on the very first call.
     Real maxStableDtAll(Real cfl) {
         if (!haveWave_) {
-            coarse_.zeroWave();
-            auto* smp = static_cast<std::uint32_t*>(smaxP_->contents());
-            smp[0] = smp[1] = 0;
+            zeroWaveAll_();
             MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
             encodeWaveAll_(cmd);
             cmd->commit();
             cmd->waitUntilCompleted();
             readWave_();
         }
-        Real dt = cfl * std::min(dxc_() / sxC_, dyc_() / syC_);
+        const Real dxc = dxc_(), dyc = dyc_();
+        Real dt = cfl * std::min(dxc / sxC_, dyc / syC_);
+        if (cfg_.mu > 0)
+            dt = std::min(dt, Euler2DGpu::viscousDtLimit(
+                                  cfl, dxc, dyc, cfg_.mu / rhoMin_));
         if (sxF_ > 0) {
-            Real dtF = cfl * std::min(dxc_() / 2 / sxF_, dyc_() / 2 / syF_);
+            Real dtF = cfl * std::min(dxc / 2 / sxF_, dyc / 2 / syF_);
+            if (cfg_.mu > 0)
+                dtF = std::min(dtF,
+                               Euler2DGpu::viscousDtLimit(
+                                   cfl, dxc / 2, dyc / 2,
+                                   cfg_.mu / rhoMin_));
             if (cfg_.subcycle) dtF *= 2; // fine takes two half steps
             dt = std::min(dt, dtF);
         }
@@ -305,6 +313,8 @@ private:
         coarse_.zeroWave();
         auto* smp = static_cast<std::uint32_t*>(smaxP_->contents());
         smp[0] = smp[1] = 0;
+        smp[2] = std::bit_cast<std::uint32_t>(
+            std::numeric_limits<float>::max());
     }
 
     template <class Lap>
@@ -392,10 +402,13 @@ private:
         const auto [sx, sy] = coarse_.waveSpeeds();
         sxC_ = sx;
         syC_ = sy;
+        rhoMin_ = coarse_.rhoMin();
         const auto* smp =
             static_cast<const std::uint32_t*>(smaxP_->contents());
         sxF_ = patches.empty() ? Real(0) : std::bit_cast<float>(smp[0]);
         syF_ = patches.empty() ? Real(0) : std::bit_cast<float>(smp[1]);
+        if (!patches.empty())
+            rhoMin_ = std::min(rhoMin_, std::bit_cast<float>(smp[2]));
         haveWave_ = true;
     }
 
@@ -403,8 +416,12 @@ private:
                      MTL::ComputePipelineState* pso,
                      std::initializer_list<MTL::Buffer*> bufs, Real dt,
                      int w, int h, int, int) const {
+        const float kT = cfg_.mu > 0
+            ? cfg_.mu * GAMMA / ((GAMMA - 1) * PRANDTL)
+            : 0;
         const Euler2DGpu::Params p{pTot_, pTot_,  nf_, nf_,
-                                   dxc_() / 2, dyc_() / 2, dt, stride_};
+                                   dxc_() / 2, dyc_() / 2, dt, stride_,
+                                   cfg_.mu, kT};
         MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
         enc->setComputePipelineState(pso);
         int slot = 0;
@@ -590,6 +607,7 @@ private:
     int stepCount_ = 0;
     bool haveWave_ = false;
     Real sxC_ = 0, syC_ = 0, sxF_ = 0, syF_ = 0;
+    Real rhoMin_ = Real(1);
 
     MTL::Library* lib_ = nullptr;
     MTL::ComputePipelineState *predictorP_ = nullptr, *fluxXP_ = nullptr,
