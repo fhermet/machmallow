@@ -1,0 +1,135 @@
+#pragma once
+
+// GPU implementation of the unsplit MUSCL-Hancock step. The conserved
+// state lives in a shared (unified memory) buffer: the CPU fills ghost
+// cells and does I/O on the very same memory the GPU computes on.
+
+#include "backend/metal/MetalContext.hpp"
+#include "core/Grid.hpp"
+
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+#include <initializer_list>
+
+namespace mm {
+
+class Euler2DGpu {
+public:
+    Euler2DGpu(MetalContext& ctx, int nx, int ny, Real dx, Real dy)
+        : ctx_(ctx), nx_(nx), ny_(ny), tx_(nx + 2 * NG), ty_(ny + 2 * NG),
+          dx_(dx), dy_(dy) {
+        lib_ = ctx.compileLibrary("euler2d.metal");
+        predictor_ = ctx.makePipeline(lib_, "predictor");
+        fluxX_ = ctx.makePipeline(lib_, "flux_x");
+        fluxY_ = ctx.makePipeline(lib_, "flux_y");
+        update_ = ctx.makePipeline(lib_, "update_cons");
+        wave_ = ctx.makePipeline(lib_, "wave_speed");
+
+        const std::size_t bytes = std::size_t(tx_) * ty_ * sizeof(Cons);
+        const auto mk = [&] {
+            return ctx.device()->newBuffer(bytes,
+                                           MTL::ResourceStorageModeShared);
+        };
+        q_ = mk(); xL_ = mk(); xR_ = mk(); yB_ = mk(); yT_ = mk();
+        Fx_ = mk(); Fy_ = mk();
+        smax_ = ctx.device()->newBuffer(2 * sizeof(std::uint32_t),
+                                        MTL::ResourceStorageModeShared);
+    }
+
+    ~Euler2DGpu() {
+        for (MTL::Buffer* b : {q_, xL_, xR_, yB_, yT_, Fx_, Fy_, smax_})
+            b->release();
+        for (MTL::ComputePipelineState* p :
+             {predictor_, fluxX_, fluxY_, update_, wave_})
+            p->release();
+        lib_->release();
+    }
+
+    Euler2DGpu(const Euler2DGpu&) = delete;
+    Euler2DGpu& operator=(const Euler2DGpu&) = delete;
+
+    // CPU-side view of the GPU state (ghosts included) for IC/BC/I-O.
+    Cons* data() { return static_cast<Cons*>(q_->contents()); }
+    GridRef ref(Real x0, Real y0) {
+        return GridRef{nx_, ny_, x0, y0, dx_, dy_, data()};
+    }
+
+    // CFL time step from a GPU wave-speed reduction.
+    Real maxStableDt(Real cfl) {
+        auto* sm = static_cast<std::uint32_t*>(smax_->contents());
+        sm[0] = sm[1] = 0;
+
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
+        enc->setComputePipelineState(wave_);
+        enc->setBuffer(q_, 0, 0);
+        enc->setBuffer(smax_, 0, 1);
+        const Params p = params(0);
+        enc->setBytes(&p, sizeof(p), 2);
+        dispatch(enc, nx_, ny_);
+        enc->endEncoding();
+        cmd->commit();
+        cmd->waitUntilCompleted();
+
+        const Real sx = std::bit_cast<float>(sm[0]);
+        const Real sy = std::bit_cast<float>(sm[1]);
+        return cfl * std::min(dx_ / sx, dy_ / sy);
+    }
+
+    // One full step. Ghosts must be filled (via data()) by the caller.
+    void step(Real dt) {
+        const Params p = params(dt);
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encode(cmd, predictor_, {q_, xL_, xR_, yB_, yT_}, p, tx_ - 2,
+               ty_ - 2);
+        encode(cmd, fluxX_, {xL_, xR_, Fx_}, p, nx_ + 1, ny_);
+        encode(cmd, fluxY_, {yB_, yT_, Fy_}, p, nx_, ny_ + 1);
+        encode(cmd, update_, {q_, Fx_, Fy_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+
+private:
+    struct Params {
+        std::int32_t tx, ty, nx, ny;
+        float dx, dy, dt;
+    };
+
+    Params params(Real dt) const {
+        return {tx_, ty_, nx_, ny_, dx_, dy_, dt};
+    }
+
+    static void dispatch(MTL::ComputeCommandEncoder* enc, int w, int h) {
+        enc->dispatchThreads(MTL::Size(w, h, 1), MTL::Size(16, 16, 1));
+    }
+
+    // One encoder per kernel: Metal's hazard tracking orders them.
+    void encode(MTL::CommandBuffer* cmd, MTL::ComputePipelineState* pso,
+                std::initializer_list<MTL::Buffer*> bufs, const Params& p,
+                int w, int h) const {
+        MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
+        enc->setComputePipelineState(pso);
+        int slot = 0;
+        for (MTL::Buffer* b : bufs) enc->setBuffer(b, 0, slot++);
+        enc->setBytes(&p, sizeof(p), slot);
+        dispatch(enc, w, h);
+        enc->endEncoding();
+    }
+
+    MetalContext& ctx_;
+    int nx_, ny_, tx_, ty_;
+    Real dx_, dy_;
+    MTL::Library* lib_ = nullptr;
+    MTL::ComputePipelineState *predictor_ = nullptr, *fluxX_ = nullptr,
+                              *fluxY_ = nullptr, *update_ = nullptr,
+                              *wave_ = nullptr;
+    MTL::Buffer *q_ = nullptr, *xL_ = nullptr, *xR_ = nullptr,
+                *yB_ = nullptr, *yT_ = nullptr, *Fx_ = nullptr,
+                *Fy_ = nullptr, *smax_ = nullptr;
+};
+
+static_assert(sizeof(Cons) == 4 * sizeof(float),
+              "Cons must match float4 layout");
+
+} // namespace mm

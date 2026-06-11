@@ -13,7 +13,8 @@
 
 namespace mm {
 
-inline void writeVti(const std::string& path, const Grid& g) {
+template <class G>
+inline void writeVti(const std::string& path, const G& g) {
     const std::size_t n = std::size_t(g.nx) * g.ny;
     std::vector<float> rho(n), u(n), v(n), p(n);
     for (int j = 0; j < g.ny; ++j)

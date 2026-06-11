@@ -8,27 +8,25 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
-add_executable(machmallow
-  src/main.cpp
+# Metal backend: device/queue wrapper + metal-cpp implementation TU.
+# Shaders are compiled at runtime (no Xcode required).
+add_library(mm_metal STATIC
   src/backend/metal/MetalContext.cpp
   src/backend/metal/metal_impl.cpp
 )
-
-target_include_directories(machmallow PRIVATE
-  src
-  third_party/metal-cpp
-)
-
-target_link_libraries(machmallow PRIVATE
+target_include_directories(mm_metal PUBLIC src third_party/metal-cpp)
+target_link_libraries(mm_metal PUBLIC
   "-framework Metal"
   "-framework Foundation"
   "-framework QuartzCore"
 )
-
-# Shaders are compiled at runtime (no Xcode required) — point at the source tree.
-target_compile_definitions(machmallow PRIVATE
+target_compile_definitions(mm_metal PUBLIC
   MACHMALLOW_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
 )
+
+# Phase 0: Metal toolchain validation benchmark.
+add_executable(machmallow src/main.cpp)
+target_link_libraries(machmallow PRIVATE mm_metal)
 
 # Phase 1: 1D Sod shock tube validation (CPU only).
 add_executable(sod1d src/drivers/sod1d.cpp)
@@ -40,3 +38,7 @@ target_include_directories(sod2d PRIVATE src)
 
 add_executable(dmr src/drivers/dmr.cpp)
 target_include_directories(dmr PRIVATE src)
+
+# Phase 3: GPU step, validated against the CPU path.
+add_executable(dmr_gpu src/drivers/dmr_gpu.cpp)
+target_link_libraries(dmr_gpu PRIVATE mm_metal)
