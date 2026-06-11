@@ -8,9 +8,12 @@ Apple Silicon.
 
 ## Caractéristiques
 
-- **Schéma** : MUSCL-Hancock ordre 2 + solveur de Riemann HLLC
+- **Schéma** : MUSCL-Hancock ordre 2 + solveur de Riemann HLLC ;
+  flux visqueux centrés optionnels (Navier-Stokes compressible, Pr = 0.72)
 - **AMR** : hiérarchie de patchs block-structured (style AMReX) —
-  le CPU gère le regridding, le GPU calcule les flux
+  le CPU gère le regridding, le GPU calcule les flux ; subcycling
+  Berger-Colella optionnel (coarse à dt, fin à 2 × dt/2, ghosts
+  interpolés en temps, refluxing accumulé)
 - **GPU** : Metal via metal-cpp, shaders compilés au runtime (pas de Xcode requis),
   buffers partagés zéro-copie (mémoire unifiée)
 - **Précision** : float32
@@ -35,7 +38,7 @@ Prérequis : macOS 15+, Command Line Tools, CMake ≥ 3.24.
 - [x] Phase 4 — AMR 2 niveaux CPU (L1 = 1.05× l'uniforme fin pour 63% du travail, conservation au plancher fp32)
 - [x] Phase 5 — AMR hybride CPU/GPU (DMR 1/512 : 150 Mcell/s, 30% du travail uniforme, 4.4× l'AMR CPU)
 - [x] Phase 6 — profiling et consolidation (ghost fill par bandes + CPU parallèle via GCD)
-- [ ] Phase 7 — subcycling, termes visqueux (Navier-Stokes)
+- [x] Phase 7 — subcycling Berger-Colella (1.67× sur DMR 1/512) + termes visqueux NS (ordre 2.33 vs erf, parité GPU)
 
 ## Performances (Apple M4, 10 cœurs GPU, 16 GB)
 

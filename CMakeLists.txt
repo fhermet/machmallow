@@ -50,3 +50,7 @@ target_link_libraries(dmr_gpu PRIVATE mm_metal)
 # Phase 5: hybrid CPU/GPU AMR on the double Mach reflection.
 add_executable(dmr_amr src/drivers/dmr_amr.cpp)
 target_link_libraries(dmr_amr PRIVATE mm_metal)
+
+# Phase 7: viscous (Navier-Stokes) validation, CPU + GPU parity.
+add_executable(shear src/drivers/shear.cpp)
+target_link_libraries(shear PRIVATE mm_metal)

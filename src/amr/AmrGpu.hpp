@@ -294,10 +294,10 @@ private:
     void encodePoolStep_(MTL::CommandBuffer* cmd, Real dt) const {
         encodePool_(cmd, predictorP_, {qP_, xLP_, xRP_, yBP_, yTP_}, dt,
                     pTot_ - 2, pTot_ - 2, 1, 1);
-        encodePool_(cmd, fluxXP_, {xLP_, xRP_, FxP_}, dt, nf_ + 1, nf_,
-                    NG - 1, NG);
-        encodePool_(cmd, fluxYP_, {yBP_, yTP_, FyP_}, dt, nf_, nf_ + 1, NG,
-                    NG - 1);
+        encodePool_(cmd, fluxXP_, {xLP_, xRP_, qP_, FxP_}, dt, nf_ + 1,
+                    nf_, NG - 1, NG);
+        encodePool_(cmd, fluxYP_, {yBP_, yTP_, qP_, FyP_}, dt, nf_,
+                    nf_ + 1, NG, NG - 1);
         encodePool_(cmd, updateP_, {qP_, FxP_, FyP_}, dt, nf_, nf_, NG, NG);
     }
 

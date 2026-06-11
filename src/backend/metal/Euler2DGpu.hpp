@@ -99,10 +99,13 @@ public:
         const Params p = params(dt);
         encode(cmd, predictor_, {q_, xL_, xR_, yB_, yT_}, p, tx_ - 2,
                ty_ - 2);
-        encode(cmd, fluxX_, {xL_, xR_, Fx_}, p, nx_ + 1, ny_);
-        encode(cmd, fluxY_, {yB_, yT_, Fy_}, p, nx_, ny_ + 1);
+        encode(cmd, fluxX_, {xL_, xR_, q_, Fx_}, p, nx_ + 1, ny_);
+        encode(cmd, fluxY_, {yB_, yT_, q_, Fy_}, p, nx_, ny_ + 1);
         encode(cmd, update_, {q_, Fx_, Fy_}, p, nx_, ny_);
     }
+
+    // Dynamic viscosity for the flux kernels (0 = inviscid Euler).
+    void setViscosity(Real mu) { mu_ = mu; }
 
     // Step fluxes, CPU-visible (needed by AMR refluxing).
     const Cons* fx() const { return static_cast<const Cons*>(Fx_->contents()); }
@@ -112,11 +115,14 @@ public:
         std::int32_t tx, ty, nx, ny;
         float dx, dy, dt;
         std::int32_t stride; // pool kernels only; 0 here
+        float mu, kT;        // viscosity / heat conductivity (0 = Euler)
     };
 
 private:
     Params params(Real dt) const {
-        return {tx_, ty_, nx_, ny_, dx_, dy_, dt, 0};
+        const float kT =
+            mu_ > 0 ? mu_ * GAMMA / ((GAMMA - 1) * PRANDTL) : 0;
+        return {tx_, ty_, nx_, ny_, dx_, dy_, dt, 0, mu_, kT};
     }
 
     static void dispatch(MTL::ComputeCommandEncoder* enc, int w, int h) {
@@ -139,6 +145,7 @@ private:
     MetalContext& ctx_;
     int nx_, ny_, tx_, ty_;
     Real dx_, dy_;
+    Real mu_ = 0;
     MTL::Library* lib_ = nullptr;
     MTL::ComputePipelineState *predictor_ = nullptr, *fluxX_ = nullptr,
                               *fluxY_ = nullptr, *update_ = nullptr,
