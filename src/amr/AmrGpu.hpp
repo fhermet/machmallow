@@ -14,11 +14,13 @@
 #include "core/Parallel.hpp"
 #include "numerics/Limiter.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace mm {
@@ -227,6 +229,26 @@ public:
 
     int blockCount() const { return nbx_ * nby_; }
     int fineCells() const { return nf_; }
+    int stepCount() const { return stepCount_; }
+
+    // Rebuild the patch set at the given blocks (checkpoint restart).
+    // Patch data is prolongated then expected to be overwritten by the
+    // caller; stepCount keeps the regrid cadence in phase.
+    void restoreBlocks(const std::vector<std::pair<int, int>>& blocks,
+                       int stepCount) {
+        for (const Patch& p : patches) freeSlots_.push_back(p.slot);
+        patches.clear();
+        std::fill(blockOf_.begin(), blockOf_.end(), -1);
+        for (const auto& [bi, bj] : blocks) {
+            patches.push_back(makePatch_(bi, bj));
+            blockOf_[std::size_t(bj) * nbx_ + bi] = int(patches.size()) - 1;
+        }
+        auto* slots = static_cast<std::uint32_t*>(slotsBuf_->contents());
+        for (std::size_t k = 0; k < patches.size(); ++k)
+            slots[k] = std::uint32_t(patches[k].slot);
+        stepCount_ = stepCount;
+        haveWave_ = false; // dt must be re-reduced from the loaded state
+    }
 
     void regrid() {
         const GridRef c = coarseRef();

@@ -11,10 +11,12 @@
 #include "amr/AmrGpu.hpp"
 #include "backend/metal/MetalContext.hpp"
 #include "core/Boundary.hpp"
+#include "io/Checkpoint.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 namespace {
 
@@ -53,6 +55,7 @@ void wire(AMR& amr) {
 
 int main() {
     constexpr int N = 64;
+    std::filesystem::create_directories("out");
     MetalContext ctx;
 
     // 1 + 2: velocity tagging and closed-domain conservation (CPU ref).
@@ -128,6 +131,61 @@ int main() {
                     maxRel, cpu.patches.size(), gpu.patches.size());
         if (maxRel > 1e-2 || cpu.patches.size() != gpu.patches.size()) {
             std::fprintf(stderr, "FAIL: hybrid diverges on periodic KH\n");
+            return EXIT_FAILURE;
+        }
+    }
+
+    // 4: checkpoint round trip — a split run (40 steps, save, restore
+    // into a fresh hierarchy, 40 more) must be bit-identical to a
+    // straight 80-step run: dt and regrid cadence are pure functions of
+    // the saved state.
+    {
+        Amr2 straight(N, N, 0, 0, 1, 1, khConfig());
+        Amr2 split(N, N, 0, 0, 1, 1, khConfig());
+        wire(straight);
+        wire(split);
+        straight.init(khIc);
+        split.init(khIc);
+
+        double ts = 0, tp = 0;
+        for (int s = 0; s < 80; ++s) {
+            const Real dt = straight.maxStableDtAll(CFL);
+            straight.step(dt, ts);
+            ts += dt;
+        }
+        for (int s = 0; s < 40; ++s) {
+            const Real dt = split.maxStableDtAll(CFL);
+            split.step(dt, tp);
+            tp += dt;
+        }
+        saveCheckpoint("out/kh_test.ck", split, tp);
+        Amr2 resumed(N, N, 0, 0, 1, 1, khConfig());
+        wire(resumed);
+        resumed.init(khIc);
+        tp = loadCheckpoint("out/kh_test.ck", resumed);
+        for (int s = 0; s < 40; ++s) {
+            const Real dt = resumed.maxStableDtAll(CFL);
+            resumed.step(dt, tp);
+            tp += dt;
+        }
+
+        double maxAbs = 0;
+        for (int j = NG; j < NG + N; ++j)
+            for (int i = NG; i < NG + N; ++i) {
+                const Real* pa = &straight.coarse.at(i, j).rho;
+                const Real* pb = &resumed.coarse.at(i, j).rho;
+                for (int k = 0; k < NVARS; ++k)
+                    maxAbs = std::max(
+                        maxAbs, std::fabs(double(pa[k]) - pb[k]));
+            }
+        std::printf("checkpoint round trip (40+40 vs 80 steps): max "
+                    "|diff| = %.3e, patches %zu | %zu\n",
+                    maxAbs, straight.patches.size(),
+                    resumed.patches.size());
+        if (maxAbs != 0 ||
+            straight.patches.size() != resumed.patches.size()) {
+            std::fprintf(stderr,
+                         "FAIL: restart is not bit-reproducible\n");
             return EXIT_FAILURE;
         }
     }

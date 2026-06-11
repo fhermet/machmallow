@@ -10,6 +10,7 @@
 #include "cases/Dmr.hpp"
 #include "core/Boundary.hpp"
 #include "core/Config.hpp"
+#include "io/Checkpoint.hpp"
 #include "io/VthbWriter.hpp"
 
 #include <chrono>
@@ -134,10 +135,20 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     std::filesystem::create_directories(
         std::filesystem::path(prefix).parent_path());
 
-    amr.init(s.ic);
+    const std::string restart = cfg.getString("restart", "");
+    double t = 0;
+    if (restart.empty()) {
+        amr.init(s.ic);
+    } else {
+        amr.init(s.ic); // builds a valid hierarchy; then overwritten
+        t = loadCheckpoint(restart, amr);
+        std::printf("restarted from %s at t = %.6f\n", restart.c_str(),
+                    t);
+    }
     const double m0 = amr.totalMass();
 
-    double t = 0, nextFrame = frames > 0 ? tEnd / frames : 1e30;
+    double nextFrame = frames > 0 ? tEnd / frames : 1e30;
+    while (frames > 0 && nextFrame <= t) nextFrame += tEnd / frames;
     int steps = 0, frame = 0;
     std::size_t cellSteps = 0, maxPatches = 0;
     const auto t0 = Clock::now();
@@ -177,6 +188,13 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
                 double(rhoMin), double(rhoMax),
                 std::fabs(amr.totalMass() - m0) / m0,
                 s.periodicX && s.periodicY ? " (closed domain)" : "");
+
+    const std::string ckPath = cfg.getString("output.checkpoint", "");
+    if (!ckPath.empty()) {
+        saveCheckpoint(ckPath, amr, t);
+        std::printf("checkpoint: %s (restart = %s to resume)\n",
+                    ckPath.c_str(), ckPath.c_str());
+    }
     if (frame > 0)
         std::printf("output: %s_0001..%04d (.vthb, ParaView)\n",
                     prefix.c_str(), frame);

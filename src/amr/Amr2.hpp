@@ -15,6 +15,7 @@
 #include "numerics/Limiter.hpp"
 #include "solver/Muscl2D.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -152,6 +153,21 @@ public:
     }
 
     int blockCount() const { return nbx_ * nby_; }
+    int stepCount() const { return stepCount_; }
+
+    // Rebuild the patch set at the given blocks (checkpoint restart).
+    // Patch data is prolongated then expected to be overwritten by the
+    // caller; stepCount keeps the regrid cadence in phase.
+    void restoreBlocks(const std::vector<std::pair<int, int>>& blocks,
+                       int stepCount) {
+        patches.clear();
+        std::fill(blockOf_.begin(), blockOf_.end(), -1);
+        for (const auto& [bi, bj] : blocks) {
+            patches.push_back(makePatch_(bi, bj));
+            blockOf_[std::size_t(bj) * nbx_ + bi] = int(patches.size()) - 1;
+        }
+        stepCount_ = stepCount;
+    }
 
     void regrid() {
         const int nx = coarse.nx, ny = coarse.ny, bc = cfg_.blockC;

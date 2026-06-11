@@ -65,9 +65,10 @@ possibles, par thème et avec leur point d'entrée dans le code.
 
 ## Qualité / outillage
 
-- [ ] **CI** — GitHub Actions runner macOS : build + suite de régression
-  (`sod1d`, `sod2d`, `sod_amr`, `shear`, `dmr_gpu`, `dmr_amr` en petit).
-  Tous les drivers retournent déjà un code d'échec exploitable.
+- [x] ~~CI~~ — fait : `.github/workflows/ci.yml` (macos-15) — build + les
+  3 harnais CPU obligatoires + les harnais GPU avec sonde Metal (skip
+  propre si le runner n'a pas de device, échec franc sinon). Attention :
+  les minutes macOS comptent 10× sur les dépôts privés.
 - [x] ~~Configs de cas en fichiers~~ — fait : parseur INI header-only
   (`core/Config.hpp`) + driver générique `run` (`./build/run
   cases/dmr.ini`), presets sod/dmr/shear, backends cpu/hybrid, AMR et μ
@@ -76,8 +77,11 @@ possibles, par thème et avec leur point d'entrée dans le code.
 - [ ] **Rendu temps réel** — fenêtre Metal affichant ρ pendant la simu
   (les données sont déjà dans des buffers GPU partagés — il ne manque
   qu'une passe de rendu et une boucle d'événements).
-- [ ] **Restart / checkpointing** — dump binaire de la hiérarchie pour
-  reprendre un calcul long.
+- [x] ~~Restart / checkpointing~~ — fait : `io/Checkpoint.hpp` (dump
+  binaire coarse + patchs + t + compteur de pas, `restoreBlocks` dans les
+  deux classes AMR), clés `output.checkpoint` / `restart` dans `run`.
+  Le run coupé/repris est bit-identique au run continu (porte dans
+  `kh_amr`).
 
 ## Leçons à retenir (notes de conception)
 
