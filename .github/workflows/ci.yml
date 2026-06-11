@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j 3
+
+      # CPU-only validation harnesses: must always pass.
+      - name: CPU validation
+        run: |
+          ./build/sod1d
+          ./build/sod2d
+          ./build/sod_amr
+
+      # GPU harnesses: GitHub macOS runners expose a paravirtualized
+      # Metal device that normally supports compute. If no device exists
+      # at all we skip with a warning; any other failure is a real error.
+      - name: GPU validation
+        run: |
+          set +e
+          probe=$(./build/machmallow 2>&1); code=$?
+          set -e
+          echo "$probe"
+          if [ $code -ne 0 ]; then
+            if echo "$probe" | grep -q "no Metal device"; then
+              echo "::warning::No Metal device on this runner — GPU tests skipped"
+              exit 0
+            fi
+            exit $code
+          fi
+          ./build/shear
+          ./build/kh_amr
+          ./build/dmr_gpu 60
+          ./build/dmr_amr 32 gpu
+          ./build/run cases/sod.ini
