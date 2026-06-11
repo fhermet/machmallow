@@ -39,6 +39,10 @@ target_include_directories(sod2d PRIVATE src)
 add_executable(dmr src/drivers/dmr.cpp)
 target_include_directories(dmr PRIVATE src)
 
+# Phase 4: 2-level AMR validation on the Sod tube (CPU only).
+add_executable(sod_amr src/drivers/sod_amr.cpp)
+target_include_directories(sod_amr PRIVATE src)
+
 # Phase 3: GPU step, validated against the CPU path.
 add_executable(dmr_gpu src/drivers/dmr_gpu.cpp)
 target_link_libraries(dmr_gpu PRIVATE mm_metal)

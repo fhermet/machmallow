@@ -32,7 +32,7 @@ Prérequis : macOS 15+, Command Line Tools, CMake ≥ 3.24.
 - [x] Phase 1 — solveur 1D CPU (Sod, HLLC + MUSCL-Hancock, ordre observé 0.9 vs exact)
 - [x] Phase 2 — 2D uniforme CPU + writer VTK (Sod diagonal ordre 0.97, DMR 480×120 OK)
 - [x] Phase 3 — port GPU du solveur 2D (écart fp32 ~1e-5 vs CPU, 298 Mcell/s à 2880×720, ~10× CPU)
-- [ ] Phase 4 — AMR 2 niveaux CPU (tagging, ghost fill, refluxing)
+- [x] Phase 4 — AMR 2 niveaux CPU (L1 = 1.05× l'uniforme fin pour 63% du travail, conservation au plancher fp32)
 - [ ] Phase 5 — AMR hybride CPU/GPU, Double Mach Reflection
 - [ ] Phase 6 — profiling et consolidation
 - [ ] Phase 7 — subcycling, termes visqueux (Navier-Stokes)
