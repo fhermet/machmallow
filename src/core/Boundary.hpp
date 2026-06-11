@@ -37,6 +37,24 @@ inline void fillTransmissiveTop(G& g) {
             g.at(i, NG + g.ny + gj) = g.at(i, NG + g.ny - 1);
 }
 
+// Periodic wrap: ghost columns/rows copy the opposite interior.
+template <class G>
+inline void fillPeriodicX(G& g) {
+    for (int j = 0; j < g.toty(); ++j)
+        for (int k = 0; k < NG; ++k) {
+            g.at(k, j) = g.at(k + g.nx, j);
+            g.at(NG + g.nx + k, j) = g.at(NG + k, j);
+        }
+}
+template <class G>
+inline void fillPeriodicY(G& g) {
+    for (int i = 0; i < g.totx(); ++i)
+        for (int k = 0; k < NG; ++k) {
+            g.at(i, k) = g.at(i, k + g.ny);
+            g.at(i, NG + g.ny + k) = g.at(i, NG + k);
+        }
+}
+
 // Reflecting wall: mirror state, flip normal momentum.
 template <class G>
 inline void fillReflectiveBottom(G& g) {

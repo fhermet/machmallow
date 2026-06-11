@@ -20,9 +20,11 @@ possibles, par thème et avec leur point d'entrée dans le code.
 - [ ] **Ratio de raffinement 4** — réduit le nombre de niveaux nécessaires ;
   touche prolongation/restriction/refluxing (4 faces fines par face
   grossière) et le θ-blend (4 sous-pas).
-- [ ] **Tagging plus riche** — critère sur le gradient de pression ou
-  l'estimateur de Richardson, en plus du gradient de densité.
-  *Entrée : `regrid()` dans les deux classes AMR.*
+- [x] ~~Tagging plus riche~~ — fait : critère vitesse
+  (`AmrConfig.tagVelocity`, saut de vitesse normalisé par c locale) en
+  plus du gradient de densité ; validé par `kh_amr` (cisaillement
+  isochore raffiné, invisible au critère densité). Extensions possibles :
+  gradient de pression, estimateur de Richardson.
 - [ ] **Gamma / gaz paramétrables** — `GAMMA` est `constexpr`
   (`core/Types.hpp`) et dupliqué dans le shader ; passer en paramètre de
   cas (struct physique + `Params` GPU).
@@ -37,9 +39,12 @@ possibles, par thème et avec leur point d'entrée dans le code.
 - [ ] **Parois no-slip** — BC réfléchissante actuelle = slip ; ajouter le
   miroir complet (u, v inversés) + paroi isotherme/adiabatique pour les
   cas NS muraux. *Entrée : `core/Boundary.hpp`.*
-- [ ] **Instabilités KH / RT** — cas tests spectaculaires et sensibles à la
-  diffusion numérique (étaient dans les options de départ) ; KH demande
-  des BCs périodiques (nouveau type de bord, simple).
+- [x] ~~Kelvin-Helmholtz + BCs périodiques~~ — fait : domaines périodiques
+  complets sur AMR (wrap des ghosts de patchs, du refluxing aux raccords
+  et des masques de bords ; conservation exacte vérifiée en domaine
+  fermé par `kh_amr`), preset `kh` dans `run` (`cases/kh.ini`).
+- [ ] **Rayleigh-Taylor** — demande les termes sources (gravité), voir
+  ci-dessous ; les BCs et le tagging nécessaires existent désormais.
 - [ ] **Termes sources** — gravité (RT), pour commencer en source splittée.
 
 ## Performance

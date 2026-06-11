@@ -114,10 +114,14 @@ public:
     }
 
     unsigned domainSides(const Patch& p) const {
-        return (p.bi == 0 ? SideLeft : 0u) |
-               (p.bi == nbx_ - 1 ? SideRight : 0u) |
-               (p.bj == 0 ? SideBottom : 0u) |
-               (p.bj == nby_ - 1 ? SideTop : 0u);
+        unsigned s = 0;
+        if (!cfg_.periodicX)
+            s |= (p.bi == 0 ? SideLeft : 0u) |
+                 (p.bi == nbx_ - 1 ? SideRight : 0u);
+        if (!cfg_.periodicY)
+            s |= (p.bj == 0 ? SideBottom : 0u) |
+                 (p.bj == nby_ - 1 ? SideTop : 0u);
+        return s;
     }
 
     template <class IC>
@@ -241,8 +245,27 @@ public:
                                           c.at(NG + im, NG + j).rho);
                 const Real ey = std::fabs(c.at(NG + i, NG + jp).rho -
                                           c.at(NG + i, NG + jm).rho);
-                tag[std::size_t(j) * nx + i] =
-                    std::max(ex, ey) / r0 > cfg_.tagThreshold;
+                bool t = std::max(ex, ey) / r0 > cfg_.tagThreshold;
+                if (!t && cfg_.tagVelocity > 0) {
+                    const auto uOf = [&](int a, int b) {
+                        const Cons& q = c.at(NG + a, NG + b);
+                        return q.mx / std::max(q.rho, RHO_FLOOR);
+                    };
+                    const auto vOf = [&](int a, int b) {
+                        const Cons& q = c.at(NG + a, NG + b);
+                        return q.my / std::max(q.rho, RHO_FLOOR);
+                    };
+                    const Real du = std::max(
+                        std::fabs(uOf(ip, j) - uOf(im, j)),
+                        std::fabs(uOf(i, jp) - uOf(i, jm)));
+                    const Real dv = std::max(
+                        std::fabs(vOf(ip, j) - vOf(im, j)),
+                        std::fabs(vOf(i, jp) - vOf(i, jm)));
+                    const Real c0 =
+                        soundSpeed(toPrim(c.at(NG + i, NG + j)));
+                    t = std::max(du, dv) / c0 > cfg_.tagVelocity;
+                }
+                tag[std::size_t(j) * nx + i] = t;
             }
         });
 
@@ -477,8 +500,12 @@ private:
         const int nxf = 2 * c.nx, nyf = 2 * c.ny;
 
         const auto fillCell = [&](int i, int j) {
-            const int gfi = 2 * p.ci0 + (i - NG);
-            const int gfj = 2 * p.cj0 + (j - NG);
+            int gfi = 2 * p.ci0 + (i - NG);
+            int gfj = 2 * p.cj0 + (j - NG);
+            // Periodic wrap: the cell beyond the seam lives on the other
+            // side (sibling copy or interior prolongation).
+            if (cfg_.periodicX) gfi = (gfi % nxf + nxf) % nxf;
+            if (cfg_.periodicY) gfj = (gfj % nyf + nyf) % nyf;
 
             if (gfi >= 0 && gfi < nxf && gfj >= 0 && gfj < nyf) {
                 const int bi = gfi / (2 * cfg_.blockC);
@@ -508,6 +535,33 @@ private:
         }
     }
 
+    // Neighbour-side geometry for refluxing, with periodic wrap (mirrors
+    // Amr2). ok=false: physical boundary, no coarse-fine face there.
+    struct SideNb {
+        bool ok;
+        int block, cell;
+    };
+    SideNb leftNb_(const Patch& p) const {
+        if (p.bi > 0) return {true, p.bi - 1, p.ci0 - 1};
+        return cfg_.periodicX ? SideNb{true, nbx_ - 1, coarseRef().nx - 1}
+                              : SideNb{false, 0, 0};
+    }
+    SideNb rightNb_(const Patch& p) const {
+        const int bc = cfg_.blockC;
+        if (p.bi < nbx_ - 1) return {true, p.bi + 1, p.ci0 + bc};
+        return cfg_.periodicX ? SideNb{true, 0, 0} : SideNb{false, 0, 0};
+    }
+    SideNb bottomNb_(const Patch& p) const {
+        if (p.bj > 0) return {true, p.bj - 1, p.cj0 - 1};
+        return cfg_.periodicY ? SideNb{true, nby_ - 1, coarseRef().ny - 1}
+                              : SideNb{false, 0, 0};
+    }
+    SideNb topNb_(const Patch& p) const {
+        const int bc = cfg_.blockC;
+        if (p.bj < nby_ - 1) return {true, p.bj + 1, p.cj0 + bc};
+        return cfg_.periodicY ? SideNb{true, 0, 0} : SideNb{false, 0, 0};
+    }
+
     // Refluxing split as in Amr2: refluxCoarse_ backs the coarse flux out
     // of uncovered neighbours, refluxFine_ applies one substep's fine flux
     // (read straight from the pool buffers).
@@ -520,22 +574,22 @@ private:
         const Cons* fyC = coarse_.fy();
         const auto cid = [&](int i, int j) { return j * ctx + i; };
 
-        if (p.bi > 0 && !covered(p.bi - 1, p.bj))
+        if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r)
-                c.at(NG + p.ci0 - 1, NG + p.cj0 + r) +=
-                    lx * fxC[cid(NG + p.ci0 - 1, NG + p.cj0 + r)];
-        if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj))
+                c.at(NG + n.cell, NG + p.cj0 + r) +=
+                    lx * fxC[cid(NG + n.cell, NG + p.cj0 + r)];
+        if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r)
-                c.at(NG + p.ci0 + bc, NG + p.cj0 + r) -=
-                    lx * fxC[cid(NG + p.ci0 + bc - 1, NG + p.cj0 + r)];
-        if (p.bj > 0 && !covered(p.bi, p.bj - 1))
+                c.at(NG + n.cell, NG + p.cj0 + r) -=
+                    lx * fxC[cid(NG + n.cell - 1, NG + p.cj0 + r)];
+        if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r)
-                c.at(NG + p.ci0 + r, NG + p.cj0 - 1) +=
-                    ly * fyC[cid(NG + p.ci0 + r, NG + p.cj0 - 1)];
-        if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1))
+                c.at(NG + p.ci0 + r, NG + n.cell) +=
+                    ly * fyC[cid(NG + p.ci0 + r, NG + n.cell)];
+        if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r)
-                c.at(NG + p.ci0 + r, NG + p.cj0 + bc) -=
-                    ly * fyC[cid(NG + p.ci0 + r, NG + p.cj0 + bc - 1)];
+                c.at(NG + p.ci0 + r, NG + n.cell) -=
+                    ly * fyC[cid(NG + p.ci0 + r, NG + n.cell - 1)];
     }
 
     void refluxFine_(const Patch& p, Real dt) {
@@ -548,33 +602,33 @@ private:
                           std::size_t(p.slot) * stride_;
         const auto fid = [&](int i, int j) { return j * pTot_ + i; };
 
-        if (p.bi > 0 && !covered(p.bi - 1, p.bj))
+        if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fxF[fid(NG - 1, NG + 2 * r)] +
                                  fxF[fid(NG - 1, NG + 2 * r + 1)]);
-                c.at(NG + p.ci0 - 1, NG + p.cj0 + r) -= lx * ff;
+                c.at(NG + n.cell, NG + p.cj0 + r) -= lx * ff;
             }
-        if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj))
+        if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fxF[fid(NG + nf_ - 1, NG + 2 * r)] +
                                  fxF[fid(NG + nf_ - 1, NG + 2 * r + 1)]);
-                c.at(NG + p.ci0 + bc, NG + p.cj0 + r) += lx * ff;
+                c.at(NG + n.cell, NG + p.cj0 + r) += lx * ff;
             }
-        if (p.bj > 0 && !covered(p.bi, p.bj - 1))
+        if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fyF[fid(NG + 2 * r, NG - 1)] +
                                  fyF[fid(NG + 2 * r + 1, NG - 1)]);
-                c.at(NG + p.ci0 + r, NG + p.cj0 - 1) -= ly * ff;
+                c.at(NG + p.ci0 + r, NG + n.cell) -= ly * ff;
             }
-        if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1))
+        if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (fyF[fid(NG + 2 * r, NG + nf_ - 1)] +
                                  fyF[fid(NG + 2 * r + 1, NG + nf_ - 1)]);
-                c.at(NG + p.ci0 + r, NG + p.cj0 + bc) += ly * ff;
+                c.at(NG + p.ci0 + r, NG + n.cell) += ly * ff;
             }
     }
 

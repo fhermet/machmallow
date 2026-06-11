@@ -55,6 +55,10 @@ target_link_libraries(dmr_amr PRIVATE mm_metal)
 add_executable(shear src/drivers/shear.cpp)
 target_link_libraries(shear PRIVATE mm_metal)
 
+# Velocity tagging + periodic AMR validation (Kelvin-Helmholtz).
+add_executable(kh_amr src/drivers/kh_amr.cpp)
+target_link_libraries(kh_amr PRIVATE mm_metal)
+
 # Generic case runner driven by cases/*.ini files.
 add_executable(run src/drivers/run.cpp)
 target_link_libraries(run PRIVATE mm_metal)

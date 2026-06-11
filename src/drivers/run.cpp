@@ -29,6 +29,7 @@ struct CaseSetup {
     Real x0 = 0, y0 = 0, lx = 1, ly = 1;
     int aspect = 4; // nx = aspect * ny
     double tEnd = 0.2;
+    bool periodicX = false, periodicY = false;
     std::function<Cons(Real, Real)> ic;
 };
 
@@ -52,9 +53,12 @@ CaseSetup caseGeometry(const std::string& name) {
         s.lx = 4; s.ly = 1; s.aspect = 4; s.tEnd = dmr::TEND;
     } else if (name == "shear") {
         s.lx = 1; s.ly = Real(0.25); s.aspect = 4; s.tEnd = 0.15;
+    } else if (name == "kh") {
+        s.lx = 1; s.ly = 1; s.aspect = 1; s.tEnd = 2.0;
+        s.periodicX = s.periodicY = true;
     } else {
         throw std::runtime_error("unknown case: " + name +
-                                 " (expected sod | dmr | shear)");
+                                 " (expected sod | dmr | shear | kh)");
     }
     return s;
 }
@@ -100,6 +104,23 @@ void wireCase(const std::string& name, const Config& cfg, AMR& amr,
         amr.fillPatchPhysical = [](auto& g, double, unsigned sides) {
             transmissiveSides(g, sides);
         };
+    } else if (name == "kh") {
+        // Doubly periodic Kelvin-Helmholtz: dense band in counterflow,
+        // sinusoidal v perturbation seeds the billows.
+        const Real u0 = Real(cfg.getReal("case.u0", 0.5));
+        const Real delta = Real(cfg.getReal("case.perturb", 0.01));
+        s.ic = [u0, delta](Real x, Real y) {
+            const bool band = std::fabs(y - Real(0.5)) < Real(0.25);
+            return toCons({band ? Real(2) : Real(1),
+                           band ? u0 / 2 : -u0 / 2,
+                           delta * Real(std::sin(4 * M_PI * double(x))),
+                           Real(2.5)});
+        };
+        amr.fillPhysicalGhosts = [](auto& g, double) {
+            fillPeriodicX(g);
+            fillPeriodicY(g);
+        };
+        // Fully periodic: no physical patch sides, callback stays unset.
     }
 }
 
@@ -114,6 +135,7 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
         std::filesystem::path(prefix).parent_path());
 
     amr.init(s.ic);
+    const double m0 = amr.totalMass();
 
     double t = 0, nextFrame = frames > 0 ? tEnd / frames : 1e30;
     int steps = 0, frame = 0;
@@ -151,7 +173,10 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     std::printf("%d steps in %.2f s -> %.1f Mcell-steps/s, max %zu "
                 "patches\n",
                 steps, wall, cellSteps / wall / 1e6, maxPatches);
-    std::printf("rho in [%.4f, %.4f]\n", double(rhoMin), double(rhoMax));
+    std::printf("rho in [%.4f, %.4f] | mass drift %.2e%s\n",
+                double(rhoMin), double(rhoMax),
+                std::fabs(amr.totalMass() - m0) / m0,
+                s.periodicX && s.periodicY ? " (closed domain)" : "");
     if (frame > 0)
         std::printf("output: %s_0001..%04d (.vthb, ParaView)\n",
                     prefix.c_str(), frame);
@@ -166,6 +191,7 @@ AmrConfig amrConfigFrom(const Config& cfg) {
     AmrConfig a;
     a.blockC = cfg.getInt("amr.block", 8);
     a.tagThreshold = Real(cfg.getReal("amr.tag_threshold", 0.08));
+    a.tagVelocity = Real(cfg.getReal("amr.tag_velocity", 0));
     a.regridEvery = cfg.getInt("amr.regrid_every", 4);
     a.subcycle = cfg.getBool("amr.subcycle", false);
     a.mu = Real(cfg.getReal("mu", 0));
@@ -186,7 +212,7 @@ int main(int argc, char** argv) {
         const Config cfg = Config::load(argv[1]);
         const std::string caseName = cfg.requireString("case");
         const std::string backend = cfg.getString("backend", "hybrid");
-        const AmrConfig acfg = amrConfigFrom(cfg);
+        AmrConfig acfg = amrConfigFrom(cfg);
 
         const int ny = cfg.getInt("grid.ny", 64);
         if (ny % acfg.blockC != 0)
@@ -194,6 +220,8 @@ int main(int argc, char** argv) {
                 "grid.ny must be a multiple of amr.block");
 
         CaseSetup s = caseGeometry(caseName);
+        acfg.periodicX = s.periodicX;
+        acfg.periodicY = s.periodicY;
         const int nx = cfg.getInt("grid.nx", s.aspect * ny);
         if (nx % acfg.blockC != 0)
             throw std::runtime_error(

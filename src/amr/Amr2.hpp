@@ -27,10 +27,13 @@ namespace mm {
 struct AmrConfig {
     int blockC = 8;             // block size in coarse cells
     Real tagThreshold = Real(0.03); // relative density gradient
+    Real tagVelocity = 0;       // velocity jump / sound speed (0 = off)
     int regridEvery = 4;
     bool reflux = true;         // off only to demonstrate the leak
     bool subcycle = false;      // coarse at dt, fine at 2 x dt/2
     Real mu = 0;                // dynamic viscosity (0 = inviscid Euler)
+    bool periodicX = false;     // periodic domain (patch ghosts, reflux
+    bool periodicY = false;     // and side masks wrap accordingly)
 };
 
 class Amr2 {
@@ -101,10 +104,14 @@ public:
     }
 
     unsigned domainSides(const Patch& p) const {
-        return (p.bi == 0 ? SideLeft : 0u) |
-               (p.bi == nbx_ - 1 ? SideRight : 0u) |
-               (p.bj == 0 ? SideBottom : 0u) |
-               (p.bj == nby_ - 1 ? SideTop : 0u);
+        unsigned s = 0;
+        if (!cfg_.periodicX)
+            s |= (p.bi == 0 ? SideLeft : 0u) |
+                 (p.bi == nbx_ - 1 ? SideRight : 0u);
+        if (!cfg_.periodicY)
+            s |= (p.bj == 0 ? SideBottom : 0u) |
+                 (p.bj == nby_ - 1 ? SideTop : 0u);
+        return s;
     }
 
     void step(Real dt, double t) {
@@ -149,7 +156,9 @@ public:
     void regrid() {
         const int nx = coarse.nx, ny = coarse.ny, bc = cfg_.blockC;
 
-        // 1. Tag on relative density gradient (clamped central diffs).
+        // 1. Tag on relative density gradient, optionally on velocity
+        //    jumps normalized by the local sound speed (shear layers and
+        //    vortices are invisible to the density criterion).
         std::vector<std::uint8_t> tag(std::size_t(nx) * ny, 0);
         for (int j = 0; j < ny; ++j)
             for (int i = 0; i < nx; ++i) {
@@ -162,8 +171,27 @@ public:
                                           coarse.at(NG + im, NG + j).rho);
                 const Real ey = std::fabs(coarse.at(NG + i, NG + jp).rho -
                                           coarse.at(NG + i, NG + jm).rho);
-                tag[std::size_t(j) * nx + i] =
-                    std::max(ex, ey) / r0 > cfg_.tagThreshold;
+                bool t = std::max(ex, ey) / r0 > cfg_.tagThreshold;
+                if (!t && cfg_.tagVelocity > 0) {
+                    const auto uOf = [&](int a, int b) {
+                        const Cons& q = coarse.at(NG + a, NG + b);
+                        return q.mx / std::max(q.rho, RHO_FLOOR);
+                    };
+                    const auto vOf = [&](int a, int b) {
+                        const Cons& q = coarse.at(NG + a, NG + b);
+                        return q.my / std::max(q.rho, RHO_FLOOR);
+                    };
+                    const Real du = std::max(
+                        std::fabs(uOf(ip, j) - uOf(im, j)),
+                        std::fabs(uOf(i, jp) - uOf(i, jm)));
+                    const Real dv = std::max(
+                        std::fabs(vOf(ip, j) - vOf(im, j)),
+                        std::fabs(vOf(i, jp) - vOf(i, jm)));
+                    const Real c0 =
+                        soundSpeed(toPrim(coarse.at(NG + i, NG + j)));
+                    t = std::max(du, dv) / c0 > cfg_.tagVelocity;
+                }
+                tag[std::size_t(j) * nx + i] = t;
             }
 
         // 2. Dilate by 2 cells (buffer so features stay inside patches
@@ -303,8 +331,12 @@ private:
             for (int i = 0; i < p.grid.totx(); ++i) {
                 if (i >= NG && i < NG + nf && j >= NG && j < NG + nf)
                     continue; // interior
-                const int gfi = 2 * p.ci0 + (i - NG);
-                const int gfj = 2 * p.cj0 + (j - NG);
+                int gfi = 2 * p.ci0 + (i - NG);
+                int gfj = 2 * p.cj0 + (j - NG);
+                // Periodic wrap: the cell beyond the seam lives on the
+                // other side (sibling copy or interior prolongation).
+                if (cfg_.periodicX) gfi = (gfi % nxf + nxf) % nxf;
+                if (cfg_.periodicY) gfj = (gfj % nyf + nyf) % nyf;
 
                 // Same-level copy when a sibling patch owns the cell.
                 if (gfi >= 0 && gfi < nxf && gfj >= 0 && gfj < nyf) {
@@ -331,65 +363,96 @@ private:
     // against one coarse step: refluxCoarse_ backs the coarse flux out of
     // the uncovered neighbour, refluxFine_ applies a substep's
     // area-averaged fine flux. Single-rate calls both once.
+    // Neighbour-side geometry for refluxing, with periodic wrap.
+    // ok=false means a physical (non-periodic) domain boundary: no
+    // coarse-fine face there. `cell` is the corrected uncovered coarse
+    // cell index in the side's direction; the coarse face adjacent to it
+    // is its right/top face for low sides and left/bottom face for high
+    // sides (handled at the call sites).
+    struct SideNb {
+        bool ok;
+        int block, cell;
+    };
+    SideNb leftNb_(const Patch& p) const {
+        if (p.bi > 0) return {true, p.bi - 1, p.ci0 - 1};
+        return cfg_.periodicX ? SideNb{true, nbx_ - 1, coarse.nx - 1}
+                              : SideNb{false, 0, 0};
+    }
+    SideNb rightNb_(const Patch& p) const {
+        const int bc = cfg_.blockC;
+        if (p.bi < nbx_ - 1) return {true, p.bi + 1, p.ci0 + bc};
+        return cfg_.periodicX ? SideNb{true, 0, 0} : SideNb{false, 0, 0};
+    }
+    SideNb bottomNb_(const Patch& p) const {
+        if (p.bj > 0) return {true, p.bj - 1, p.cj0 - 1};
+        return cfg_.periodicY ? SideNb{true, nby_ - 1, coarse.ny - 1}
+                              : SideNb{false, 0, 0};
+    }
+    SideNb topNb_(const Patch& p) const {
+        const int bc = cfg_.blockC;
+        if (p.bj < nby_ - 1) return {true, p.bj + 1, p.cj0 + bc};
+        return cfg_.periodicY ? SideNb{true, 0, 0} : SideNb{false, 0, 0};
+    }
+
     void refluxCoarse_(const Patch& p, Real dt) {
         const int bc = cfg_.blockC;
         const Real lx = dt / coarse.dx, ly = dt / coarse.dy;
 
-        if (p.bi > 0 && !covered(p.bi - 1, p.bj)) // left side
+        if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r)
-                coarse.at(NG + p.ci0 - 1, NG + p.cj0 + r) +=
-                    lx * scratchC_.Fx[coarse.idx(NG + p.ci0 - 1,
+                coarse.at(NG + n.cell, NG + p.cj0 + r) +=
+                    lx * scratchC_.Fx[coarse.idx(NG + n.cell,
                                                  NG + p.cj0 + r)];
-        if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj)) // right side
+        if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r)
-                coarse.at(NG + p.ci0 + bc, NG + p.cj0 + r) -=
-                    lx * scratchC_.Fx[coarse.idx(NG + p.ci0 + bc - 1,
+                coarse.at(NG + n.cell, NG + p.cj0 + r) -=
+                    lx * scratchC_.Fx[coarse.idx(NG + n.cell - 1,
                                                  NG + p.cj0 + r)];
-        if (p.bj > 0 && !covered(p.bi, p.bj - 1)) // bottom side
+        if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r)
-                coarse.at(NG + p.ci0 + r, NG + p.cj0 - 1) +=
+                coarse.at(NG + p.ci0 + r, NG + n.cell) +=
                     ly * scratchC_.Fy[coarse.idx(NG + p.ci0 + r,
-                                                 NG + p.cj0 - 1)];
-        if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1)) // top side
+                                                 NG + n.cell)];
+        if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r)
-                coarse.at(NG + p.ci0 + r, NG + p.cj0 + bc) -=
+                coarse.at(NG + p.ci0 + r, NG + n.cell) -=
                     ly * scratchC_.Fy[coarse.idx(NG + p.ci0 + r,
-                                                 NG + p.cj0 + bc - 1)];
+                                                 NG + n.cell - 1)];
     }
 
     void refluxFine_(const Patch& p, Real dt, const Scratch2D& sf) {
         const int bc = cfg_.blockC, nf = 2 * bc;
         const Real lx = dt / coarse.dx, ly = dt / coarse.dy;
 
-        if (p.bi > 0 && !covered(p.bi - 1, p.bj)) // left side
+        if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (sf.Fx[p.grid.idx(NG - 1, NG + 2 * r)] +
                                  sf.Fx[p.grid.idx(NG - 1, NG + 2 * r + 1)]);
-                coarse.at(NG + p.ci0 - 1, NG + p.cj0 + r) += Real(-1) * lx * ff;
+                coarse.at(NG + n.cell, NG + p.cj0 + r) -= lx * ff;
             }
-        if (p.bi < nbx_ - 1 && !covered(p.bi + 1, p.bj)) // right side
+        if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) *
                     (sf.Fx[p.grid.idx(NG + nf - 1, NG + 2 * r)] +
                      sf.Fx[p.grid.idx(NG + nf - 1, NG + 2 * r + 1)]);
-                coarse.at(NG + p.ci0 + bc, NG + p.cj0 + r) += lx * ff;
+                coarse.at(NG + n.cell, NG + p.cj0 + r) += lx * ff;
             }
-        if (p.bj > 0 && !covered(p.bi, p.bj - 1)) // bottom side
+        if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) * (sf.Fy[p.grid.idx(NG + 2 * r, NG - 1)] +
                                  sf.Fy[p.grid.idx(NG + 2 * r + 1, NG - 1)]);
-                coarse.at(NG + p.ci0 + r, NG + p.cj0 - 1) += Real(-1) * ly * ff;
+                coarse.at(NG + p.ci0 + r, NG + n.cell) -= ly * ff;
             }
-        if (p.bj < nby_ - 1 && !covered(p.bi, p.bj + 1)) // top side
+        if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
                 const Cons ff =
                     Real(0.5) *
                     (sf.Fy[p.grid.idx(NG + 2 * r, NG + nf - 1)] +
                      sf.Fy[p.grid.idx(NG + 2 * r + 1, NG + nf - 1)]);
-                coarse.at(NG + p.ci0 + r, NG + p.cj0 + bc) += ly * ff;
+                coarse.at(NG + p.ci0 + r, NG + n.cell) += ly * ff;
             }
     }
 
