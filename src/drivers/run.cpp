@@ -64,10 +64,28 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
 
     const std::string restart = cfg.getString("restart", "");
     double t = 0;
+    const auto ic = [&](Real x, Real y) { return cd.state(x, y, 0); };
     if (restart.empty()) {
-        amr.init([&](Real x, Real y) { return cd.state(x, y, 0); });
+        if (cd.species()) {
+            if constexpr (requires {
+                              amr.init(ic, [](Real, Real) {
+                                  return Real(0);
+                              });
+                          })
+                amr.init(ic, [&](Real x, Real y) {
+                    return cd.massFraction(x, y, 0);
+                });
+            else
+                throw std::runtime_error(
+                    "internal: this AMR class has no two-gas support");
+        } else {
+            amr.init(ic);
+        }
+    } else if (cd.species()) {
+        throw std::runtime_error(
+            "restart with [species] is not supported yet");
     } else if constexpr (requires { amr.patches; }) {
-        amr.init([&](Real x, Real y) { return cd.state(x, y, 0); });
+        amr.init(ic);
         t = loadCheckpoint(restart, amr);
         std::printf("restarted from %s at t = %.6f\n", restart.c_str(),
                     t);
@@ -355,6 +373,15 @@ int main(int argc, char** argv) {
         acfg.periodicY = cd.periodicY;
         acfg.gx = cd.gx;
         acfg.gy = cd.gy;
+        if (cd.species()) {
+            acfg.species = true;
+            acfg.gamma1 = cd.gases().gamma1;
+            acfg.gamma2 = cd.gases().gamma2;
+            if (acfg.mu > 0)
+                throw std::runtime_error(
+                    "two-gas cases are inviscid for now ([species] with "
+                    "mu > 0)");
+        }
 
         if (cd.nx % acfg.blockC != 0 || cd.ny % acfg.blockC != 0)
             throw std::runtime_error(
@@ -394,7 +421,9 @@ int main(int argc, char** argv) {
 
         int rc;
         if (backend == "cpu") {
-            if (acfg.maxLevels == 2) {
+            // the 2-level classes have no species fields: two-gas
+            // cases run on the multi-level classes at any depth
+            if (acfg.maxLevels == 2 && !acfg.species) {
                 Amr2 amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);
                 amr.fillPhysicalGhosts = [&cd](Grid& g, double t) {
                     cd.fillGhosts(g, t);
@@ -417,7 +446,7 @@ int main(int argc, char** argv) {
             }
         } else if (backend == "hybrid") {
             MetalContext ctx;
-            if (acfg.maxLevels == 2) {
+            if (acfg.maxLevels == 2 && !acfg.species) {
                 AmrGpu amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly,
                            acfg);
                 amr.fillPhysicalGhosts = [&cd](GridRef& g, double t) {

@@ -94,9 +94,18 @@ De « densités différentes » à « gaz différents ».
   de φ). Gate : Sod bi-γ 3 niveaux GPU en lock-step CPU complet —
   L1 2.62e-3 vs exact (= CPU à 1e-7 près), masse d'espèce 2.0e-6,
   écart CPU/GPU 1.6e-4 (fp32), patchs identiques.
-- [ ] **Suite multi-espèces** : CaseDef (`[state.X] gas = 2`),
-  bulle He + Richtmyer-Meshkov ; double-flux en option si les
-  0.6 %% gênent.
+- [x] ~~CaseDef bi-gaz + cas vitrines~~ — fait : section `[species]`
+  (gamma1/gamma2), `gas = 2` par état, états RH calculés avec le γ du
+  gaz amont, inflow/analytic fermés sur le bon Γ, nouvelle région
+  `sinex` (interface cosinus). `bubble.ini` devient la vraie bulle He
+  (γ 1.667 dans l'air, Haas & Sturtevant) et `rm.ini` ajoute le
+  Richtmyer-Meshkov air/SF6 (γ 1.09, mode unique périodique). Les cas
+  bi-gaz passent par AmrML/AmrGpuML à toute profondeur (les classes
+  2 niveaux n'ont pas les champs espèces).
+- [ ] **Suite multi-espèces** : gate quantitative Haas & Sturtevant
+  (vitesses d'interface vs expérience), masse d'espèce dans le log de
+  diagnostics, Y dans les sorties VTK ; double-flux Abgrall-Karni en
+  option si les 0.6 %% gênent.
 - [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
   quantitatif), Richtmyer-Meshkov.
 - **Sortie** : gate d'interface (pas d'oscillation de p), bulle He

@@ -13,6 +13,7 @@
 //                        | band x|y lo hi : X
 //                        | rect x0 x1 y0 y1 : X
 //                        | circle cx cy r : X
+//                        | sinex x0 amp lambda : X
 //              perturb.N = u|v|rho|p sin periods amp
 //                        | u|v|rho|p erf x0 width amp
 //   [bc]       x|y = periodic
@@ -25,6 +26,7 @@
 // top boundary) come for free from the same description as the IC.
 
 #include "core/Boundary.hpp"
+#include "physics/TwoGas.hpp"
 #include "core/Config.hpp"
 #include "core/Grid.hpp"
 
@@ -65,6 +67,17 @@ public:
             c.gy = num_(g[1]);
         }
 
+        // two-gas cases: a [species] section names the two gammas and
+        // each state may declare `gas = 2` (default 1)
+        if (cfg.has("species.gamma1") || cfg.has("species.gamma2")) {
+            c.species_ = true;
+            c.gas_.gamma1 = Real(cfg.getReal("species.gamma1", 1.4));
+            c.gas_.gamma2 = Real(cfg.getReal("species.gamma2", 1.4));
+            if (c.gas_.gamma1 <= 1 || c.gas_.gamma2 <= 1)
+                throw std::runtime_error(
+                    "[species] gammas must be > 1");
+        }
+
         // named states: plain ones first, then derived (Rankine-Hugoniot
         // post-shock states referencing a plain state)
         std::vector<std::string> names;
@@ -77,24 +90,47 @@ public:
                 names.end())
                 names.push_back(name);
         }
-        for (const std::string& name : names)
+        for (const std::string& name : names) {
+            const int gasIdx =
+                int(cfg.getInt("state." + name + ".gas", 1));
+            if (gasIdx != 1 && gasIdx != 2)
+                throw std::runtime_error("state '" + name +
+                                         "': gas must be 1 or 2");
+            if (gasIdx == 2 && !c.species_)
+                throw std::runtime_error(
+                    "state '" + name +
+                    "': gas = 2 needs a [species] section");
             if (!cfg.has("state." + name + ".shock"))
                 c.states_[name] = {
                     {Real(cfg.getReal("state." + name + ".rho", 1)),
                      Real(cfg.getReal("state." + name + ".u", 0)),
                      Real(cfg.getReal("state." + name + ".v", 0)),
                      Real(cfg.getReal("state." + name + ".p", 1))},
-                    0};
+                    0, gasIdx};
+        }
         for (const std::string& name : names)
-            if (cfg.has("state." + name + ".shock"))
-                c.states_[name] = c.parseShockState_(
+            if (cfg.has("state." + name + ".shock")) {
+                NamedState st = c.parseShockState_(
                     cfg.requireString("state." + name + ".shock"));
+                if (cfg.has("state." + name + ".gas") &&
+                    int(cfg.getInt("state." + name + ".gas", 1)) !=
+                        st.gas)
+                    throw std::runtime_error(
+                        "state '" + name +
+                        "': a shock state inherits its upstream gas");
+                c.states_[name] = st;
+            }
         for (const auto& [name, st] : c.states_)
             if (st.w.rho <= 0 || st.w.p <= 0)
                 throw std::runtime_error("state '" + name +
                                          "': rho and p must be > 0");
 
-        c.def_ = c.lookupState_(cfg.requireString("ic.default")).w;
+        {
+            const NamedState& d =
+                c.lookupState_(cfg.requireString("ic.default"));
+            c.def_ = d.w;
+            c.defY_ = d.gas == 2 ? Real(1) : Real(0);
+        }
         for (const std::string& key : numbered_(cfg, "ic.region."))
             c.regions_.push_back(c.parseRegion_(cfg.requireString(key)));
         for (const std::string& key : numbered_(cfg, "ic.perturb."))
@@ -124,8 +160,20 @@ public:
         return w;
     }
     Cons state(Real x, Real y, double t) const {
-        return toCons(prim(x, y, t));
+        if (!species_) return toCons(prim(x, y, t));
+        return toConsG(prim(x, y, t), gas_.Gamma(massFraction(x, y, t)));
     }
+
+    // Mass fraction of gas 2 at (x, y, t): the region logic of prim()
+    // (perturbations do not touch the composition).
+    Real massFraction(Real x, Real y, double t) const {
+        Real Y = defY_;
+        for (const Region& r : regions_)
+            if (r.inside(x, y, t)) Y = r.Y;
+        return Y;
+    }
+    bool species() const { return species_; }
+    const GasPair& gases() const { return gas_; }
 
     template <class G>
     void fillGhosts(G& g, double t) const {
@@ -162,7 +210,7 @@ public:
         for (const auto& [name, st] : states_)
             s = std::max(s, std::max(std::fabs(st.w.u),
                                      std::fabs(st.w.v)) +
-                                soundSpeed(st.w));
+                                soundSpeedG(st.w, gammaOf_(st.gas)));
         return s;
     }
 
@@ -171,6 +219,7 @@ private:
     struct Spec {
         Bc type = Bc::Transmissive;
         Prim inflow{};
+        Real inflowG = 1 / (GAMMA - 1); // EOS closure of the inflow gas
     };
     struct Side {
         Spec a;
@@ -180,10 +229,13 @@ private:
     };
 
     struct Region {
-        enum class Shape { HalfPlane, BandX, BandY, Rect, Circle } shape;
+        enum class Shape {
+            HalfPlane, BandX, BandY, Rect, Circle, SineX
+        } shape;
         Real p[4] = {0, 0, 0, 0};
         Real speed = 0, norm = 1; // half-plane front motion
         Prim st{};
+        Real Y = 0; // mass fraction of gas 2 (two-gas cases)
 
         bool inside(Real x, Real y, double t) const {
             switch (shape) {
@@ -194,6 +246,9 @@ private:
             case Shape::BandY: return y > p[0] && y < p[1];
             case Shape::Rect:
                 return x > p[0] && x < p[1] && y > p[2] && y < p[3];
+            case Shape::SineX: // x < x0 + amp*cos(2*pi*y/lambda)
+                return x < p[0] +
+                               p[1] * std::cos(Real(2 * M_PI) * y / p[2]);
             default: {
                 const Real dx = x - p[0], dy = y - p[1];
                 return dx * dx + dy * dy < p[2] * p[2];
@@ -269,6 +324,7 @@ private:
     struct NamedState {
         Prim w{};
         Real shockSpeed = 0; // lab-frame front speed (RH-derived states)
+        int gas = 1;         // 1 or 2 (two-gas cases)
     };
 
     const NamedState& lookupState_(const std::string& name) const {
@@ -302,13 +358,15 @@ private:
         if (!alongX && dir != "+y" && dir != "-y")
             throw std::runtime_error("shock state: bad direction " + dir);
 
-        const Real c1 = soundSpeed(up.w);
+        const Real ga = gammaOf_(up.gas);
+        const Real c1 = soundSpeedG(up.w, ga);
         const Real M2 = Ms * Ms;
         NamedState s;
         s.w = up.w;
-        s.w.rho = up.w.rho * (GAMMA + 1) * M2 / ((GAMMA - 1) * M2 + 2);
-        s.w.p = up.w.p * (1 + 2 * GAMMA / (GAMMA + 1) * (M2 - 1));
-        const Real du = sgn * 2 * c1 / (GAMMA + 1) * (Ms - 1 / Ms);
+        s.gas = up.gas; // the shock runs in the upstream gas
+        s.w.rho = up.w.rho * (ga + 1) * M2 / ((ga - 1) * M2 + 2);
+        s.w.p = up.w.p * (1 + 2 * ga / (ga + 1) * (M2 - 1));
+        const Real du = sgn * 2 * c1 / (ga + 1) * (Ms - 1 / Ms);
         const Real u1 = alongX ? up.w.u : up.w.v;
         if (alongX) s.w.u += du;
         else s.w.v += du;
@@ -325,6 +383,7 @@ private:
         Region r;
         const NamedState& ns = lookupState_(*(colon + 1));
         r.st = ns.w;
+        r.Y = ns.gas == 2 ? Real(1) : Real(0);
         const std::size_t n = std::size_t(colon - toks.begin());
         const auto need = [&](std::size_t want, const char* what) {
             if (n != want)
@@ -370,6 +429,14 @@ private:
             need(4, "circle");
             r.shape = Region::Shape::Circle;
             for (int k = 0; k < 3; ++k) r.p[k] = num_(toks[1 + k]);
+        } else if (toks[0] == "sinex") {
+            // sinex x0 amp lambda : X — everything left of the
+            // cosine-perturbed interface x(y) = x0 + amp*cos(2 pi y/lambda)
+            need(4, "sinex");
+            r.shape = Region::Shape::SineX;
+            for (int k = 0; k < 3; ++k) r.p[k] = num_(toks[1 + k]);
+            if (r.p[2] == 0)
+                throw std::runtime_error("sinex: lambda must be != 0");
         } else {
             throw std::runtime_error("unknown region shape: " + toks[0]);
         }
@@ -431,7 +498,9 @@ private:
             s.type = Bc::Inflow;
             if (i + 1 >= end)
                 throw std::runtime_error("inflow needs a state name");
-            s.inflow = lookupState_(toks[i + 1]).w;
+            const NamedState& ns = lookupState_(toks[i + 1]);
+            s.inflow = ns.w;
+            s.inflowG = 1 / (gammaOf_(ns.gas) - 1);
         } else
             throw std::runtime_error("unknown boundary type: " + t);
         return s;
@@ -523,13 +592,21 @@ private:
                     g.at(i, j) = state(g.xc(i), g.yc(j), t);
                     break;
                 case Bc::Inflow:
-                    g.at(i, j) = toCons(sp.inflow);
+                    g.at(i, j) = toConsG(sp.inflow, sp.inflowG);
                     break;
                 }
             }
         }
     }
 
+    Real gammaOf_(int gasIdx) const {
+        if (!species_) return GAMMA;
+        return gasIdx == 2 ? gas_.gamma2 : gas_.gamma1;
+    }
+
+    bool species_ = false;
+    GasPair gas_;
+    Real defY_ = 0;
     std::map<std::string, NamedState> states_;
     Prim def_{};
     std::vector<Region> regions_;
