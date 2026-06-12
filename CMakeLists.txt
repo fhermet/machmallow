@@ -60,6 +60,10 @@ target_link_libraries(shear PRIVATE mm_metal)
 add_executable(analytic_suite src/drivers/analytic_suite.cpp)
 target_include_directories(analytic_suite PRIVATE src)
 
+# WENO5 + SSP-RK3 scheme validation (uniform grid, CPU).
+add_executable(weno_suite src/drivers/weno_suite.cpp)
+target_include_directories(weno_suite PRIVATE src)
+
 # Two-gas (mass fraction + mixture gamma) scheme validation.
 add_executable(species_suite src/drivers/species_suite.cpp)
 target_include_directories(species_suite PRIVATE src)

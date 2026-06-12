@@ -132,10 +132,21 @@ De « densités différentes » à « gaz différents ».
 ### v1.3 — Ordre élevé *(pédago + labo)*
 Lever la limite TVD quantifiée par la suite analytique (ordre 4/3 aux
 extrema lisses).
-- [ ] **WENO5 + RK3-SSP** en option du MUSCL (NG = 3, kernels Metal,
-  impact ghost fill AMR).
-- **Sortie** : acoustique à l'ordre ~5 en lisse, interfaces RT/KH/RM
-  visiblement plus fines à résolution égale.
+- [x] ~~NG = 3~~ — fait : 3 couches de ghosts partout (stencil WENO5),
+  toutes les suites bit-identiques, checkpoint v2.
+- [x] ~~Cœur WENO5 + RK3-SSP (grille uniforme, CPU)~~ — fait :
+  FD-WENO5 Jiang-Shu, splitting Lax-Friedrichs local par composante,
+  flux de faces conservés pour le refluxing à venir. `weno_suite` :
+  onde d'entropie à l'ordre 3.02 (= cap RK3 exactement, 4.84 sur la
+  paire grossière où le spatial domine, spatial seul ~4 en
+  pré-asymptotique), vortex ordre 3.55 et dissipation 5.5× plus
+  faible que MUSCL à 64², Sod borné sans over/undershoot (contact
+  +19 %% vs HLLC — LLF diffuse le contact, attendu).
+- [ ] **WENO5 dans l'AMR** : ghosts par étage RK (θ-blend aux temps
+  d'étage), reflux pondéré (1/6, 1/6, 2/3), classes ML.
+- [ ] **Kernels Metal WENO5** + `scheme = weno5` dans CaseDef/run.
+- **Sortie** : acoustique/vortex à l'ordre ≥3 en lisse, interfaces
+  RT/KH/RM visiblement plus fines à résolution égale.
 
 ### v1.4 — La troisième dimension *(démo + pédago)*
 Le grand chantier, mené comme le multi-niveaux : CPU de référence →
