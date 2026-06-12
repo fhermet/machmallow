@@ -48,9 +48,15 @@ possibles, par thème et avec leur point d'entrée dans le code.
   complets sur AMR (wrap des ghosts de patchs, du refluxing aux raccords
   et des masques de bords ; conservation exacte vérifiée en domaine
   fermé par `kh_amr`), preset `kh` dans `run` (`cases/kh.ini`).
-- [ ] **Rayleigh-Taylor** — demande les termes sources (gravité), voir
-  ci-dessous ; les BCs et le tagging nécessaires existent désormais.
-- [ ] **Termes sources** — gravité (RT), pour commencer en source splittée.
+- [x] ~~Rayleigh-Taylor + gravité~~ — fait : source splittée
+  (`[physics] gravity`, énergie au point milieu, cell-locale donc
+  refluxing intact), perturbations `p hydro` (équilibre hydrostatique)
+  et `sing` (seed sinus × gaussienne), murs reflective hydrostatiques
+  sous gravité (le miroir de pression inversait le gradient → pompage
+  d'énergie jusqu'au blow-up, diagnostiqué via le journal CSV).
+  `cases/rt.ini` : zone de mélange turbulente complète à t=12 (1/512).
+  Gates : chute libre exacte (3e-7) + lock-step CPU/GPU gravité.
+  Extension : autres sources (Coriolis, chauffage).
 
 ## Performance
 

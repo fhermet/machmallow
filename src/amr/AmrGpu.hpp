@@ -69,6 +69,7 @@ public:
         smaxP_ = ctx.device()->newBuffer(3 * sizeof(std::uint32_t),
                                          MTL::ResourceStorageModeShared);
         coarse_.setViscosity(cfg.mu);
+        coarse_.setGravity(cfg.gx, cfg.gy);
         slotsBuf_ = ctx.device()->newBuffer(
             std::size_t(capacity_) * sizeof(std::uint32_t),
             MTL::ResourceStorageModeShared);
@@ -466,7 +467,7 @@ private:
             : 0;
         const Euler2DGpu::Params p{pTot_, pTot_,  nf_, nf_,
                                    dxc_() / 2, dyc_() / 2, dt, stride_,
-                                   cfg_.mu, kT};
+                                   cfg_.mu, kT, cfg_.gx, cfg_.gy};
         MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
         enc->setComputePipelineState(pso);
         int slot = 0;

@@ -71,6 +71,6 @@ target_link_libraries(kh_amr PRIVATE mm_metal)
 add_executable(run src/drivers/run.cpp)
 target_link_libraries(run PRIVATE mm_metal)
 
-# Declarative case system vs presets/exact solutions.
+# Declarative case system vs presets/exact solutions (+ gravity gates).
 add_executable(casedef_test src/drivers/casedef_test.cpp)
-target_include_directories(casedef_test PRIVATE src)
+target_link_libraries(casedef_test PRIVATE mm_metal)

@@ -125,6 +125,7 @@ public:
 
     // Dynamic viscosity for the flux kernels (0 = inviscid Euler).
     void setViscosity(Real mu) { mu_ = mu; }
+    void setGravity(Real gx, Real gy) { gx_ = gx; gy_ = gy; }
 
     // Step fluxes, CPU-visible (needed by AMR refluxing).
     const Cons* fx() const { return static_cast<const Cons*>(Fx_->contents()); }
@@ -135,13 +136,14 @@ public:
         float dx, dy, dt;
         std::int32_t stride; // pool kernels only; 0 here
         float mu, kT;        // viscosity / heat conductivity (0 = Euler)
+        float gx, gy;        // gravity (split source)
     };
 
 private:
     Params params(Real dt) const {
         const float kT =
             mu_ > 0 ? mu_ * GAMMA / ((GAMMA - 1) * PRANDTL) : 0;
-        return {tx_, ty_, nx_, ny_, dx_, dy_, dt, 0, mu_, kT};
+        return {tx_, ty_, nx_, ny_, dx_, dy_, dt, 0, mu_, kT, gx_, gy_};
     }
 
     static void dispatch(MTL::ComputeCommandEncoder* enc, int w, int h) {
@@ -164,7 +166,7 @@ private:
     MetalContext& ctx_;
     int nx_, ny_, tx_, ty_;
     Real dx_, dy_;
-    Real mu_ = 0;
+    Real mu_ = 0, gx_ = 0, gy_ = 0;
     MTL::Library* lib_ = nullptr;
     MTL::ComputePipelineState *predictor_ = nullptr, *fluxX_ = nullptr,
                               *fluxY_ = nullptr, *update_ = nullptr,

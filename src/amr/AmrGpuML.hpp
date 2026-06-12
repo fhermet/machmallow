@@ -50,6 +50,7 @@ public:
           coarse_(ctx, nx, ny, lx / nx, ly / ny), nf_(2 * cfg.blockC) {
         assert(nx % cfg.blockC == 0 && ny % cfg.blockC == 0);
         coarse_.setViscosity(cfg.mu);
+        coarse_.setGravity(cfg.gx, cfg.gy);
         pTot_ = nf_ + 2 * NG;
         stride_ = pTot_ * pTot_;
 
@@ -281,7 +282,8 @@ private:
             ? cfg_.mu * GAMMA / ((GAMMA - 1) * PRANDTL)
             : 0;
         const Euler2DGpu::Params p{pTot_, pTot_, nf_, nf_, dxl, dyl,
-                                   dt,    stride_, cfg_.mu, kT};
+                                   dt,    stride_, cfg_.mu, kT,
+                                   cfg_.gx, cfg_.gy};
         MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
         enc->setComputePipelineState(pso);
         int slot = 0;

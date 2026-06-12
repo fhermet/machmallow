@@ -9,6 +9,8 @@
 //   3. declarative KH initial condition matches the analytic formula
 
 #include "amr/Amr2.hpp"
+#include "amr/AmrGpu.hpp"
+#include "backend/metal/MetalContext.hpp"
 #include "cases/CaseDef.hpp"
 #include "cases/Dmr.hpp"
 #include "core/Boundary.hpp"
@@ -162,6 +164,93 @@ bool gate4_rankineHugoniot() {
     return e < 1e-5;
 }
 
+bool gate5_freeFall() {
+    // Uniform gas under gravity, no gradients: only the split source
+    // acts, so v(t) = g*t and E(t) = E0 + rho*v^2/2 to fp32 precision.
+    AmrConfig cfg;
+    cfg.tagThreshold = Real(1e30);
+    cfg.gy = Real(-0.1);
+    Amr2 amr(32, 32, 0, 0, 1, 1, cfg);
+    amr.fillPhysicalGhosts = [](Grid& g, double) {
+        fillTransmissiveLeft(g);
+        fillTransmissiveRight(g);
+        fillTransmissiveBottom(g);
+        fillTransmissiveTop(g);
+    };
+    amr.init([](Real, Real) { return toCons({Real(1), 0, 0, Real(1)}); });
+
+    const double E0 = double(amr.coarse.at(NG, NG).E);
+    double t = 0;
+    for (int s = 0; s < 50; ++s) {
+        const Real dt = amr.maxStableDtAll(Real(0.4));
+        amr.step(dt, t);
+        t += dt;
+    }
+    const Cons q = amr.coarse.at(NG + 16, NG + 16);
+    const double vWant = -0.1 * t;
+    const double eWant = E0 + 0.5 * vWant * vWant; // rho = 1
+    const double err = std::max(std::fabs(double(q.my) - vWant),
+                                std::fabs(double(q.E) - eWant));
+    std::printf("gate 5 — free fall under gravity, 50 steps: max |diff| "
+                "= %.3e (gate 1e-5)\n",
+                err);
+    return err < 1e-5;
+}
+
+bool gate6_gravityGpuParity() {
+    // RT-like stratified setup, CPU vs GPU lock-step with gravity on.
+    MetalContext ctx;
+    AmrConfig cfg;
+    cfg.tagThreshold = Real(0.04);
+    cfg.gy = Real(-0.1);
+    cfg.periodicX = true;
+    const auto ic = [](Real x, Real y) {
+        Prim w{y > Real(0.75) ? Real(2) : Real(1), 0,
+               Real(0.01 * std::sin(2 * M_PI * double(x) / 0.5) *
+                    std::exp(-std::pow((double(y) - 0.75) / 0.05, 2))),
+               Real(2.5)};
+        w.p += w.rho * Real(-0.1) * (y - Real(0.75));
+        return toCons(w);
+    };
+    const auto bc = [](auto& g, double) {
+        fillPeriodicX(g);
+        fillReflectiveBottom(g);
+        fillReflectiveTop(g);
+    };
+    Amr2 cpu(32, 96, 0, 0, Real(0.5), Real(1.5), cfg);
+    AmrGpu gpu(ctx, 32, 96, 0, 0, Real(0.5), Real(1.5), cfg);
+    cpu.fillPhysicalGhosts = bc;
+    gpu.fillPhysicalGhosts = bc;
+    cpu.init(ic);
+    gpu.init(ic);
+
+    double t = 0;
+    for (int s = 0; s < 30; ++s) {
+        const Real dt = cpu.maxStableDtAll(Real(0.4));
+        cpu.step(dt, t);
+        gpu.step(dt, t);
+        t += dt;
+    }
+    const GridRef g = gpu.coarseRef();
+    double maxRel = 0;
+    for (int j = NG; j < NG + 96; ++j)
+        for (int i = NG; i < NG + 32; ++i) {
+            const Real* pa = &cpu.coarse.at(i, j).rho;
+            const Real* pb = &g.at(i, j).rho;
+            for (int k = 0; k < NVARS; ++k)
+                maxRel = std::max(maxRel,
+                                  std::fabs(double(pa[k]) - pb[k]) /
+                                      (std::fabs(double(pa[k])) + 1e-3));
+        }
+    // Near hydrostatic balance my ~ 0 everywhere, so the relative
+    // metric divides fp32-level absolute differences (~3e-7) by the
+    // 1e-3 floor — 1e-3 here is the roundoff regime, not a bug.
+    std::printf("gate 6 — gravity CPU/GPU lock-step, 30 steps: max rel "
+                "diff = %.3e (gate 1e-3), patches %zu | %zu\n",
+                maxRel, cpu.patches.size(), gpu.patches.size());
+    return maxRel < 1e-3 && cpu.patches.size() == gpu.patches.size();
+}
+
 } // namespace
 
 int main() {
@@ -170,6 +259,8 @@ int main() {
     ok = gate2_dmrGhosts() && ok;
     ok = gate3_khIc() && ok;
     ok = gate4_rankineHugoniot() && ok;
+    ok = gate5_freeFall() && ok;
+    ok = gate6_gravityGpuParity() && ok;
     if (!ok) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;

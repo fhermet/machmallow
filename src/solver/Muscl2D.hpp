@@ -125,7 +125,11 @@ inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu) {
 }
 
 // Advance one step of size dt. Ghost cells must be filled by the caller.
-inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0) {
+// Gravity is a split source applied after the conservative update, with
+// the energy work term taken at the momentum midpoint (2nd order in the
+// split step); cell-local, so AMR refluxing is unaffected.
+inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
+                   Real gx = 0, Real gy = 0) {
     const int tx = g.totx(), ty = g.toty();
     s.resize(g.q.size());
 
@@ -178,6 +182,19 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0) {
             g.q[id] += lx * (s.Fx[g.idx(i - 1, j)] - s.Fx[id]) +
                        ly * (s.Fy[g.idx(i, j - 1)] - s.Fy[id]);
         }
+
+    if (gx != 0 || gy != 0) {
+        for (int j = NG; j < NG + g.ny; ++j)
+            for (int i = NG; i < NG + g.nx; ++i) {
+                Cons& q = g.q[g.idx(i, j)];
+                const Real rho = std::max(q.rho, RHO_FLOOR);
+                const Real mx0 = q.mx, my0 = q.my;
+                q.mx += dt * rho * gx;
+                q.my += dt * rho * gy;
+                q.E += Real(0.5) * dt *
+                       (gx * (mx0 + q.mx) + gy * (my0 + q.my));
+            }
+    }
 }
 
 } // namespace mm

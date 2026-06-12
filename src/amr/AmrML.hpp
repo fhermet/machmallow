@@ -422,11 +422,11 @@ private:
 
     void stepLevel_(int l, Real dt) {
         if (l == 0) {
-            step2D(base, dt, scratchB_, cfg_.mu);
+            step2D(base, dt, scratchB_, cfg_.mu, cfg_.gx, cfg_.gy);
             return;
         }
         for (Patch& p : lvls_[l - 1].patches) {
-            step2D(p.grid, dt, scratch_, cfg_.mu);
+            step2D(p.grid, dt, scratch_, cfg_.mu, cfg_.gx, cfg_.gy);
             p.Fx = scratch_.Fx;
             p.Fy = scratch_.Fy;
         }

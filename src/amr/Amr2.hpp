@@ -34,6 +34,7 @@ struct AmrConfig {
     bool reflux = true;         // off only to demonstrate the leak
     bool subcycle = false;      // coarse at dt, fine at 2 x dt/2
     Real mu = 0;                // dynamic viscosity (0 = inviscid Euler)
+    Real gx = 0, gy = 0;        // gravity (split source)
     bool periodicX = false;     // periodic domain (patch ghosts, reflux
     bool periodicY = false;     // and side masks wrap accordingly)
 };
@@ -264,9 +265,9 @@ private:
         fillPhysicalGhosts(coarse, t);
         fillAllPatchGhosts_(t, Real(-1));
 
-        step2D(coarse, dt, scratchC_, cfg_.mu); // + coarse fluxes for refluxing
+        step2D(coarse, dt, scratchC_, cfg_.mu, cfg_.gx, cfg_.gy); // + fluxes kept
         for (Patch& p : patches) {
-            step2D(p.grid, dt, scratchF_, cfg_.mu);
+            step2D(p.grid, dt, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
             if (cfg_.reflux) {
                 refluxCoarse_(p, dt);
                 refluxFine_(p, dt, scratchF_);
@@ -284,10 +285,10 @@ private:
         fillPhysicalGhosts(coarse, t);
         fillAllPatchGhosts_(t, Real(-1)); // substep 1 ghosts at t^n
 
-        step2D(coarse, dtC, scratchC_, cfg_.mu);
+        step2D(coarse, dtC, scratchC_, cfg_.mu, cfg_.gx, cfg_.gy);
         for (Patch& p : patches) {
             if (cfg_.reflux) refluxCoarse_(p, dtC);
-            step2D(p.grid, dtF, scratchF_, cfg_.mu);
+            step2D(p.grid, dtF, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
             if (cfg_.reflux) refluxFine_(p, dtF, scratchF_);
         }
 
@@ -295,7 +296,7 @@ private:
         // the half-time blend of t^n and t^{n+1}.
         fillAllPatchGhosts_(t + dtF, Real(0.5));
         for (Patch& p : patches) {
-            step2D(p.grid, dtF, scratchF_, cfg_.mu);
+            step2D(p.grid, dtF, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
             if (cfg_.reflux) refluxFine_(p, dtF, scratchF_);
         }
     }

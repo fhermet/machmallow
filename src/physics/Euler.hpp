@@ -9,6 +9,16 @@ namespace mm {
 
 struct Prim {
     Real rho, u, v, p;
+
+    enum class Var { Rho, U, V, P };
+    void add(Var w, Real d) {
+        switch (w) {
+        case Var::Rho: rho += d; break;
+        case Var::U: u += d; break;
+        case Var::V: v += d; break;
+        case Var::P: p += d; break;
+        }
+    }
 };
 
 struct Cons {

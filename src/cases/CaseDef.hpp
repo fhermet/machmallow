@@ -43,6 +43,7 @@ public:
     Real x0 = 0, y0 = 0, lx = 1, ly = 1;
     int nx = 64, ny = 64;
     bool periodicX = false, periodicY = false;
+    Real gx = 0, gy = 0; // gravity ([physics] gravity = gx gy)
 
     static CaseDef parse(const Config& cfg) {
         CaseDef c;
@@ -54,6 +55,15 @@ public:
             throw std::runtime_error("[domain] x1/y1 must exceed x0/y0");
         c.nx = cfg.getInt("grid.nx", 64);
         c.ny = cfg.getInt("grid.ny", 64);
+
+        if (cfg.has("physics.gravity")) {
+            const auto g = tokens_(cfg.requireString("physics.gravity"));
+            if (g.size() != 2)
+                throw std::runtime_error(
+                    "[physics] gravity = <gx> <gy>");
+            c.gx = num_(g[0]);
+            c.gy = num_(g[1]);
+        }
 
         // named states: plain ones first, then derived (Rankine-Hugoniot
         // post-shock states referencing a plain state)
@@ -109,7 +119,8 @@ public:
         Prim w = def_;
         for (const Region& r : regions_)
             if (r.inside(x, y, t)) w = r.st;
-        for (const Perturb& pb : perturbs_) pb.apply(w, x, x0, lx);
+        for (const Perturb& pb : perturbs_)
+            pb.apply(w, x, y, x0, lx, gy);
         return w;
     }
     Cons state(Real x, Real y, double t) const {
@@ -192,22 +203,35 @@ private:
     };
 
     struct Perturb {
-        enum class Var { Rho, U, V, P } var;
-        enum class Kind { Sin, Erf } kind;
-        Real a = 0, b = 0, c = 0; // sin: periods, amp | erf: x0, w, amp
+        Prim::Var var = Prim::Var::Rho;
+        // Sin: a=periods, b=amp | Erf: a=x0, b=width, c=amp
+        // SinG (sin x gaussian in y): a=periods, b=amp, c=yc, d=sigma
+        // Hydro (hydrostatic pressure): a=yref -> p += rho*gy*(y-yref)
+        enum class Kind { Sin, Erf, SinG, Hydro } kind;
+        Real a = 0, b = 0, c = 0, d = 0;
 
-        void apply(Prim& w, Real x, Real x0, Real lx) const {
-            Real d = 0;
-            if (kind == Kind::Sin)
-                d = b * Real(std::sin(2 * M_PI * double(a) *
-                                      double((x - x0) / lx)));
-            else
-                d = c * Real(std::erf(double((x - a) / b)));
-            switch (var) {
-            case Var::Rho: w.rho += d; break;
-            case Var::U: w.u += d; break;
-            case Var::V: w.v += d; break;
-            case Var::P: w.p += d; break;
+        void apply(Prim& w, Real x, Real y, Real x0, Real lx,
+                   Real gy) const {
+            switch (kind) {
+            case Kind::Sin:
+                w.add(var, b * Real(std::sin(2 * M_PI * double(a) *
+                                             double((x - x0) / lx))));
+                break;
+            case Kind::Erf:
+                w.add(var, c * Real(std::erf(double((x - a) / b))));
+                break;
+            case Kind::SinG: {
+                const Real e = (y - c) / d;
+                w.add(var,
+                      b *
+                          Real(std::sin(2 * M_PI * double(a) *
+                                        double((x - x0) / lx))) *
+                          Real(std::exp(-double(e) * e)));
+                break;
+            }
+            case Kind::Hydro:
+                w.p += w.rho * gy * (y - a);
+                break;
             }
         }
     };
@@ -356,10 +380,10 @@ private:
         const auto toks = tokens_(spec);
         Perturb pb;
         const auto var = [&](const std::string& v) {
-            if (v == "rho") return Perturb::Var::Rho;
-            if (v == "u") return Perturb::Var::U;
-            if (v == "v") return Perturb::Var::V;
-            if (v == "p") return Perturb::Var::P;
+            if (v == "rho") return Prim::Var::Rho;
+            if (v == "u") return Prim::Var::U;
+            if (v == "v") return Prim::Var::V;
+            if (v == "p") return Prim::Var::P;
             throw std::runtime_error("unknown perturb variable: " + v);
         };
         if (toks.size() == 4 && toks[1] == "sin") {
@@ -368,6 +392,20 @@ private:
             pb.a = num_(toks[2]); // periods over the domain width
             pb.b = num_(toks[3]); // amplitude
             pb.c = 0;
+        } else if (toks.size() == 6 && toks[1] == "sing") {
+            pb.var = var(toks[0]);
+            pb.kind = Perturb::Kind::SinG;
+            pb.a = num_(toks[2]); // periods
+            pb.b = num_(toks[3]); // amplitude
+            pb.c = num_(toks[4]); // y center of the gaussian envelope
+            pb.d = num_(toks[5]); // sigma
+        } else if (toks.size() == 3 && toks[1] == "hydro") {
+            if (toks[0] != "p")
+                throw std::runtime_error(
+                    "hydro perturb applies to p only");
+            pb.var = Prim::Var::P;
+            pb.kind = Perturb::Kind::Hydro;
+            pb.a = num_(toks[2]); // reference height (p unchanged there)
         } else if (toks.size() == 5 && toks[1] == "erf") {
             pb.var = var(toks[0]);
             pb.kind = Perturb::Kind::Erf;
@@ -466,6 +504,18 @@ private:
                     Cons c = g.at(mi, mj);
                     if (xSide) c.mx = -c.mx;
                     else c.my = -c.my;
+                    // Under gravity a mirrored pressure flips the
+                    // hydrostatic gradient at the wall and pumps energy
+                    // (boundary rows flip-flop until blow-up):
+                    // extrapolate p hydrostatically instead.
+                    const Real gn = xSide ? gx : gy;
+                    if (gn != 0) {
+                        Prim w = toPrim(c);
+                        const Real dpos = xSide ? g.xc(i) - g.xc(mi)
+                                                : g.yc(j) - g.yc(mj);
+                        w.p = std::max(w.p + w.rho * gn * dpos, P_FLOOR);
+                        c = toCons(w);
+                    }
                     g.at(i, j) = c;
                     break;
                 }

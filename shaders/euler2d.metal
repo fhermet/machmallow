@@ -20,6 +20,7 @@ struct Params {
     float dx, dy, dt;
     int stride;   // cells per pool slot (0 for plain kernels)
     float mu, kT; // dynamic viscosity and heat conductivity (0 = Euler)
+    float gx, gy; // gravity (split source in the update kernel)
 };
 
 // ---- physics ------------------------------------------------------------
@@ -196,8 +197,18 @@ inline void updateBody(device float4* q, device const float4* Fx,
                        device const float4* Fy, constant Params& P,
                        int base, int i, int j) {
     const int id = base + j * P.tx + i;
-    q[id] += (P.dt / P.dx) * (Fx[id - 1] - Fx[id]) +
-             (P.dt / P.dy) * (Fy[id - P.tx] - Fy[id]);
+    float4 qn = q[id] + (P.dt / P.dx) * (Fx[id - 1] - Fx[id]) +
+                (P.dt / P.dy) * (Fy[id - P.tx] - Fy[id]);
+    if (P.gx != 0.0f || P.gy != 0.0f) {
+        // gravity split source; same arithmetic order as the CPU path
+        const float rho = max(qn.x, RHO_FLOOR);
+        const float mx0 = qn.y, my0 = qn.z;
+        qn.y += P.dt * rho * P.gx;
+        qn.z += P.dt * rho * P.gy;
+        qn.w += 0.5f * P.dt *
+                (P.gx * (mx0 + qn.y) + P.gy * (my0 + qn.z));
+    }
+    q[id] = qn;
 }
 
 // Max wave speed per direction + min density (viscous dt limit):

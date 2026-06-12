@@ -263,6 +263,8 @@ int list() {
         "                         | circle cx cy r : X\n"
         "             perturb.N = u|v|rho|p sin periods amp\n"
         "                         | u|v|rho|p erf x0 width amp\n"
+        "                         | u|v|rho|p sing per amp yc sigma\n"
+        "                         | p hydro yref (hydrostatique)\n"
         "  [bc]       x|y = periodic\n"
         "             left|right|bottom|top = transmissive | reflective\n"
         "                 | analytic | inflow X\n"
@@ -270,6 +272,8 @@ int list() {
         "             ('analytic' evaluates the time-dependent region\n"
         "              stack at the ghosts: exact moving-shock BCs)\n"
         "  top level  t_end cfl mu backend=cpu|hybrid restart=<ck>\n"
+        "  [physics]  gravity = gx gy (source splittée ; murs\n"
+        "             reflective hydrostatiques)\n"
         "  [amr]      enabled levels block tag_threshold tag_velocity\n"
         "             regrid_every subcycle\n"
         "  [output]   frames prefix checkpoint max_steps\n"
@@ -298,6 +302,8 @@ int main(int argc, char** argv) {
         AmrConfig acfg = amrConfigFrom(cfg);
         acfg.periodicX = cd.periodicX;
         acfg.periodicY = cd.periodicY;
+        acfg.gx = cd.gx;
+        acfg.gy = cd.gy;
 
         if (cd.nx % acfg.blockC != 0 || cd.ny % acfg.blockC != 0)
             throw std::runtime_error(
@@ -328,6 +334,8 @@ int main(int argc, char** argv) {
             cfg.getString("output.checkpoint", "");
             cfg.getInt("output.max_steps", 0);
             cfg.getString("restart", "");
+            cfg.getInt("diagnostics.every", 0);
+            cfg.getString("diagnostics.file", "");
             warnUnusedKeys(cfg);
             std::printf("config OK\n");
             return EXIT_SUCCESS;
