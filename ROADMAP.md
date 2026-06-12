@@ -163,6 +163,18 @@ extrema lisses).
   l'update incrémental MUSCL — dérive de masse ~1e-5 sur domaine
   fermé (vs ~1e-8), c'est le plancher de la formulation, pas une
   fuite (le reflux pondéré est conservatif).
+- [x] ~~LLF → faces HLLC~~ — l'utilisateur a vu juste : le splitting
+  Lax-Friedrichs dissipe ∝ |u|+c sur TOUTES les ondes, y compris le
+  cisaillement (∝ |u|) que HLLC résout quasi exactement — le KH WENO
+  était VISIBLEMENT plus diffusé que MUSCL malgré l'ordre formel.
+  Remède : reconstruction WENO5 des états primitifs de face + HLLC.
+  Re-mesures : Sod bat désormais MUSCL (1.29e-3 vs 1.46e-3), vortex
+  6× moins dissipé, KH +14-19 %% d'enstrophie retenue en phase
+  d'enroulement. Leçons : (a) l'ordre 2D mesuré (~2.2) révèle la
+  quadrature de face dim-par-dim que le LLF masquait — la valeur est
+  la CONSTANTE ; (b) e64 de l'onde d'entropie = plancher temporel RK3
+  (identique entre variantes à 5 chiffres) — chaque mesure d'ordre
+  doit savoir quel plafond elle touche.
 - **Sortie** : acoustique/vortex à l'ordre ≥3 en lisse, interfaces
   RT/KH/RM visiblement plus fines à résolution égale.
 

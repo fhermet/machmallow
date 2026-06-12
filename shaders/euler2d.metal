@@ -728,8 +728,8 @@ kernel void wave_y_pool(device const float4* q [[buffer(0)]],
 
 // ---- WENO5 + SSP-RK3 kernels (mirrors solver/Weno2D.hpp) ------------------
 //
-// Component-wise local Lax-Friedrichs split fluxes, WENO5 (Jiang-Shu)
-// reconstruction of each split flux from its upwind 5-point stencil.
+// WENO5 (Jiang-Shu) reconstruction of the primitive face states fed to
+// HLLC (LLF splitting smeared contacts/shear; see the CPU file).
 // The flux kernels also accumulate the RK-weighted flux sum (zeroed at
 // stage 0) that the CPU refluxing reads; rk_update captures u0 at
 // stage 0 and applies q = rka*u0 + rkb*(q + dt L).
@@ -758,25 +758,17 @@ inline void wenoFluxBody(device const float4* q, device float4* F,
                          device float4* FA, constant Params& P, int base,
                          int i, int j, int str, bool xDir) {
     const int id = base + j * P.tx + i;
-    float4 f[6], u[6];
-    float alpha = 0.0f;
-    for (int k = 0; k < 6; ++k) {
-        const float4 c = q[id + (k - 2) * str];
-        const float4 w = toPrim(c);
-        u[k] = c;
-        f[k] = xDir ? fluxX(w) : fluxY(w);
-        alpha = max(alpha, fabs(xDir ? w.y : w.z) + soundSpeed(w));
-    }
-    float4 out;
+    float4 w[6];
+    for (int k = 0; k < 6; ++k)
+        w[k] = toPrim(q[id + (k - 2) * str]);
+    float4 L, R;
     for (int m = 0; m < 4; ++m) {
-        float fp[6], fm[6];
-        for (int k = 0; k < 6; ++k) {
-            fp[k] = 0.5f * (f[k][m] + alpha * u[k][m]);
-            fm[k] = 0.5f * (f[k][m] - alpha * u[k][m]);
-        }
-        out[m] = weno5rec(fp[0], fp[1], fp[2], fp[3], fp[4]) +
-                 weno5rec(fm[5], fm[4], fm[3], fm[2], fm[1]);
+        L[m] = weno5rec(w[0][m], w[1][m], w[2][m], w[3][m], w[4][m]);
+        R[m] = weno5rec(w[5][m], w[4][m], w[3][m], w[2][m], w[1][m]);
     }
+    L.x = max(L.x, RHO_FLOOR); L.w = max(L.w, P_FLOOR);
+    R.x = max(R.x, RHO_FLOOR); R.w = max(R.w, P_FLOOR);
+    const float4 out = xDir ? hllcFluxX(L, R) : hllcFluxY(L, R);
     F[id] = out;
     FA[id] = (P.rks == 0 ? float4(0.0f) : FA[id]) + P.rkw * out;
 }

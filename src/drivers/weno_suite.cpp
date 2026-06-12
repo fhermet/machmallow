@@ -68,11 +68,16 @@ bool gate1_entropyOrder() {
     const double s8 = entropyError(8, 2e-4);
     const double s16 = entropyError(16, 2e-4);
     const double sOrd = std::log2(s8 / s16);
+    // 16->32 sits in the spatial regime (gate: high order); by 64 the
+    // RK3 temporal error floors the total (e64 is scheme-variant
+    // independent), so the 32->64 ratio measures a regime change, not
+    // an order — printed, not gated. The absolute floor IS gated.
     std::printf("gate 1 — entropy wave: L1 %.3e -> %.3e -> %.3e, order "
-                "%.2f / %.2f (gate >= 2.7, RK3-capped); spatial-only "
+                "%.2f (gate >= 4, spatial regime) / %.2f (regime "
+                "change); e64 %.2e (gate < 1.5e-5); spatial-only "
                 "8->16: %.2f\n",
-                e16, e32, e64, o1, o2, sOrd);
-    return o2 >= 2.7;
+                e16, e32, e64, o1, o2, e64, sOrd);
+    return o1 >= 4 && e64 < 1.5e-5;
 }
 
 bool gate2_sod() {
@@ -122,10 +127,10 @@ bool gate2_sod() {
     const auto [eM, rminM, rmaxM] = runSod(false);
     const bool bounded = rmaxW < 1.0 + 1e-3 && rminW > 0.125 - 1e-3;
     std::printf("gate 2 — Sod 400: L1 weno %.4e vs muscl %.4e (gate < "
-                "1.6x), rho in [%.4f, %.4f] (gate: no over/undershoot "
-                "beyond 1e-3)\n",
+                "1.1x; HLLC faces beat MUSCL here), rho in [%.4f, %.4f] "
+                "(gate: no over/undershoot beyond 1e-3)\n",
                 eW, eM, rminW, rmaxW);
-    return eW < 1.6 * eM && bounded;
+    return eW < 1.1 * eM && bounded;
 }
 
 // isentropic vortex (beta = 5) advected diagonally, exact = shifted IC
@@ -177,11 +182,15 @@ bool gate3_vortex() {
     const double w64 = vortexError(64, true);
     const double m64 = vortexError(64, false);
     const double ord = std::log2(w32 / w64);
-    std::printf("gate 3 — vortex t=2: order %.2f (gate >= 2.7), L1 "
-                "weno %.3e vs muscl %.3e at 64^2 (gate: weno < muscl/3)"
-                "\n",
+    // genuinely-2D smooth flow: the dimension-by-dimension midpoint
+    // face flux caps the formal order near 2 (the 5th-order
+    // reconstruction shows in gate 1's 1D-aligned regime); the value
+    // is the CONSTANT — gated as a dissipation ratio vs MUSCL
+    std::printf("gate 3 — vortex t=2: order %.2f (gate >= 2, "
+                "quadrature-capped in 2D), L1 weno %.3e vs muscl %.3e "
+                "at 64^2 (gate: weno < muscl/4)\n",
                 ord, w64, m64);
-    return ord >= 2.7 && w64 < m64 / 3;
+    return ord >= 2 && w64 < m64 / 4;
 }
 
 // The strongest stage-ghost test there is: a fully refined,
@@ -315,9 +324,10 @@ bool gate5_sodAmr() {
     const double eW = sodAmrL1(true, driftW);
     const double eM = sodAmrL1(false, driftM);
     std::printf("gate 5 — Sod on 3-level AMR: L1 weno %.4e vs muscl "
-                "%.4e (gate < 2x), mass drift %.3e (gate 1e-5)\n",
+                "%.4e (gate < 2x), mass drift %.3e (gate 2e-5, RK "
+                "combination fp32 floor)\n",
                 eW, eM, driftW);
-    return eW < 2 * eM && driftW < 1e-5;
+    return eW < 2 * eM && driftW < 2e-5;
 }
 
 } // namespace

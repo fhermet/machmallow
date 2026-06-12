@@ -1,15 +1,20 @@
 #pragma once
 
-// Finite-difference WENO5 (Jiang & Shu) with local Lax-Friedrichs flux
-// splitting, advanced by SSP-RK3 — the v1.3 high-order scheme, kept
-// separate from the validated MUSCL-Hancock paths.
+// WENO5 (Jiang & Shu) face reconstruction + HLLC, advanced by SSP-RK3
+// — the v1.3 high-order scheme, kept separate from the validated
+// MUSCL-Hancock paths.
 //
-// Dimension-by-dimension: at each x-face i+1/2 the split fluxes
-// f± = (F(q) ± alpha*q)/2 are reconstructed component-wise from their
-// 5-point upwind stencils (alpha = max |u|+c over the stencil, per
-// face), and the divergence of the face fluxes is the RHS. Conservative
-// by construction, and the face fluxes are retained so the AMR
-// refluxing machinery can consume them like the MUSCL ones.
+// Dimension-by-dimension: at each face the left/right PRIMITIVE states
+// are reconstructed component-wise from their 5-point upwind stencils
+// and fed to the HLLC solver. A first cut used local Lax-Friedrichs
+// flux splitting instead (textbook FD-WENO5): its dissipation scales
+// with |u|+c on EVERY wave, so contacts and shear layers — the waves
+// HLLC resolves almost exactly — came out visibly more diffused than
+// MUSCL-HLLC on Kelvin-Helmholtz despite the formal order. WENO5
+// states + HLLC keeps the high-order smooth-flow accuracy AND the
+// contact sharpness. Conservative by construction; the face fluxes are
+// retained so the AMR refluxing machinery can consume them like the
+// MUSCL ones.
 //
 // SSP-RK3 (Shu-Osher):
 //   u1 = u + dt L(u)
@@ -72,51 +77,35 @@ inline void wenoFluxes(const Grid& g, ScratchW& s) {
     using wenodetail::weno5;
 
     // direction-agnostic kernel: str is the cell stride along the
-    // direction, flux() the directional physical flux, vel() the
-    // directional velocity
-    const auto faces = [&](int str, auto&& flux, auto&& vel,
-                           std::vector<Cons>& F, int i0, int i1, int j0,
-                           int j1) {
+    // direction; the face sits between cells id and id+str
+    const auto faces = [&](int str, bool xDir, std::vector<Cons>& F,
+                           int i0, int i1, int j0, int j1) {
         for (int j = j0; j < j1; ++j)
             for (int i = i0; i < i1; ++i) {
                 const std::size_t id = g.idx(i, j);
-                // stencil cells id-2str .. id+3str around the face
-                std::size_t c[6];
+                Prim w[6];
                 for (int k = 0; k < 6; ++k)
-                    c[k] = id + std::size_t(k - 2) * str;
-                Real alpha = 0;
-                Cons f[6];
-                for (int k = 0; k < 6; ++k) {
-                    const Prim w = toPrim(g.q[c[k]]);
-                    alpha = std::max(alpha,
-                                     std::fabs(vel(w)) + soundSpeed(w));
-                    f[k] = flux(w);
-                }
-                Cons out{};
-                Real* po = &out.rho;
+                    w[k] = toPrim(g.q[id + std::size_t(k - 2) * str]);
+                Prim L{}, R{};
+                Real* pl = &L.rho;
+                Real* pr = &R.rho;
                 for (int m = 0; m < NVARS; ++m) {
-                    Real fp[6], fm[6];
-                    for (int k = 0; k < 6; ++k) {
-                        const Real fv = (&f[k].rho)[m];
-                        const Real qv = (&g.q[c[k]].rho)[m];
-                        fp[k] = Real(0.5) * (fv + alpha * qv);
-                        fm[k] = Real(0.5) * (fv - alpha * qv);
-                    }
-                    po[m] = weno5(fp[0], fp[1], fp[2], fp[3], fp[4]) +
-                            weno5(fm[5], fm[4], fm[3], fm[2], fm[1]);
+                    const auto v = [&](int k) { return (&w[k].rho)[m]; };
+                    pl[m] = weno5(v(0), v(1), v(2), v(3), v(4));
+                    pr[m] = weno5(v(5), v(4), v(3), v(2), v(1));
                 }
-                F[id] = out;
+                L.rho = std::max(L.rho, RHO_FLOOR);
+                L.p = std::max(L.p, P_FLOOR);
+                R.rho = std::max(R.rho, RHO_FLOOR);
+                R.p = std::max(R.p, P_FLOOR);
+                F[id] = xDir ? hllcFluxX(L, R) : hllcFluxY(L, R);
             }
     };
 
-    const auto fx = [](const Prim& w) { return fluxX(w); };
-    const auto fy = [](const Prim& w) { return fluxY(w); };
-    const auto ux = [](const Prim& w) { return w.u; };
-    const auto uy = [](const Prim& w) { return w.v; };
     // x-faces between i and i+1 for i in [NG-1, NG+nx)
-    faces(1, fx, ux, s.Fx, NG - 1, NG + g.nx, NG, NG + g.ny);
+    faces(1, true, s.Fx, NG - 1, NG + g.nx, NG, NG + g.ny);
     // y-faces between j and j+1
-    faces(g.totx(), fy, uy, s.Fy, NG, NG + g.nx, NG - 1, NG + g.ny);
+    faces(g.totx(), false, s.Fy, NG, NG + g.nx, NG - 1, NG + g.ny);
 }
 
 // One SSP-RK3 step; fill(g) refreshes the ghosts and is called before
