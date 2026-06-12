@@ -9,8 +9,10 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace mm {
 
@@ -49,29 +51,29 @@ public:
 
     std::string getString(const std::string& key,
                           const std::string& def) const {
-        const auto it = kv_.find(key);
+        const auto it = find_(key);
         return it == kv_.end() ? def : it->second;
     }
     std::string requireString(const std::string& key) const {
-        const auto it = kv_.find(key);
+        const auto it = find_(key);
         if (it == kv_.end())
             throw std::runtime_error("missing required config key: " + key);
         return it->second;
     }
 
     double getReal(const std::string& key, double def) const {
-        const auto it = kv_.find(key);
+        const auto it = find_(key);
         return it == kv_.end() ? def : toReal_(key, it->second);
     }
 
     int getInt(const std::string& key, int def) const {
-        const auto it = kv_.find(key);
+        const auto it = find_(key);
         if (it == kv_.end()) return def;
         return int(toReal_(key, it->second));
     }
 
     bool getBool(const std::string& key, bool def) const {
-        const auto it = kv_.find(key);
+        const auto it = find_(key);
         if (it == kv_.end()) return def;
         const std::string& v = it->second;
         if (v == "true" || v == "1" || v == "on" || v == "yes") return true;
@@ -79,6 +81,23 @@ public:
             return false;
         throw std::runtime_error("config key '" + key +
                                  "': not a boolean: " + v);
+    }
+
+    // Keys present in the file but never looked up — typos, usually.
+    std::vector<std::string> unusedKeys() const {
+        std::vector<std::string> out;
+        for (const auto& [k, v] : kv_)
+            if (used_.count(k) == 0) out.push_back(k);
+        return out;
+    }
+
+    // All keys of a section, in file order is not preserved (map order).
+    std::vector<std::string> sectionKeys(const std::string& section) const {
+        std::vector<std::string> out;
+        const std::string prefix = section + ".";
+        for (const auto& [k, v] : kv_)
+            if (k.rfind(prefix, 0) == 0) out.push_back(k);
+        return out;
     }
 
 private:
@@ -93,6 +112,13 @@ private:
         throw std::runtime_error(path + ":" + std::to_string(ln) + ": " +
                                  what);
     }
+    std::map<std::string, std::string>::const_iterator
+    find_(const std::string& key) const {
+        const auto it = kv_.find(key);
+        if (it != kv_.end()) used_.insert(key);
+        return it;
+    }
+
     static double toReal_(const std::string& key, const std::string& v) {
         char* end = nullptr;
         const double x = std::strtod(v.c_str(), &end);
@@ -103,6 +129,7 @@ private:
     }
 
     std::map<std::string, std::string> kv_;
+    mutable std::set<std::string> used_;
 };
 
 } // namespace mm

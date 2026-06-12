@@ -70,3 +70,7 @@ target_link_libraries(kh_amr PRIVATE mm_metal)
 # Generic case runner driven by cases/*.ini files.
 add_executable(run src/drivers/run.cpp)
 target_link_libraries(run PRIVATE mm_metal)
+
+# Declarative case system vs presets/exact solutions.
+add_executable(casedef_test src/drivers/casedef_test.cpp)
+target_include_directories(casedef_test PRIVATE src)

@@ -38,13 +38,23 @@ Prérequis : macOS 15+, Command Line Tools, CMake ≥ 3.24.
 ./build/run cases/shear.ini    # couche de cisaillement visqueuse (NS)
 ```
 
-Le fichier de cas (INI) choisit le preset physique (`case = sod | dmr |
-shear`), le backend (`cpu | hybrid`), la résolution, la viscosité `mu`,
-les paramètres AMR (`[amr]` : block, seuil de tagging, subcycling) et la
-cadence de sortie (`[output]`). Voir `cases/*.ini` pour des exemples
-commentés. Les exécutables `sod1d`, `sod2d`, `sod_amr`, `dmr_gpu`,
-`dmr_amr`, `shear` restent les harnais de validation (avec portes de
-régression).
+**Le solveur est entièrement piloté par le fichier de cas** — aucun
+C++ par cas. Le fichier déclare le domaine, des états primitifs nommés,
+la condition initiale par régions géométriques (demi-plans — y compris
+fronts de choc *mobiles* —, bandes, rectangles, cercles) avec
+perturbations, et les conditions aux limites par côté (`transmissive`,
+`reflective`, `inflow`, segmentables, périodiques — et `analytic` qui
+réévalue les régions au temps t dans les ghosts : la BC exacte du DMR
+en une ligne). Plus backend, viscosité, AMR (`levels`, tagging,
+subcycling) et sorties.
+
+Pour créer un cas : copier `cases/TEMPLATE.ini` (commenté), puis
+`./build/run --check moncas.ini` (config effective + warnings de clés
+inconnues) et `./build/run --list` (grammaire). L'équivalence du système
+déclaratif avec les anciens presets C++ est verrouillée par
+`casedef_test` (Sod au L1 historique exact, ghosts DMR identiques
+cellule pour cellule). Les exécutables `sod1d`…`mlgpu_amr` restent les
+harnais de validation.
 
 ## Feuille de route
 

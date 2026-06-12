@@ -1,16 +1,17 @@
-// Generic case runner: `./build/run cases/dmr.ini`
-// The case file picks the physics preset (sod | dmr | shear), the
-// backend (cpu = Amr2, hybrid = AmrGpu), resolution, viscosity, AMR
-// parameters and output cadence. Validation drivers (sod*/dmr*/shear)
-// stay hardcoded — this is the front door for exploratory runs.
+// Generic case runner — the solver is fully driven by the case file:
+//   ./build/run cases/dmr.ini            run the case
+//   ./build/run --check cases/dmr.ini    parse + dump effective config
+//   ./build/run --list                   grammar cheat-sheet
+// Domain, states, regions (incl. moving shock fronts), perturbations and
+// per-side BCs are all declared in the INI (see src/cases/CaseDef.hpp).
+// No per-case C++.
 
 #include "amr/Amr2.hpp"
 #include "amr/AmrGpu.hpp"
 #include "amr/AmrGpuML.hpp"
 #include "amr/AmrML.hpp"
 #include "backend/metal/MetalContext.hpp"
-#include "cases/Dmr.hpp"
-#include "core/Boundary.hpp"
+#include "cases/CaseDef.hpp"
 #include "core/Config.hpp"
 #include "io/Checkpoint.hpp"
 #include "io/VthbWriter.hpp"
@@ -20,112 +21,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <functional>
 #include <string>
 
 namespace {
 
 using namespace mm;
 using Clock = std::chrono::steady_clock;
-
-struct CaseSetup {
-    Real x0 = 0, y0 = 0, lx = 1, ly = 1;
-    int aspect = 4; // nx = aspect * ny
-    double tEnd = 0.2;
-    bool periodicX = false, periodicY = false;
-    std::function<Cons(Real, Real)> ic;
-};
-
-template <class G>
-void transmissiveSides(G& g, unsigned sides) {
-    if (sides & SideLeft) fillTransmissiveLeft(g);
-    if (sides & SideRight) fillTransmissiveRight(g);
-    if (sides & SideBottom) fillTransmissiveBottom(g);
-    if (sides & SideTop) fillTransmissiveTop(g);
-}
-
-constexpr unsigned ALL_SIDES =
-    SideLeft | SideRight | SideBottom | SideTop;
-
-// Geometry/time of a preset (needed before the AMR object exists).
-CaseSetup caseGeometry(const std::string& name) {
-    CaseSetup s;
-    if (name == "sod") {
-        s.lx = 1; s.ly = Real(0.25); s.aspect = 4; s.tEnd = 0.2;
-    } else if (name == "dmr") {
-        s.lx = 4; s.ly = 1; s.aspect = 4; s.tEnd = dmr::TEND;
-    } else if (name == "shear") {
-        s.lx = 1; s.ly = Real(0.25); s.aspect = 4; s.tEnd = 0.15;
-    } else if (name == "kh") {
-        s.lx = 1; s.ly = 1; s.aspect = 1; s.tEnd = 2.0;
-        s.periodicX = s.periodicY = true;
-    } else {
-        throw std::runtime_error("unknown case: " + name +
-                                 " (expected sod | dmr | shear | kh)");
-    }
-    return s;
-}
-
-// Wire the preset's IC and BC callbacks into the AMR object.
-template <class AMR>
-void wireCase(const std::string& name, const Config& cfg, AMR& amr,
-              CaseSetup& s) {
-    if (name == "sod") {
-        s.ic = [](Real x, Real) {
-            const bool l = x < Real(0.5);
-            return toCons({l ? Real(1) : Real(0.125), 0, 0,
-                           l ? Real(1) : Real(0.1)});
-        };
-        amr.fillPhysicalGhosts = [](auto& g, double) {
-            transmissiveSides(g, ALL_SIDES);
-        };
-        amr.fillPatchPhysical = [](auto& g, double, unsigned sides) {
-            transmissiveSides(g, sides);
-        };
-    } else if (name == "dmr") {
-        s.ic = [](Real x, Real y) {
-            return dmr::behindShock(x, y, 0) ? dmr::POST : dmr::PRE;
-        };
-        amr.fillPhysicalGhosts = [](auto& g, double t) {
-            dmr::fillGhosts(g, t);
-        };
-        amr.fillPatchPhysical = [](auto& g, double t, unsigned sides) {
-            dmr::fillGhostsSides(g, t, sides);
-        };
-    } else if (name == "shear") {
-        const Real v0 = Real(cfg.getReal("case.v0", 0.2));
-        const Real w0 = Real(cfg.getReal("case.width", 0.05));
-        s.ic = [v0, w0](Real x, Real) {
-            const Real v =
-                Real(0.5) * v0 *
-                Real(std::erf(double(x - Real(0.5)) / double(w0)));
-            return toCons({Real(1), 0, v, Real(1)});
-        };
-        amr.fillPhysicalGhosts = [](auto& g, double) {
-            transmissiveSides(g, ALL_SIDES);
-        };
-        amr.fillPatchPhysical = [](auto& g, double, unsigned sides) {
-            transmissiveSides(g, sides);
-        };
-    } else if (name == "kh") {
-        // Doubly periodic Kelvin-Helmholtz: dense band in counterflow,
-        // sinusoidal v perturbation seeds the billows.
-        const Real u0 = Real(cfg.getReal("case.u0", 0.5));
-        const Real delta = Real(cfg.getReal("case.perturb", 0.01));
-        s.ic = [u0, delta](Real x, Real y) {
-            const bool band = std::fabs(y - Real(0.5)) < Real(0.25);
-            return toCons({band ? Real(2) : Real(1),
-                           band ? u0 / 2 : -u0 / 2,
-                           delta * Real(std::sin(4 * M_PI * double(x))),
-                           Real(2.5)});
-        };
-        amr.fillPhysicalGhosts = [](auto& g, double) {
-            fillPeriodicX(g);
-            fillPeriodicY(g);
-        };
-        // Fully periodic: no physical patch sides, callback stays unset.
-    }
-}
 
 // Bridge over the 2-level and multi-level interfaces.
 template <class AMR>
@@ -147,10 +48,11 @@ void writeFrame(const std::string& base, const AMR& amr) {
 }
 
 template <class AMR>
-int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
+int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
     const Real cfl = Real(cfg.getReal("cfl", 0.4));
-    const double tEnd = cfg.getReal("t_end", s.tEnd);
+    const double tEnd = cfg.getReal("t_end", 0.2);
     const int frames = cfg.getInt("output.frames", 4);
+    const int maxSteps = cfg.getInt("output.max_steps", 0); // 0 = all
     const std::string prefix =
         cfg.getString("output.prefix", "out/run");
     std::filesystem::create_directories(
@@ -159,9 +61,9 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     const std::string restart = cfg.getString("restart", "");
     double t = 0;
     if (restart.empty()) {
-        amr.init(s.ic);
+        amr.init([&](Real x, Real y) { return cd.state(x, y, 0); });
     } else if constexpr (requires { amr.patches; }) {
-        amr.init(s.ic); // builds a valid hierarchy; then overwritten
+        amr.init([&](Real x, Real y) { return cd.state(x, y, 0); });
         t = loadCheckpoint(restart, amr);
         std::printf("restarted from %s at t = %.6f\n", restart.c_str(),
                     t);
@@ -177,7 +79,7 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     int steps = 0, frame = 0;
     std::size_t cellSteps = 0, maxPatches = 0;
     const auto t0 = Clock::now();
-    while (t < tEnd) {
+    while (t < tEnd && (maxSteps == 0 || steps < maxSteps)) {
         Real dt = std::min(amr.maxStableDtAll(cfl), Real(tEnd - t));
         if (steps < 10) dt *= Real(0.3); // gentle start
         amr.step(dt, t);
@@ -196,7 +98,6 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     const double wall =
         std::chrono::duration<double>(Clock::now() - t0).count();
 
-    // Final sanity on the restricted coarse field.
     const GridRef c = amr.coarseRef();
     Real rhoMin = Real(1e30), rhoMax = 0;
     for (int j = NG; j < NG + c.ny; ++j)
@@ -212,7 +113,10 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
     std::printf("rho in [%.4f, %.4f] | mass drift %.2e%s\n",
                 double(rhoMin), double(rhoMax),
                 std::fabs(amr.totalMass() - m0) / m0,
-                s.periodicX && s.periodicY ? " (closed domain)" : "");
+                cd.periodicX && cd.periodicY ? " (closed domain)" : "");
+    if (frame > 0)
+        std::printf("output: %s_0001..%04d (.vthb, ParaView)\n",
+                    prefix.c_str(), frame);
 
     const std::string ckPath = cfg.getString("output.checkpoint", "");
     if (!ckPath.empty()) {
@@ -225,9 +129,6 @@ int runCase(AMR& amr, const CaseSetup& s, const Config& cfg) {
                         "skipped\n");
         }
     }
-    if (frame > 0)
-        std::printf("output: %s_0001..%04d (.vthb, ParaView)\n",
-                    prefix.c_str(), frame);
     if (rhoMin <= 0 || !std::isfinite(double(rhoMax))) {
         std::fprintf(stderr, "FAIL: unphysical density\n");
         return EXIT_FAILURE;
@@ -249,65 +150,149 @@ AmrConfig amrConfigFrom(const Config& cfg) {
     return a;
 }
 
+void warnUnusedKeys(const Config& cfg) {
+    for (const std::string& k : cfg.unusedKeys())
+        std::fprintf(stderr,
+                     "warning: config key '%s' was never used (typo?)\n",
+                     k.c_str());
+}
+
+int usage() {
+    std::fprintf(
+        stderr,
+        "usage: run <case.ini> | run --check <case.ini> | run --list\n");
+    return EXIT_FAILURE;
+}
+
+int list() {
+    std::printf(
+        "Case file grammar (all sections INI, see cases/*.ini):\n"
+        "  [domain]   x0 x1 y0 y1\n"
+        "  [grid]     nx ny (multiples of amr.block)\n"
+        "  [state.X]  rho u v p        named primitive state\n"
+        "  [ic]       default = X\n"
+        "             region.N  = halfplane a b c [speed s] : X\n"
+        "                         (a*x + b*y < c, front moves at normal\n"
+        "                          speed s) | band x|y lo hi : X\n"
+        "                         | rect x0 x1 y0 y1 : X\n"
+        "                         | circle cx cy r : X\n"
+        "             perturb.N = u|v|rho|p sin periods amp\n"
+        "                         | u|v|rho|p erf x0 width amp\n"
+        "  [bc]       x|y = periodic\n"
+        "             left|right|bottom|top = transmissive | reflective\n"
+        "                 | analytic | inflow X\n"
+        "                 [if x|y < val else <spec>]\n"
+        "             ('analytic' evaluates the time-dependent region\n"
+        "              stack at the ghosts: exact moving-shock BCs)\n"
+        "  top level  t_end cfl mu backend=cpu|hybrid restart=<ck>\n"
+        "  [amr]      enabled levels block tag_threshold tag_velocity\n"
+        "             regrid_every subcycle\n"
+        "  [output]   frames prefix checkpoint max_steps\n");
+    return EXIT_SUCCESS;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <case.ini>\n  cases: cases/*.ini\n",
-                     argv[0]);
-        return EXIT_FAILURE;
-    }
+    if (argc < 2) return usage();
+    const std::string a1 = argv[1];
+    if (a1 == "--list") return list();
+    const bool checkOnly = a1 == "--check";
+    if (checkOnly && argc < 3) return usage();
+    const std::string path = checkOnly ? argv[2] : a1;
+
     try {
-        const Config cfg = Config::load(argv[1]);
-        const std::string caseName = cfg.requireString("case");
+        const Config cfg = Config::load(path);
+        const CaseDef cd = CaseDef::parse(cfg);
         const std::string backend = cfg.getString("backend", "hybrid");
         AmrConfig acfg = amrConfigFrom(cfg);
+        acfg.periodicX = cd.periodicX;
+        acfg.periodicY = cd.periodicY;
 
-        const int ny = cfg.getInt("grid.ny", 64);
-        if (ny % acfg.blockC != 0)
+        if (cd.nx % acfg.blockC != 0 || cd.ny % acfg.blockC != 0)
             throw std::runtime_error(
-                "grid.ny must be a multiple of amr.block");
+                "grid.nx/ny must be multiples of amr.block");
 
-        CaseSetup s = caseGeometry(caseName);
-        acfg.periodicX = s.periodicX;
-        acfg.periodicY = s.periodicY;
-        const int nx = cfg.getInt("grid.nx", s.aspect * ny);
-        if (nx % acfg.blockC != 0)
-            throw std::runtime_error(
-                "grid.nx must be a multiple of amr.block");
-
-        std::printf("case %s | backend %s | grid %dx%d%s%s | levels %d | "
-                    "mu %g\n",
-                    caseName.c_str(), backend.c_str(), nx, ny,
-                    cfg.getBool("amr.enabled", true) ? " | AMR" : "",
-                    acfg.subcycle ? "+subcycle" : "", acfg.maxLevels,
+        std::printf("case %s | backend %s | grid %dx%d | domain "
+                    "[%g,%g]x[%g,%g]%s%s | levels %d | mu %g\n",
+                    path.c_str(), backend.c_str(), cd.nx, cd.ny,
+                    double(cd.x0), double(cd.x0 + cd.lx), double(cd.y0),
+                    double(cd.y0 + cd.ly),
+                    cd.periodicX ? " | periodicX" : "",
+                    cd.periodicY ? " | periodicY" : "", acfg.maxLevels,
                     double(acfg.mu));
 
-        // levels == 2 keeps the battle-tested pair classes (and their
-        // checkpoint support); deeper hierarchies use the ML classes.
+        if (checkOnly) {
+            std::printf("t_end %g | cfl %g | frames %d | tag %g/%g | "
+                        "regrid %d | subcycle %d\n",
+                        cfg.getReal("t_end", 0.2), cfg.getReal("cfl", 0.4),
+                        cfg.getInt("output.frames", 4),
+                        double(acfg.tagThreshold),
+                        double(acfg.tagVelocity), acfg.regridEvery,
+                        int(acfg.subcycle));
+            cfg.getString("output.prefix", "");
+            cfg.getString("output.checkpoint", "");
+            cfg.getInt("output.max_steps", 0);
+            cfg.getString("restart", "");
+            warnUnusedKeys(cfg);
+            std::printf("config OK\n");
+            return EXIT_SUCCESS;
+        }
+
+        int rc;
         if (backend == "cpu") {
             if (acfg.maxLevels == 2) {
-                Amr2 amr(nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
-                wireCase(caseName, cfg, amr, s);
-                return runCase(amr, s, cfg);
+                Amr2 amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);
+                amr.fillPhysicalGhosts = [&cd](Grid& g, double t) {
+                    cd.fillGhosts(g, t);
+                };
+                amr.fillPatchPhysical = [&cd](Grid& g, double t,
+                                              unsigned s) {
+                    cd.fillGhostSides(g, t, s);
+                };
+                rc = runCase(amr, cd, cfg);
+            } else {
+                AmrML amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);
+                amr.fillPhysicalGhosts = [&cd](Grid& g, double t) {
+                    cd.fillGhosts(g, t);
+                };
+                amr.fillPatchPhysical = [&cd](Grid& g, double t,
+                                              unsigned s) {
+                    cd.fillGhostSides(g, t, s);
+                };
+                rc = runCase(amr, cd, cfg);
             }
-            AmrML amr(nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
-            wireCase(caseName, cfg, amr, s);
-            return runCase(amr, s, cfg);
-        }
-        if (backend == "hybrid") {
+        } else if (backend == "hybrid") {
             MetalContext ctx;
             if (acfg.maxLevels == 2) {
-                AmrGpu amr(ctx, nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
-                wireCase(caseName, cfg, amr, s);
-                return runCase(amr, s, cfg);
+                AmrGpu amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly,
+                           acfg);
+                amr.fillPhysicalGhosts = [&cd](GridRef& g, double t) {
+                    cd.fillGhosts(g, t);
+                };
+                amr.fillPatchPhysical = [&cd](GridRef& g, double t,
+                                              unsigned s) {
+                    cd.fillGhostSides(g, t, s);
+                };
+                rc = runCase(amr, cd, cfg);
+            } else {
+                AmrGpuML amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx,
+                             cd.ly, acfg);
+                amr.fillPhysicalGhosts = [&cd](GridRef& g, double t) {
+                    cd.fillGhosts(g, t);
+                };
+                amr.fillPatchPhysical = [&cd](GridRef& g, double t,
+                                              unsigned s) {
+                    cd.fillGhostSides(g, t, s);
+                };
+                rc = runCase(amr, cd, cfg);
             }
-            AmrGpuML amr(ctx, nx, ny, s.x0, s.y0, s.lx, s.ly, acfg);
-            wireCase(caseName, cfg, amr, s);
-            return runCase(amr, s, cfg);
+        } else {
+            throw std::runtime_error("unknown backend: " + backend +
+                                     " (expected cpu | hybrid)");
         }
-        throw std::runtime_error("unknown backend: " + backend +
-                                 " (expected cpu | hybrid)");
+        warnUnusedKeys(cfg);
+        return rc;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
         return EXIT_FAILURE;

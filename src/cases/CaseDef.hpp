@@ -1,0 +1,401 @@
+#pragma once
+
+// Fully declarative case definition: domain, named primitive states,
+// geometric regions (with optional moving shock fronts), profile
+// modifiers and per-side boundary conditions — everything parsed from
+// the INI case file, no per-case C++.
+//
+//   [domain]   x0/x1/y0/y1
+//   [grid]     nx/ny
+//   [state.X]  rho/u/v/p
+//   [ic]       default = X
+//              region.N  = halfplane a b c [speed s] : X
+//                        | band x|y lo hi : X
+//                        | rect x0 x1 y0 y1 : X
+//                        | circle cx cy r : X
+//              perturb.N = u|v|rho|p sin periods amp
+//                        | u|v|rho|p erf x0 width amp
+//   [bc]       x|y = periodic
+//              left|right|bottom|top =
+//                  transmissive | reflective | analytic | inflow X
+//                  [if x|y < val else <spec>]
+//
+// The key idea: `analytic` ghosts re-evaluate the (time-dependent)
+// region stack at the ghost centers, so exact moving-shock BCs (DMR's
+// top boundary) come for free from the same description as the IC.
+
+#include "core/Boundary.hpp"
+#include "core/Config.hpp"
+#include "core/Grid.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+namespace mm {
+
+class CaseDef {
+public:
+    Real x0 = 0, y0 = 0, lx = 1, ly = 1;
+    int nx = 64, ny = 64;
+    bool periodicX = false, periodicY = false;
+
+    static CaseDef parse(const Config& cfg) {
+        CaseDef c;
+        c.x0 = Real(cfg.getReal("domain.x0", 0));
+        c.y0 = Real(cfg.getReal("domain.y0", 0));
+        c.lx = Real(cfg.getReal("domain.x1", 1)) - c.x0;
+        c.ly = Real(cfg.getReal("domain.y1", 1)) - c.y0;
+        if (c.lx <= 0 || c.ly <= 0)
+            throw std::runtime_error("[domain] x1/y1 must exceed x0/y0");
+        c.nx = cfg.getInt("grid.nx", 64);
+        c.ny = cfg.getInt("grid.ny", 64);
+
+        // named states
+        for (const std::string& key : cfg.sectionKeys("state")) {
+            // state.NAME.rho etc? No: sections are [state.NAME] -> keys
+            // "state.NAME.rho". Extract NAME.
+            const std::string rest = key.substr(6); // after "state."
+            const auto dot = rest.find('.');
+            if (dot == std::string::npos) continue;
+            const std::string name = rest.substr(0, dot);
+            if (c.states_.count(name)) continue;
+            c.states_[name] = {
+                Real(cfg.getReal("state." + name + ".rho", 1)),
+                Real(cfg.getReal("state." + name + ".u", 0)),
+                Real(cfg.getReal("state." + name + ".v", 0)),
+                Real(cfg.getReal("state." + name + ".p", 1))};
+        }
+
+        c.def_ = c.lookupState_(cfg.requireString("ic.default"));
+        for (const std::string& key : numbered_(cfg, "ic.region."))
+            c.regions_.push_back(c.parseRegion_(cfg.requireString(key)));
+        for (const std::string& key : numbered_(cfg, "ic.perturb."))
+            c.perturbs_.push_back(parsePerturb_(cfg.requireString(key)));
+
+        c.periodicX = cfg.getString("bc.x", "") == "periodic";
+        c.periodicY = cfg.getString("bc.y", "") == "periodic";
+        const auto sideSpec = [&](const char* name, bool periodic) {
+            if (periodic) return Side{};
+            return c.parseSide_(
+                cfg.getString(std::string("bc.") + name, "transmissive"));
+        };
+        c.sides_[0] = sideSpec("left", c.periodicX);
+        c.sides_[1] = sideSpec("right", c.periodicX);
+        c.sides_[2] = sideSpec("bottom", c.periodicY);
+        c.sides_[3] = sideSpec("top", c.periodicY);
+        return c;
+    }
+
+    // Primitive state of the case description at (x, y, t).
+    Prim prim(Real x, Real y, double t) const {
+        Prim w = def_;
+        for (const Region& r : regions_)
+            if (r.inside(x, y, t)) w = r.st;
+        for (const Perturb& pb : perturbs_) pb.apply(w, x, x0, lx);
+        return w;
+    }
+    Cons state(Real x, Real y, double t) const {
+        return toCons(prim(x, y, t));
+    }
+
+    template <class G>
+    void fillGhosts(G& g, double t) const {
+        if (periodicX) fillPeriodicX(g);
+        if (periodicY) fillPeriodicY(g);
+        fillGhostSides(g, t,
+                       (periodicX ? 0u : (SideLeft | SideRight)) |
+                           (periodicY ? 0u : (SideBottom | SideTop)));
+    }
+
+    template <class G>
+    void fillGhostSides(G& g, double t, unsigned mask) const {
+        if (mask & SideLeft) side_(g, t, 0);
+        if (mask & SideRight) side_(g, t, 1);
+        if (mask & SideBottom) side_(g, t, 2);
+        if (mask & SideTop) side_(g, t, 3);
+    }
+
+private:
+    enum class Bc { Transmissive, Reflective, Analytic, Inflow };
+    struct Spec {
+        Bc type = Bc::Transmissive;
+        Prim inflow{};
+    };
+    struct Side {
+        Spec a;
+        bool split = false;
+        Real splitAt = 0; // on x for bottom/top, on y for left/right
+        Spec b;
+    };
+
+    struct Region {
+        enum class Shape { HalfPlane, BandX, BandY, Rect, Circle } shape;
+        Real p[4] = {0, 0, 0, 0};
+        Real speed = 0, norm = 1; // half-plane front motion
+        Prim st{};
+
+        bool inside(Real x, Real y, double t) const {
+            switch (shape) {
+            case Shape::HalfPlane:
+                return p[0] * x + p[1] * y <
+                       p[2] + speed * norm * Real(t);
+            case Shape::BandX: return x > p[0] && x < p[1];
+            case Shape::BandY: return y > p[0] && y < p[1];
+            case Shape::Rect:
+                return x > p[0] && x < p[1] && y > p[2] && y < p[3];
+            default: {
+                const Real dx = x - p[0], dy = y - p[1];
+                return dx * dx + dy * dy < p[2] * p[2];
+            }
+            }
+        }
+    };
+
+    struct Perturb {
+        enum class Var { Rho, U, V, P } var;
+        enum class Kind { Sin, Erf } kind;
+        Real a = 0, b = 0, c = 0; // sin: periods, amp | erf: x0, w, amp
+
+        void apply(Prim& w, Real x, Real x0, Real lx) const {
+            Real d = 0;
+            if (kind == Kind::Sin)
+                d = b * Real(std::sin(2 * M_PI * double(a) *
+                                      double((x - x0) / lx)));
+            else
+                d = c * Real(std::erf(double((x - a) / b)));
+            switch (var) {
+            case Var::Rho: w.rho += d; break;
+            case Var::U: w.u += d; break;
+            case Var::V: w.v += d; break;
+            case Var::P: w.p += d; break;
+            }
+        }
+    };
+
+    // ---- parsing helpers --------------------------------------------------
+    static std::vector<std::string> numbered_(const Config& cfg,
+                                              const std::string& prefix) {
+        std::vector<std::pair<int, std::string>> found;
+        // probe indices 1..99 (sparse numbering allowed)
+        for (int i = 1; i < 100; ++i) {
+            const std::string key = prefix + std::to_string(i);
+            if (cfg.has(key)) found.push_back({i, key});
+        }
+        std::sort(found.begin(), found.end());
+        std::vector<std::string> out;
+        for (auto& [i, k] : found) out.push_back(k);
+        return out;
+    }
+
+    static std::vector<std::string> tokens_(const std::string& s) {
+        std::istringstream in(s);
+        std::vector<std::string> out;
+        std::string tok;
+        while (in >> tok) out.push_back(tok);
+        return out;
+    }
+    static Real num_(const std::string& s) {
+        char* end = nullptr;
+        const double x = std::strtod(s.c_str(), &end);
+        if (end == s.c_str() || *end != '\0')
+            throw std::runtime_error("case file: not a number: " + s);
+        return Real(x);
+    }
+
+    Prim lookupState_(const std::string& name) const {
+        const auto it = states_.find(name);
+        if (it == states_.end())
+            throw std::runtime_error("unknown state '" + name +
+                                     "' (add a [state." + name +
+                                     "] section)");
+        return it->second;
+    }
+
+    Region parseRegion_(const std::string& spec) const {
+        const auto toks = tokens_(spec);
+        const auto colon = std::find(toks.begin(), toks.end(), ":");
+        if (colon == toks.end() || colon + 1 == toks.end())
+            throw std::runtime_error("region needs ': stateName' — " +
+                                     spec);
+        Region r;
+        r.st = lookupState_(*(colon + 1));
+        const std::size_t n = std::size_t(colon - toks.begin());
+        const auto need = [&](std::size_t want, const char* what) {
+            if (n != want)
+                throw std::runtime_error(std::string("malformed ") +
+                                         what + " region: " + spec);
+        };
+        if (toks[0] == "halfplane") {
+            if (n != 4 && n != 6)
+                throw std::runtime_error("malformed halfplane: " + spec);
+            r.shape = Region::Shape::HalfPlane;
+            r.p[0] = num_(toks[1]);
+            r.p[1] = num_(toks[2]);
+            r.p[2] = num_(toks[3]);
+            r.norm = std::sqrt(r.p[0] * r.p[0] + r.p[1] * r.p[1]);
+            if (n == 6) {
+                if (toks[4] != "speed")
+                    throw std::runtime_error("expected 'speed': " + spec);
+                r.speed = num_(toks[5]);
+            }
+        } else if (toks[0] == "band") {
+            need(4, "band");
+            r.shape = toks[1] == "x" ? Region::Shape::BandX
+                                     : Region::Shape::BandY;
+            r.p[0] = num_(toks[2]);
+            r.p[1] = num_(toks[3]);
+        } else if (toks[0] == "rect") {
+            need(5, "rect");
+            r.shape = Region::Shape::Rect;
+            for (int k = 0; k < 4; ++k) r.p[k] = num_(toks[1 + k]);
+        } else if (toks[0] == "circle") {
+            need(4, "circle");
+            r.shape = Region::Shape::Circle;
+            for (int k = 0; k < 3; ++k) r.p[k] = num_(toks[1 + k]);
+        } else {
+            throw std::runtime_error("unknown region shape: " + toks[0]);
+        }
+        return r;
+    }
+
+    static Perturb parsePerturb_(const std::string& spec) {
+        const auto toks = tokens_(spec);
+        Perturb pb;
+        const auto var = [&](const std::string& v) {
+            if (v == "rho") return Perturb::Var::Rho;
+            if (v == "u") return Perturb::Var::U;
+            if (v == "v") return Perturb::Var::V;
+            if (v == "p") return Perturb::Var::P;
+            throw std::runtime_error("unknown perturb variable: " + v);
+        };
+        if (toks.size() == 4 && toks[1] == "sin") {
+            pb.var = var(toks[0]);
+            pb.kind = Perturb::Kind::Sin;
+            pb.a = num_(toks[2]); // periods over the domain width
+            pb.b = num_(toks[3]); // amplitude
+            pb.c = 0;
+        } else if (toks.size() == 5 && toks[1] == "erf") {
+            pb.var = var(toks[0]);
+            pb.kind = Perturb::Kind::Erf;
+            pb.a = num_(toks[2]); // x0
+            pb.b = num_(toks[3]); // width
+            pb.c = num_(toks[4]); // amplitude
+        } else {
+            throw std::runtime_error("malformed perturb: " + spec);
+        }
+        return pb;
+    }
+
+    Spec parseSpec_(const std::vector<std::string>& toks, std::size_t i,
+                    std::size_t end) const {
+        Spec s;
+        if (i >= end)
+            throw std::runtime_error("empty boundary spec");
+        const std::string& t = toks[i];
+        if (t == "transmissive") s.type = Bc::Transmissive;
+        else if (t == "reflective") s.type = Bc::Reflective;
+        else if (t == "analytic") s.type = Bc::Analytic;
+        else if (t == "inflow") {
+            s.type = Bc::Inflow;
+            if (i + 1 >= end)
+                throw std::runtime_error("inflow needs a state name");
+            s.inflow = lookupState_(toks[i + 1]);
+        } else
+            throw std::runtime_error("unknown boundary type: " + t);
+        return s;
+    }
+
+    Side parseSide_(const std::string& spec) const {
+        const auto toks = tokens_(spec);
+        Side side;
+        const auto ifPos = std::find(toks.begin(), toks.end(), "if");
+        if (ifPos == toks.end()) {
+            side.a = parseSpec_(toks, 0, toks.size());
+            return side;
+        }
+        // "<specA> if x|y < val else <specB>"
+        const std::size_t i = std::size_t(ifPos - toks.begin());
+        if (i + 4 > toks.size() || toks[i + 2] != "<")
+            throw std::runtime_error("malformed split BC (expected 'if "
+                                     "x < val else ...'): " +
+                                     spec);
+        const auto elsePos = std::find(toks.begin(), toks.end(), "else");
+        if (elsePos == toks.end())
+            throw std::runtime_error("split BC needs 'else': " + spec);
+        side.a = parseSpec_(toks, 0, i);
+        side.split = true;
+        side.splitAt = num_(toks[i + 3]);
+        side.b = parseSpec_(toks, std::size_t(elsePos - toks.begin()) + 1,
+                            toks.size());
+        return side;
+    }
+
+    // ---- ghost filling -----------------------------------------------------
+    // dir: 0 left, 1 right, 2 bottom, 3 top. Column-/row-local types let
+    // split sides pick the spec per ghost column.
+    template <class G>
+    void side_(G& g, double t, int dir) const {
+        const Side& sd = sides_[dir];
+        const bool xSide = dir < 2;
+        const int n1 = xSide ? g.toty() : g.totx(); // sweep direction
+
+        for (int s = 0; s < n1; ++s) {
+            const Real coord = xSide ? g.yc(s) : g.xc(s);
+            const Spec& sp =
+                (sd.split && coord < sd.splitAt) ? sd.a
+                : sd.split                       ? sd.b
+                                                 : sd.a;
+            for (int k = 0; k < NG; ++k) {
+                int i, j, mi, mj; // ghost cell and mirror interior cell
+                if (dir == 0) {
+                    i = NG - 1 - k; j = s; mi = NG + k; mj = s;
+                } else if (dir == 1) {
+                    i = NG + g.nx + k; j = s;
+                    mi = NG + g.nx - 1 - k; mj = s;
+                } else if (dir == 2) {
+                    i = s; j = NG - 1 - k; mi = s; mj = NG + k;
+                } else {
+                    i = s; j = NG + g.ny + k;
+                    mi = s; mj = NG + g.ny - 1 - k;
+                }
+                switch (sp.type) {
+                case Bc::Transmissive: {
+                    // zero-gradient: copy nearest interior
+                    const int ci = xSide ? (dir == 0 ? NG : NG + g.nx - 1)
+                                         : mi;
+                    const int cj = xSide ? mj
+                                         : (dir == 2 ? NG : NG + g.ny - 1);
+                    g.at(i, j) = g.at(ci, cj);
+                    break;
+                }
+                case Bc::Reflective: {
+                    Cons c = g.at(mi, mj);
+                    if (xSide) c.mx = -c.mx;
+                    else c.my = -c.my;
+                    g.at(i, j) = c;
+                    break;
+                }
+                case Bc::Analytic:
+                    g.at(i, j) = state(g.xc(i), g.yc(j), t);
+                    break;
+                case Bc::Inflow:
+                    g.at(i, j) = toCons(sp.inflow);
+                    break;
+                }
+            }
+        }
+    }
+
+    std::map<std::string, Prim> states_;
+    Prim def_{};
+    std::vector<Region> regions_;
+    std::vector<Perturb> perturbs_;
+    Side sides_[4];
+};
+
+} // namespace mm

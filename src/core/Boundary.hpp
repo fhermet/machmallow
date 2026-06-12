@@ -57,6 +57,24 @@ inline void fillPeriodicY(G& g) {
 
 // Reflecting wall: mirror state, flip normal momentum.
 template <class G>
+inline void fillReflectiveLeft(G& g) {
+    for (int j = 0; j < g.toty(); ++j)
+        for (int k = 0; k < NG; ++k) {
+            Cons c = g.at(NG + k, j);
+            c.mx = -c.mx;
+            g.at(NG - 1 - k, j) = c;
+        }
+}
+template <class G>
+inline void fillReflectiveRight(G& g) {
+    for (int j = 0; j < g.toty(); ++j)
+        for (int k = 0; k < NG; ++k) {
+            Cons c = g.at(NG + g.nx - 1 - k, j);
+            c.mx = -c.mx;
+            g.at(NG + g.nx + k, j) = c;
+        }
+}
+template <class G>
 inline void fillReflectiveBottom(G& g) {
     for (int i = 0; i < g.totx(); ++i)
         for (int k = 0; k < NG; ++k) {

@@ -74,11 +74,16 @@ possibles, par thème et avec leur point d'entrée dans le code.
   3 harnais CPU obligatoires + les harnais GPU avec sonde Metal (skip
   propre si le runner n'a pas de device, échec franc sinon). Attention :
   les minutes macOS comptent 10× sur les dépôts privés.
-- [x] ~~Configs de cas en fichiers~~ — fait : parseur INI header-only
-  (`core/Config.hpp`) + driver générique `run` (`./build/run
-  cases/dmr.ini`), presets sod/dmr/shear, backends cpu/hybrid, AMR et μ
-  configurables. Extension naturelle : nouveaux presets dans
-  `caseGeometry`/`wireCase` (src/drivers/run.cpp).
+- [x] ~~Configs de cas en fichiers~~ — fait, puis **industrialisé** :
+  solveur 100 % déclaratif (`cases/CaseDef.hpp`) — états nommés, IC par
+  régions (fronts de choc mobiles inclus), perturbations, BCs par côté
+  segmentables + `analytic` (réévaluation des régions au temps t : BC
+  exacte du DMR sans C++). Plus de presets dans run.cpp. Outils :
+  `run --check` (config effective + warnings clés inconnues),
+  `run --list`, `cases/TEMPLATE.ini`, gate `casedef_test` (équivalence
+  bit-près avec les presets historiques), smoke `--check` de tous les
+  cas en CI. Extensions possibles : nouvelles formes de régions
+  (ellipse, polygone), perturbations 2D, profils le long de y.
 - [ ] **Rendu temps réel** — fenêtre Metal affichant ρ pendant la simu
   (les données sont déjà dans des buffers GPU partagés — il ne manque
   qu'une passe de rendu et une boucle d'événements).

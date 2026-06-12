@@ -26,6 +26,8 @@ jobs:
           ./build/sod2d
           ./build/sod_amr
           ./build/ml_amr
+          ./build/casedef_test
+          for c in cases/*.ini; do ./build/run --check "$c"; done
 
       # GPU harnesses: GitHub macOS runners expose a paravirtualized
       # Metal device that normally supports compute. If no device exists
