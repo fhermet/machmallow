@@ -308,13 +308,11 @@ bool gate4_speciesAmr() {
                            p.grid.dx * p.grid.dy;
                 }
     err /= 0.25;
-    // phi carries ~9x less mass than rho, so its relative fp32 floor
-    // sits correspondingly higher than the single-gas 1e-6 gates.
     std::printf("gate 4 — two-gas Sod on 3-level AMR: L1 = %.4e (gate "
-                "5e-3), species mass drift = %.3e (gate 1e-4), patches "
+                "5e-3), species mass drift = %.3e (gate 1e-5), patches "
                 "L1 %zu L2 %zu\n",
                 err, drift, amr.patchCount(1), amr.patchCount(2));
-    return err < 5e-3 && drift < 1e-4;
+    return err < 5e-3 && drift < 1e-5;
 }
 
 } // namespace

@@ -524,6 +524,15 @@ private:
                 p.grid.at(i, j) = prolong_(l, home, cg, cgj,
                                            gfi - 2 * cg, gfj - 2 * cgj,
                                            theta);
+                if (cfg_.species) {
+                    const std::size_t id = p.grid.idx(i, j);
+                    p.phi[id] =
+                        scalarProlong_(l, home, true, cg, cgj,
+                                       gfi - 2 * cg, gfj - 2 * cgj, theta);
+                    p.Gmf[id] =
+                        scalarProlong_(l, home, false, cg, cgj,
+                                       gfi - 2 * cg, gfj - 2 * cgj, theta);
+                }
             };
             for (int j = 0; j < NG; ++j)
                 for (int i = 0; i < p.grid.totx(); ++i) fillCell(i, j);
