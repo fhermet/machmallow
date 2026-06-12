@@ -46,9 +46,14 @@ plancher fp32, lock-steps CPU/GPU partout. Détails : git log.
 
 ### v1.1 — Voir et mesurer *(démo + labo)*
 Le projet gagne ses yeux et son instrumentation scientifique.
-- [ ] **Rendu temps réel Metal** : fenêtre affichant ρ (ou schlieren)
-  pendant la simu, contours de patchs AMR, pause/reprise. Les données
-  sont déjà dans des buffers GPU partagés — il manque la passe de rendu.
+- [x] ~~Rendu temps réel Metal~~ — fait : `[render] live = true` —
+  fenêtre Cocoa programmatique (sans Xcode) + fragment shader qui
+  échantillonne les buffers de SIMULATION par pixel (descente de la
+  hiérarchie du plus fin à la base via les tables bloc→slot, zéro
+  copie), colormap viridis, contours de patchs, pause (espace) et arrêt
+  propre (q/fermeture). ~15 %% d'overhead sur le KH, résultats
+  bit-identiques au run headless. Dégradation propre en headless (CI).
+  Extension : mode schlieren, champ au choix.
 - [ ] **Taux de croissance RT/KH vs théorie linéaire** : fit du journal
   CSV (énergie cinétique ~ e^{2σt}) comparé à σ = √(Agk) (RT) et au
   taux KH ; nouvelle gate dans `analytic_suite`.

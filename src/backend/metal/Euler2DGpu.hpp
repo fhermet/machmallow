@@ -127,6 +127,8 @@ public:
     void setViscosity(Real mu) { mu_ = mu; }
     void setGravity(Real gx, Real gy) { gx_ = gx; gy_ = gy; }
 
+    MTL::Buffer* qBuffer() const { return q_; }
+
     // Step fluxes, CPU-visible (needed by AMR refluxing).
     const Cons* fx() const { return static_cast<const Cons*>(Fx_->contents()); }
     const Cons* fy() const { return static_cast<const Cons*>(Fy_->contents()); }

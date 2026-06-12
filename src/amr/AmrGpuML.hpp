@@ -38,7 +38,9 @@ public:
         int nbx = 0, nby = 0;
         std::vector<int> blockOf;
         std::vector<Patch> patches;
-        MTL::Buffer* slots = nullptr; // active slot list for dispatch
+        MTL::Buffer* slots = nullptr;     // active slot list for dispatch
+        MTL::Buffer* slotTable = nullptr; // block -> slot (~0u = none),
+                                          // read by the live view
     };
 
     std::function<void(GridRef&, double)> fillPhysicalGhosts;
@@ -65,6 +67,12 @@ public:
             L.slots = ctx.device()->newBuffer(
                 std::size_t(L.nbx) * L.nby * sizeof(std::uint32_t),
                 MTL::ResourceStorageModeShared);
+            L.slotTable = ctx.device()->newBuffer(
+                std::size_t(L.nbx) * L.nby * sizeof(std::uint32_t),
+                MTL::ResourceStorageModeShared);
+            auto* tbl =
+                static_cast<std::uint32_t*>(L.slotTable->contents());
+            std::fill(tbl, tbl + std::size_t(L.nbx) * L.nby, ~0u);
         }
         capacity_ = int(std::min<std::size_t>(totalBlocks, 8192));
 
@@ -89,7 +97,10 @@ public:
     }
 
     ~AmrGpuML() {
-        for (Level& L : lvls_) L.slots->release();
+        for (Level& L : lvls_) {
+            L.slots->release();
+            L.slotTable->release();
+        }
         for (MTL::Buffer* b :
              {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_, smaxP_})
             b->release();
@@ -236,6 +247,18 @@ public:
     std::size_t patchCount(int l) const {
         return lvls_[l - 1].patches.size();
     }
+
+    MetalContext& context() const { return ctx_; }
+
+    // ---- live-view access (zero-copy rendering of the hierarchy) ----
+    MTL::Buffer* renderBaseQ() const { return coarse_.qBuffer(); }
+    MTL::Buffer* renderPoolQ() const { return qP_; }
+    MTL::Buffer* renderSlotTable(int l) const {
+        return lvls_[l - 1].slotTable;
+    }
+    int renderPTot() const { return pTot_; }
+    int renderStride() const { return stride_; }
+    int renderBlockC() const { return cfg_.blockC; }
 
     void regrid() { regridFrom_(1); }
 
@@ -746,8 +769,14 @@ private:
             lv.blockOf = std::move(nextOf);
             auto* slots =
                 static_cast<std::uint32_t*>(lv.slots->contents());
-            for (std::size_t k = 0; k < lv.patches.size(); ++k)
+            auto* tbl =
+                static_cast<std::uint32_t*>(lv.slotTable->contents());
+            std::fill(tbl, tbl + lv.blockOf.size(), ~0u);
+            for (std::size_t k = 0; k < lv.patches.size(); ++k) {
                 slots[k] = std::uint32_t(lv.patches[k].slot);
+                tbl[std::size_t(lv.patches[k].bj) * lv.nbx +
+                    lv.patches[k].bi] = std::uint32_t(lv.patches[k].slot);
+            }
         }
     }
 

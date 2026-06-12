@@ -16,8 +16,11 @@
 #include "io/Checkpoint.hpp"
 #include "io/Diagnostics.hpp"
 #include "io/VthbWriter.hpp"
+#include "render/LiveView.hpp"
 
 #include <chrono>
+#include <memory>
+#include <unistd.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -86,6 +89,40 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
     int steps = 0, frame = 0;
     std::size_t cellSteps = 0, maxPatches = 0;
     const auto t0 = Clock::now();
+    // Live view (hybrid multi-level class only; headless-safe).
+    [[maybe_unused]] const bool wantLive = cfg.getBool("render.live", false);
+    const int renderEvery = cfg.getInt("render.every", 2);
+    std::unique_ptr<LiveView> view;
+    if constexpr (requires { amr.renderPoolQ(); }) {
+        if (wantLive) {
+            Real lo = Real(cfg.getReal("render.rho_min", 0));
+            Real hi = Real(cfg.getReal("render.rho_max", 0));
+            if (lo == hi) { // auto range from the IC
+                const GridRef c0 = amr.coarseRef();
+                lo = Real(1e30); hi = Real(-1e30);
+                for (int j = NG; j < NG + c0.ny; ++j)
+                    for (int i = NG; i < NG + c0.nx; ++i) {
+                        const Real r = toPrim(c0.at(i, j)).rho;
+                        lo = std::min(lo, r);
+                        hi = std::max(hi, r);
+                    }
+                const Real pad = (hi - lo) * Real(0.05) + Real(1e-6);
+                lo -= pad; hi += pad;
+            }
+            view = std::make_unique<LiveView>(
+                /*ctx*/ amr.context(), amr,
+                cfg.getInt("render.scale", 4), "machmallow — espace: pause, q: quitter",
+                lo, hi, cfg.getBool("render.grid", true));
+            if (!view->ok()) {
+                std::printf("note: pas de serveur de fenetres — vue "
+                            "live desactivee\n");
+                view.reset();
+            }
+        }
+    } else if (wantLive) {
+        std::printf("note: render.live demande backend = hybrid\n");
+    }
+
     std::vector<Cons> prevBase; // base snapshot for the residuals
     const auto logRow = [&](double dt) {
         const double wall =
@@ -109,6 +146,17 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
             (steps % diagEvery == 0 || t >= tEnd * (1 - 1e-9) ||
              (maxSteps > 0 && steps >= maxSteps)))
             logRow(dt);
+        if (view && steps % renderEvery == 0) {
+            int st = view->frame();
+            while (st == 2) { // paused: keep the window alive
+                usleep(30000);
+                st = view->frame();
+            }
+            if (st == 0) {
+                std::printf("vue live fermee — arret a t = %.4f\n", t);
+                break;
+            }
+        }
         if (frames > 0 &&
             (t >= nextFrame - 1e-12 || t >= tEnd * (1 - 1e-9))) {
             char name[256];
@@ -277,6 +325,9 @@ int list() {
         "  [amr]      enabled levels block tag_threshold tag_velocity\n"
         "             regrid_every subcycle\n"
         "  [output]   frames prefix checkpoint max_steps\n"
+        "  [render]   live scale every grid rho_min rho_max (vue\n"
+        "             temps reel Metal, backend hybrid ; espace = pause,\n"
+        "             q = quitter)\n"
         "  [diagnostics]  every (pas de base, 0 = off) file (csv :\n"
         "             step t dt cells patches extrema masse energies\n"
         "             enstrophie perf)\n");

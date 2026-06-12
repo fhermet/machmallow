@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(machmallow LANGUAGES CXX)
+project(machmallow LANGUAGES CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -72,9 +72,16 @@ target_link_libraries(mlgpu_amr PRIVATE mm_metal)
 add_executable(kh_amr src/drivers/kh_amr.cpp)
 target_link_libraries(kh_amr PRIVATE mm_metal)
 
+# Live view: programmatic Cocoa window + Metal render pass.
+add_library(mm_render STATIC src/render/CocoaShim.mm)
+target_include_directories(mm_render PUBLIC src)
+set_source_files_properties(src/render/CocoaShim.mm PROPERTIES
+  COMPILE_OPTIONS "-fobjc-arc")
+target_link_libraries(mm_render PUBLIC "-framework Cocoa")
+
 # Generic case runner driven by cases/*.ini files.
 add_executable(run src/drivers/run.cpp)
-target_link_libraries(run PRIVATE mm_metal)
+target_link_libraries(run PRIVATE mm_metal mm_render)
 
 # Declarative case system vs presets/exact solutions (+ gravity gates).
 add_executable(casedef_test src/drivers/casedef_test.cpp)
