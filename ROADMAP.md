@@ -89,10 +89,15 @@ possibles, par thème et avec leur point d'entrée dans le code.
   calcul). Extensions possibles : nouvelles formes de régions (ellipse,
   polygone), perturbations 2D/le long de y, diagnostics CSV (item
   dédié ci-dessous).
-- [ ] **Diagnostics intégraux CSV** — section `[diagnostics]` (masse,
-  énergie cinétique, enstrophie, extrema, cadence) → séries temporelles
-  pour exploiter un cas quantitativement. *Entrée : runCase dans
-  `src/drivers/run.cpp`.*
+- [x] ~~Diagnostics intégraux CSV~~ — fait : `[diagnostics] every/file`
+  → journal CSV du calcul (`io/Diagnostics.hpp`) : step, t, dt,
+  cellules, patchs, extrema ρ/p, masse, énergies cinétique/totale,
+  enstrophie, temps mur, débit — composite sur toute la hiérarchie
+  (2 niveaux et ML), flush par ligne. Limitation documentée : la
+  vorticité utilise des différences clampées par grille (biais aux
+  coutures de patchs — tendances fiables, valeurs absolues aux
+  interfaces raides sous-estimées). Extension possible : sondes
+  ponctuelles, quantités au choix.
 - [ ] **Rendu temps réel** — fenêtre Metal affichant ρ pendant la simu
   (les données sont déjà dans des buffers GPU partagés — il ne manque
   qu'une passe de rendu et une boucle d'événements).

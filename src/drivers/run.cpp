@@ -14,6 +14,7 @@
 #include "cases/CaseDef.hpp"
 #include "core/Config.hpp"
 #include "io/Checkpoint.hpp"
+#include "io/Diagnostics.hpp"
 #include "io/VthbWriter.hpp"
 
 #include <chrono>
@@ -74,11 +75,25 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
     }
     const double m0 = amr.totalMass();
 
+    // Run log: integral diagnostics + solver state, every N base steps.
+    const int diagEvery = cfg.getInt("diagnostics.every", 0);
+    DiagLog log;
+    if (diagEvery > 0)
+        log.open(cfg.getString("diagnostics.file", prefix + "_log.csv"));
+
     double nextFrame = frames > 0 ? tEnd / frames : 1e30;
     while (frames > 0 && nextFrame <= t) nextFrame += tEnd / frames;
     int steps = 0, frame = 0;
     std::size_t cellSteps = 0, maxPatches = 0;
     const auto t0 = Clock::now();
+    const auto logRow = [&](double dt) {
+        const double wall =
+            std::chrono::duration<double>(Clock::now() - t0).count();
+        log.row(steps, t, dt, amr.cellCount(), patchTotal(amr),
+                computeDiagnostics(amr), wall,
+                wall > 0 ? cellSteps / wall / 1e6 : 0);
+    };
+    if (log.active()) logRow(0); // initial state
     while (t < tEnd && (maxSteps == 0 || steps < maxSteps)) {
         Real dt = std::min(amr.maxStableDtAll(cfl), Real(tEnd - t));
         if (steps < 10) dt *= Real(0.3); // gentle start
@@ -87,6 +102,10 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
         ++steps;
         cellSteps += amr.cellCount();
         maxPatches = std::max(maxPatches, patchTotal(amr));
+        if (log.active() &&
+            (steps % diagEvery == 0 || t >= tEnd ||
+             (maxSteps > 0 && steps >= maxSteps)))
+            logRow(dt);
         if (frames > 0 && (t >= nextFrame - 1e-12 || t >= tEnd)) {
             char name[256];
             std::snprintf(name, sizeof(name), "%s_%04d", prefix.c_str(),
@@ -249,7 +268,10 @@ int list() {
         "  top level  t_end cfl mu backend=cpu|hybrid restart=<ck>\n"
         "  [amr]      enabled levels block tag_threshold tag_velocity\n"
         "             regrid_every subcycle\n"
-        "  [output]   frames prefix checkpoint max_steps\n");
+        "  [output]   frames prefix checkpoint max_steps\n"
+        "  [diagnostics]  every (pas de base, 0 = off) file (csv :\n"
+        "             step t dt cells patches extrema masse energies\n"
+        "             enstrophie perf)\n");
     return EXIT_SUCCESS;
 }
 
