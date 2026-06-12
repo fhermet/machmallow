@@ -385,14 +385,29 @@ int main(int argc, char** argv) {
                     "two-gas cases are inviscid for now ([species] with "
                     "mu > 0)");
         }
+        const std::string scheme = cfg.getString("scheme", "muscl");
+        if (scheme == "weno5") {
+            acfg.weno = true;
+            if (acfg.species)
+                throw std::runtime_error(
+                    "scheme = weno5 is single-gas for now (no "
+                    "[species])");
+            if (acfg.mu > 0)
+                throw std::runtime_error(
+                    "scheme = weno5 is inviscid for now (mu must be 0)");
+        } else if (scheme != "muscl") {
+            throw std::runtime_error("unknown scheme: " + scheme +
+                                     " (expected muscl | weno5)");
+        }
 
         if (cd.nx % acfg.blockC != 0 || cd.ny % acfg.blockC != 0)
             throw std::runtime_error(
                 "grid.nx/ny must be multiples of amr.block");
 
-        std::printf("case %s | backend %s | grid %dx%d | domain "
+        std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "
                     "[%g,%g]x[%g,%g]%s%s | levels %d | mu %g\n",
-                    path.c_str(), backend.c_str(), cd.nx, cd.ny,
+                    path.c_str(), backend.c_str(), scheme.c_str(),
+                    cd.nx, cd.ny,
                     double(cd.x0), double(cd.x0 + cd.lx), double(cd.y0),
                     double(cd.y0 + cd.ly),
                     cd.periodicX ? " | periodicX" : "",
@@ -426,7 +441,7 @@ int main(int argc, char** argv) {
         if (backend == "cpu") {
             // the 2-level classes have no species fields: two-gas
             // cases run on the multi-level classes at any depth
-            if (acfg.maxLevels == 2 && !acfg.species) {
+            if (acfg.maxLevels == 2 && !acfg.species && !acfg.weno) {
                 Amr2 amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);
                 amr.fillPhysicalGhosts = [&cd](Grid& g, double t) {
                     cd.fillGhosts(g, t);
@@ -449,7 +464,7 @@ int main(int argc, char** argv) {
             }
         } else if (backend == "hybrid") {
             MetalContext ctx;
-            if (acfg.maxLevels == 2 && !acfg.species) {
+            if (acfg.maxLevels == 2 && !acfg.species && !acfg.weno) {
                 AmrGpu amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly,
                            acfg);
                 amr.fillPhysicalGhosts = [&cd](GridRef& g, double t) {

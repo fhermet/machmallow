@@ -97,6 +97,15 @@ public:
         updateP_ = ctx.makePipeline(lib_, "update_pool");
         waveP_ = ctx.makePipeline(lib_, "wave_pool");
 
+        assert(!(cfg.weno && cfg.species) && "weno is single-gas");
+        assert(!(cfg.weno && cfg.mu > 0) && "weno is inviscid");
+        if (cfg_.weno) {
+            coarse_.enableWeno();
+            u0P_ = mk(); FxAP_ = mk(); FyAP_ = mk();
+            wfluxXP_ = ctx.makePipeline(lib_, "weno_flux_x_pool");
+            wfluxYP_ = ctx.makePipeline(lib_, "weno_flux_y_pool");
+            rkUpdP_ = ctx.makePipeline(lib_, "rk_update_pool");
+        }
         if (cfg_.species) {
             gas_ = GasPair{cfg_.gamma1, cfg_.gamma2};
             coarse_.enableSpecies(gas_);
@@ -122,6 +131,11 @@ public:
             b->release();
         for (MTL::Buffer* b : {sP_, fXP_, fYP_, sFxP_, sFyP_})
             if (b) b->release();
+        for (MTL::Buffer* b : {u0P_, FxAP_, FyAP_})
+            if (b) b->release();
+        for (MTL::ComputePipelineState* p :
+             {wfluxXP_, wfluxYP_, rkUpdP_})
+            if (p) p->release();
         for (MTL::ComputePipelineState* p :
              {predictorP_, fluxXP_, fluxYP_, updateP_, waveP_})
             p->release();
@@ -278,7 +292,7 @@ public:
         GridRef b = coarseRef();
         fillPhysicalGhosts(b, t);
         if (cfg_.species) baseScalarGhosts_();
-        advanceTree_(0, dt, t);
+        advanceTree_(0, dt, t, 0, 1);
     }
 
     double totalMass() const {
@@ -393,21 +407,23 @@ private:
     }
 
     // ---- GPU dispatch ------------------------------------------------------
-    void encodePool_(MTL::CommandBuffer* cmd, int l,
-                     MTL::ComputePipelineState* pso,
-                     std::initializer_list<MTL::Buffer*> bufs, Real dt,
-                     int w, int h) const {
-        const Level& L = lvls_[l - 1];
+    Euler2DGpu::Params poolParams_(int l, Real dt) const {
         const GridRef b = coarseRef();
         const float dxl = b.dx / Real(1 << l);
         const float dyl = b.dy / Real(1 << l);
         const float kT = cfg_.mu > 0
             ? cfg_.mu * GAMMA / ((GAMMA - 1) * PRANDTL)
             : 0;
-        const Euler2DGpu::Params p{pTot_, pTot_, nf_, nf_, dxl, dyl,
-                                   dt,    stride_, cfg_.mu, kT,
-                                   cfg_.gx, cfg_.gy, gas_.gamma1,
-                                   gas_.gamma2};
+        return {pTot_, pTot_, nf_, nf_, dxl, dyl,
+                dt,    stride_, cfg_.mu, kT,
+                cfg_.gx, cfg_.gy, gas_.gamma1, gas_.gamma2};
+    }
+
+    void encodePoolP_(MTL::CommandBuffer* cmd, int l,
+                      MTL::ComputePipelineState* pso,
+                      std::initializer_list<MTL::Buffer*> bufs,
+                      const Euler2DGpu::Params& p, int w, int h) const {
+        const Level& L = lvls_[l - 1];
         MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
         enc->setComputePipelineState(pso);
         int slot = 0;
@@ -417,6 +433,13 @@ private:
         enc->dispatchThreads(MTL::Size(w, h, L.patches.size()),
                              MTL::Size(8, 8, 1));
         enc->endEncoding();
+    }
+
+    void encodePool_(MTL::CommandBuffer* cmd, int l,
+                     MTL::ComputePipelineState* pso,
+                     std::initializer_list<MTL::Buffer*> bufs, Real dt,
+                     int w, int h) const {
+        encodePoolP_(cmd, l, pso, bufs, poolParams_(l, dt), w, h);
     }
 
     void stepLevel_(int l, Real dt) {
@@ -448,11 +471,13 @@ private:
     }
 
     const Cons* fxOf_(const Patch& p) const {
-        return static_cast<const Cons*>(FxP_->contents()) +
+        return static_cast<const Cons*>(
+                   (cfg_.weno ? FxAP_ : FxP_)->contents()) +
                std::size_t(p.slot) * stride_;
     }
     const Cons* fyOf_(const Patch& p) const {
-        return static_cast<const Cons*>(FyP_->contents()) +
+        return static_cast<const Cons*>(
+                   (cfg_.weno ? FyAP_ : FyP_)->contents()) +
                std::size_t(p.slot) * stride_;
     }
     // packed (Fpx, Ssx, Fgx, 0) — only .rho (= Fp) is refluxed
@@ -771,11 +796,59 @@ private:
         }
     }
 
-    void advanceTree_(int l, Real dt, double t) {
+    // WENO5/RK3: three synchronous stages per level; the CPU refills
+    // the level ghosts at every stage abscissa, so each stage is one
+    // command-buffer round trip (vs one for the whole MUSCL step).
+    void stepLevelWeno_(int l, Real dt, double t, Real thBase,
+                        Real thSpan) {
+        static constexpr Real C[3] = {0, 1, Real(0.5)};
+        for (int s = 0; s < 3; ++s) {
+            if (s > 0) {
+                if (l == 0) {
+                    GridRef b = coarseRef();
+                    fillPhysicalGhosts(b, t + double(C[s]) * dt);
+                } else {
+                    fillLevelGhosts_(l, t + double(C[s]) * dt,
+                                     thBase + C[s] * thSpan);
+                }
+            }
+            MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+            if (l == 0) {
+                coarse_.encodeWenoStage(cmd, dt, s);
+            } else {
+                Euler2DGpu::Params p = poolParams_(l, dt);
+                static constexpr float A[3] = {0, 0.75f,
+                                               float(1.0 / 3.0)};
+                static constexpr float B[3] = {1, 0.25f,
+                                               float(2.0 / 3.0)};
+                static constexpr float W[3] = {float(1.0 / 6.0),
+                                               float(1.0 / 6.0),
+                                               float(2.0 / 3.0)};
+                p.rks = s;
+                p.rka = A[s];
+                p.rkb = B[s];
+                p.rkw = W[s];
+                encodePoolP_(cmd, l, wfluxXP_, {qP_, FxP_, FxAP_}, p,
+                             nf_ + 1, nf_);
+                encodePoolP_(cmd, l, wfluxYP_, {qP_, FyP_, FyAP_}, p,
+                             nf_, nf_ + 1);
+                encodePoolP_(cmd, l, rkUpdP_, {qP_, u0P_, FxP_, FyP_},
+                             p, nf_, nf_);
+            }
+            cmd->commit();
+            cmd->waitUntilCompleted();
+        }
+    }
+
+    void advanceTree_(int l, Real dt, double t, Real thBase,
+                      Real thSpan) {
         const bool hasKids =
             (l + 1 < cfg_.maxLevels) && !lvls_[l].patches.empty();
         if (hasKids) saveOld_(l);
-        stepLevel_(l, dt);
+        if (cfg_.weno)
+            stepLevelWeno_(l, dt, t, thBase, thSpan);
+        else
+            stepLevel_(l, dt);
         if (hasKids) {
             const int lc = l + 1;
             if (cfg_.reflux) refluxBackOut_(lc, dt);
@@ -783,7 +856,8 @@ private:
             const Real cdt = dt / n;
             for (int k = 0; k < n; ++k) {
                 fillLevelGhosts_(lc, t + k * cdt, Real(k) / Real(n));
-                advanceTree_(lc, cdt, t + k * cdt);
+                advanceTree_(lc, cdt, t + k * cdt, Real(k) / Real(n),
+                             Real(1) / Real(n));
                 if (cfg_.reflux) refluxFineApply_(lc, cdt);
             }
             restrictLevel_(lc);
@@ -811,8 +885,10 @@ private:
     ParentCell parentCell_(int lp, int cg, int cgj) {
         if (lp == 0) {
             const GridRef b = coarseRef();
-            ParentCell pc{b.q,      coarse_.fx(), coarse_.fy(),
-                          b.totx(), NG + cg,      NG + cgj};
+            ParentCell pc{b.q,
+                          cfg_.weno ? coarse_.fxA() : coarse_.fx(),
+                          cfg_.weno ? coarse_.fyA() : coarse_.fy(),
+                          b.totx(), NG + cg, NG + cgj};
             if (cfg_.species) {
                 pc.sc = baseS();
                 pc.sFx = coarse_.sfx();
@@ -1176,6 +1252,9 @@ private:
     MTL::ComputePipelineState *predictorYP_ = nullptr,
                               *fluxXYP_ = nullptr, *fluxYYP_ = nullptr,
                               *updateYP_ = nullptr, *waveYP_ = nullptr;
+    MTL::ComputePipelineState *wfluxXP_ = nullptr, *wfluxYP_ = nullptr,
+                              *rkUpdP_ = nullptr;
+    MTL::Buffer *u0P_ = nullptr, *FxAP_ = nullptr, *FyAP_ = nullptr;
 };
 
 } // namespace mm

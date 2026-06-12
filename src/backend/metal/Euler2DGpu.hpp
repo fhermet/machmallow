@@ -51,6 +51,10 @@ public:
             b->release();
         for (MTL::Buffer* b : {s_, fXb_, fYb_, sFx_, sFy_})
             if (b) b->release();
+        for (MTL::Buffer* b : {u0_, FxA_, FyA_})
+            if (b) b->release();
+        for (MTL::ComputePipelineState* p : {wfluxX_, wfluxY_, rkUpd_})
+            if (p) p->release();
         for (MTL::ComputePipelineState* p :
              {predictor_, fluxX_, fluxY_, update_, wave_})
             p->release();
@@ -152,6 +156,45 @@ public:
     void setViscosity(Real mu) { mu_ = mu; }
     void setGravity(Real gx, Real gy) { gx_ = gx; gy_ = gy; }
 
+    // WENO5 + SSP-RK3 mode: per-stage kernels; the caller orchestrates
+    // the three stages (ghosts are CPU-filled between them).
+    void enableWeno() {
+        weno_ = true;
+        wfluxX_ = ctx_.makePipeline(lib_, "weno_flux_x");
+        wfluxY_ = ctx_.makePipeline(lib_, "weno_flux_y");
+        rkUpd_ = ctx_.makePipeline(lib_, "rk_update");
+        const std::size_t bytes = std::size_t(tx_) * ty_ * sizeof(Cons);
+        const auto mk = [&] {
+            return ctx_.device()->newBuffer(
+                bytes, MTL::ResourceStorageModeShared);
+        };
+        u0_ = mk(); FxA_ = mk(); FyA_ = mk();
+    }
+    // stage s of the SSP-RK3 step (ghosts must be current)
+    void encodeWenoStage(MTL::CommandBuffer* cmd, Real dt,
+                         int stage) const {
+        static constexpr float A[3] = {0, 0.75f, float(1.0 / 3.0)};
+        static constexpr float B[3] = {1, 0.25f, float(2.0 / 3.0)};
+        static constexpr float W[3] = {float(1.0 / 6.0),
+                                       float(1.0 / 6.0),
+                                       float(2.0 / 3.0)};
+        Params p = params(dt);
+        p.rks = stage;
+        p.rka = A[stage];
+        p.rkb = B[stage];
+        p.rkw = W[stage];
+        encode(cmd, wfluxX_, {q_, Fx_, FxA_}, p, nx_ + 1, ny_);
+        encode(cmd, wfluxY_, {q_, Fy_, FyA_}, p, nx_, ny_ + 1);
+        encode(cmd, rkUpd_, {q_, u0_, Fx_, Fy_}, p, nx_, ny_);
+    }
+    // RK-weighted flux sums (what AMR refluxing consumes in WENO mode)
+    const Cons* fxA() const {
+        return static_cast<const Cons*>(FxA_->contents());
+    }
+    const Cons* fyA() const {
+        return static_cast<const Cons*>(FyA_->contents());
+    }
+
     // Two-gas mode: allocates the scalar state (phi, Gamma) and face /
     // flux buffers and switches encodeStep/encodeWave to the species
     // kernels (which have neither viscosity nor gravity, like the CPU).
@@ -195,6 +238,8 @@ public:
         float mu, kT;        // viscosity / heat conductivity (0 = Euler)
         float gx, gy;        // gravity (split source)
         float g1 = GAMMA, g2 = GAMMA; // two-gas gammas (species only)
+        std::int32_t rks = 0;         // WENO/RK3 stage index
+        float rka = 0, rkb = 1, rkw = 0; // RK update / flux weights
     };
 
 private:
@@ -240,6 +285,10 @@ private:
                 *Fy_ = nullptr, *smax_ = nullptr;
     MTL::Buffer *s_ = nullptr, *fXb_ = nullptr, *fYb_ = nullptr,
                 *sFx_ = nullptr, *sFy_ = nullptr;
+    bool weno_ = false;
+    MTL::ComputePipelineState *wfluxX_ = nullptr, *wfluxY_ = nullptr,
+                              *rkUpd_ = nullptr;
+    MTL::Buffer *u0_ = nullptr, *FxA_ = nullptr, *FyA_ = nullptr;
 };
 
 static_assert(sizeof(Cons) == 4 * sizeof(float),

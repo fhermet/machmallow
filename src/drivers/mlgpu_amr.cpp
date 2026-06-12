@@ -8,6 +8,9 @@
 //   3. two-gas Sod on 3-level subcycled AMR, full run in lock-step with
 //      the CPU AmrML: composite L1 vs the generalized exact solution,
 //      species mass drift, and CPU/GPU agreement
+//   4. WENO5+RK3 Sod on the same hierarchy, full run in lock-step with
+//      the CPU AmrML WENO path: per-stage ghosts, RK-weighted
+//      refluxing and conservation on the GPU
 // Then: 3-level DMR (base 1/64 -> finest 1/256) with timing, frames out.
 
 #include "amr/AmrGpuML.hpp"
@@ -236,6 +239,101 @@ bool gate3_speciesGpu(MetalContext& ctx) {
            cpu.patchCount(2) == gpu.patchCount(2);
 }
 
+bool gate4_wenoGpu(MetalContext& ctx) {
+    const exact::State L{1, 0, 1}, R{0.125, 0, 0.1};
+    const double tEnd = 0.2;
+
+    AmrConfig cfg;
+    cfg.maxLevels = 3;
+    cfg.subcycle = true;
+    cfg.weno = true;
+
+    AmrML cpu(64, 16, 0, 0, 1, Real(0.25), cfg);
+    AmrGpuML gpu(ctx, 64, 16, 0, 0, 1, Real(0.25), cfg);
+    const auto wire = [](auto& amr) {
+        amr.fillPhysicalGhosts = [](auto& g, double) {
+            fillTransmissiveLeft(g);
+            fillTransmissiveRight(g);
+            fillTransmissiveBottom(g);
+            fillTransmissiveTop(g);
+        };
+        amr.fillPatchPhysical = [](auto& g, double, unsigned sides) {
+            if (sides & SideLeft) fillTransmissiveLeft(g);
+            if (sides & SideRight) fillTransmissiveRight(g);
+            if (sides & SideBottom) fillTransmissiveBottom(g);
+            if (sides & SideTop) fillTransmissiveTop(g);
+        };
+    };
+    wire(cpu);
+    wire(gpu);
+    const auto ic = [&](Real x, Real) {
+        return toCons(x < Real(0.5) ? Prim{1, 0, 0, 1}
+                                    : Prim{Real(0.125), 0, 0,
+                                           Real(0.1)});
+    };
+    cpu.init(ic);
+    gpu.init(ic);
+
+    const double m0 = gpu.totalMass();
+    double t = 0, drift = 0;
+    while (t < tEnd * (1 - 1e-9)) {
+        const Real dt =
+            std::min(cpu.maxStableDtAll(CFL), Real(tEnd - t));
+        cpu.step(dt, t);
+        gpu.step(dt, t);
+        t += dt;
+        drift = std::max(drift,
+                         std::fabs(gpu.totalMass() - m0) / m0);
+    }
+
+    const GridRef g = gpu.coarseRef();
+    const int bC = gpu.fineCells() / 2;
+    double maxRel = 0, err = 0;
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 64; ++i) {
+            if (gpu.covered(1, i / bC, j / bC)) continue;
+            const Real* pa = &cpu.base.at(NG + i, NG + j).rho;
+            const Real* pb = &g.at(NG + i, NG + j).rho;
+            for (int k = 0; k < NVARS; ++k)
+                maxRel = std::max(maxRel,
+                                  std::fabs(double(pa[k]) - pb[k]) /
+                                      (std::fabs(double(pa[k])) + 1e-3));
+            err += std::fabs(
+                       double(pb[0]) -
+                       exact::sample(L, R,
+                                     (double(g.xc(NG + i)) - 0.5) /
+                                         tEnd).rho) *
+                   g.dx * g.dy;
+        }
+    for (int l = 1; l < 3; ++l)
+        for (const auto& p : gpu.level(l).patches) {
+            const GridRef pg = gpu.patchRef(l, p);
+            for (int j = NG; j < NG + gpu.fineCells(); ++j)
+                for (int i = NG; i < NG + gpu.fineCells(); ++i) {
+                    const int gi = 2 * p.ci0 + (i - NG);
+                    const int gj = 2 * p.cj0 + (j - NG);
+                    if (l < 2 && gpu.covered(l + 1, gi / bC, gj / bC))
+                        continue;
+                    err += std::fabs(
+                               double(pg.at(i, j).rho) -
+                               exact::sample(L, R,
+                                             (double(pg.xc(i)) - 0.5) /
+                                                 tEnd).rho) *
+                           pg.dx * pg.dy;
+                }
+        }
+    err /= 0.25;
+    std::printf("gate 4 — WENO5 Sod on 3-level AMR (GPU): L1 = %.4e "
+                "(gate 6e-3), mass drift %.3e (gate 1e-5), CPU/GPU max "
+                "rel diff %.3e (gate 1e-2), patches L1 %zu|%zu L2 "
+                "%zu|%zu\n",
+                err, drift, maxRel, cpu.patchCount(1), gpu.patchCount(1),
+                cpu.patchCount(2), gpu.patchCount(2));
+    return err < 6e-3 && drift < 1e-5 && maxRel < 1e-2 &&
+           cpu.patchCount(1) == gpu.patchCount(1) &&
+           cpu.patchCount(2) == gpu.patchCount(2);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -244,7 +342,7 @@ int main(int argc, char** argv) {
     std::printf("GPU: %s\n", ctx.device()->name()->utf8String());
 
     if (!gate1_lockstep(ctx) || !gate2_periodic(ctx) ||
-        !gate3_speciesGpu(ctx)) {
+        !gate3_speciesGpu(ctx) || !gate4_wenoGpu(ctx)) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;
     }

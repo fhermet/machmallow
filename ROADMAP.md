@@ -151,7 +151,18 @@ extrema lisses).
   (la prolongation 2ᵉ ordre plie les stencils WENO aux interfaces
   c-f — connu ; l'intérêt haut-ordre est dans l'intérieur lisse),
   conservation 2.6e-6.
-- [ ] **Kernels Metal WENO5** + `scheme = weno5` dans CaseDef/run.
+- [x] ~~Kernels Metal WENO5 + `scheme = weno5`~~ — fait : kernels
+  flux WENO (accumulation RK intégrée, zérotée à l'étage 0) + update
+  RK (capture de u⁰ à l'étage 0), 3 allers-retours GPU par pas de
+  niveau (ghosts CPU entre étages). Gate : Sod 3 niveaux GPU en
+  lock-step CPU complet — L1 identique à 5 chiffres (4.5784e-3),
+  écart 4e-4, patchs identiques. `scheme = weno5` dans les .ini
+  (mono-gaz, non visqueux, classes ML à toute profondeur) ; KH
+  4 niveaux WENO tourne en live. Leçon : la combinaison RK
+  a·u⁰+b·(q+dtL) ne télescope pas aussi proprement en fp32 que
+  l'update incrémental MUSCL — dérive de masse ~1e-5 sur domaine
+  fermé (vs ~1e-8), c'est le plancher de la formulation, pas une
+  fuite (le reflux pondéré est conservatif).
 - **Sortie** : acoustique/vortex à l'ordre ≥3 en lisse, interfaces
   RT/KH/RM visiblement plus fines à résolution égale.
 
