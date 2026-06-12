@@ -54,10 +54,17 @@ Le projet gagne ses yeux et son instrumentation scientifique.
   propre (q/fermeture). ~15 %% d'overhead sur le KH, résultats
   bit-identiques au run headless. Dégradation propre en headless (CI).
   Extension : mode schlieren, champ au choix.
-- [ ] **Taux de croissance RT/KH vs théorie linéaire** : fit du journal
-  CSV (énergie cinétique ~ e^{2σt}) comparé à σ = √(Agk) (RT) et au
-  taux KH ; nouvelle gate dans `analytic_suite`.
-- **Sortie** : démo live du KH/RT + gate de croissance en CI.
+- [x] ~~Taux de croissance RT vs théorie linéaire~~ — fait :
+  amplitude de Fourier du mode semé à l'interface (immune aux
+  harmoniques qui polluent l'énergie globale), fit LSQ sur la fenêtre
+  linéaire → **σ = 1.440 vs √(Agk) = 1.447 (0.5 %)**, gate ±15 % dans
+  `analytic_suite`. Constat documenté : le KH en feuille de vorticité
+  n'est PAS gateable (mal posé, σ ∝ k — l'échelle résolue la plus fine
+  gagne ; le seed uniforme en y se projette mal sur le mode propre
+  localisé) — une gate KH propre demanderait un profil tanh + les
+  valeurs propres de Michalke (backlog).
+- **Sortie v1.1 : ATTEINTE** — démo live (KH/RT/bulle) + gate de
+  croissance RT en CI.
 
 ### v1.2 — Physique des mélanges *(labo)*
 De « densités différentes » à « gaz différents ».

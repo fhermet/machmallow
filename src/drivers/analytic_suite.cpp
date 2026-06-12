@@ -258,6 +258,86 @@ bool gate4_sedov() {
     return std::fabs(expo - 0.5) < 0.03;
 }
 
+// ---- 5: Rayleigh-Taylor linear growth vs sqrt(A g k) ----------------------
+// Fourier amplitude of the SEEDED mode at the interface row (immune to
+// the harmonics that pollute global kinetic energy), least-squares fit
+// of ln a(t) over the linear window (the fit averages out the
+// superposed gravity-wave oscillation).
+// NOTE (measured, kept for the record): the same measurement on a
+// vortex-sheet KH is NOT gateable — the sheet is ill-posed (sigma ~ k,
+// the fastest resolvable scale wins), the uniform-in-y seed projects
+// poorly on the localized eigenmode, and the numerically thickened
+// layer has its own rate. A proper KH gate needs a tanh profile and
+// Michalke's eigenvalues (roadmap).
+bool gate5_rtGrowth() {
+    const Real gy = Real(-0.5);
+    const double sigmaTh = std::sqrt((1.0 / 3) * 0.5 * 2 * M_PI / 0.5);
+
+    Grid g(128, 384, 0, 0, Real(0.5), Real(1.5));
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i) {
+            const Real y = g.yc(j), x = g.xc(i);
+            Prim w{y > Real(0.75) ? Real(2) : Real(1), 0,
+                   Real(1e-4 * std::sin(2 * M_PI * double(x) / 0.5) *
+                        std::exp(-std::pow((double(y) - 0.75) / 0.03,
+                                           2))),
+                   Real(2.5)};
+            w.p += w.rho * gy * (y - Real(0.75));
+            g.at(i, j) = toCons(w);
+        }
+    const auto bc = [&](Grid& gr) {
+        fillPeriodicX(gr);
+        for (int i = 0; i < gr.totx(); ++i)
+            for (int k = 0; k < NG; ++k) {
+                Prim w = toPrim(gr.at(i, NG + k)); // hydrostatic wall
+                w.v = -w.v;
+                w.p += w.rho * gy * (gr.yc(NG - 1 - k) - gr.yc(NG + k));
+                gr.at(i, NG - 1 - k) = toCons(w);
+                Prim u = toPrim(gr.at(i, NG + gr.ny - 1 - k));
+                u.v = -u.v;
+                u.p += u.rho * gy * (gr.yc(NG + gr.ny + k) -
+                                     gr.yc(NG + gr.ny - 1 - k));
+                gr.at(i, NG + gr.ny + k) = toCons(u);
+            }
+    };
+    const auto modeAmp = [&](const Grid& gr) {
+        double cr = 0, ci = 0;
+        const int jI = NG + 192; // interface row y = 0.75
+        for (int i = NG; i < NG + gr.nx; ++i) {
+            const Cons& q = gr.at(i, jI);
+            const double v =
+                double(q.my) / std::max(double(q.rho), 1e-10);
+            const double ph = 2 * M_PI * (i - NG + 0.5) / gr.nx;
+            cr += v * std::cos(ph);
+            ci += v * std::sin(ph);
+        }
+        return std::sqrt(cr * cr + ci * ci) / gr.nx;
+    };
+
+    Scratch2D s;
+    double t = 0;
+    int n = 0;
+    double st = 0, sa = 0, stt = 0, sta = 0; // fit accumulators
+    int np = 0;
+    while (t < 3.0) {
+        bc(g);
+        const Real dt = maxStableDt(g, Real(0.4));
+        step2D(g, dt, s, 0, 0, gy);
+        t += dt;
+        if (++n % 50 == 0 && t > 1.8) {
+            const double la = std::log(modeAmp(g));
+            st += t; sa += la; stt += t * t; sta += t * la;
+            ++np;
+        }
+    }
+    const double sigma =
+        (np * sta - st * sa) / (np * stt - st * st); // LSQ slope
+    std::printf("gate 5 — RT linear growth: sigma = %.3f vs sqrt(Agk) = "
+                "%.3f (%.0f%%, gate ±15%%)\n",
+                sigma, sigmaTh, 100 * (sigma / sigmaTh - 1));
+    return std::fabs(sigma / sigmaTh - 1) < 0.15;
+}
+
 } // namespace
 
 int main() {
@@ -266,6 +346,7 @@ int main() {
     ok = gate2_acousticOrder() && ok;
     ok = gate3_vortex() && ok;
     ok = gate4_sedov() && ok;
+    ok = gate5_rtGrowth() && ok;
     if (!ok) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;
