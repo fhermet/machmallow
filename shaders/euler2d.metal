@@ -12,7 +12,7 @@ using namespace metal;
 constant float GAMMA = 1.4f;
 constant float RHO_FLOOR = 1e-10f;
 constant float P_FLOOR = 1e-10f;
-constant int NG = 2;
+constant int NG = 3;
 
 struct Params {
     int tx, ty;   // total cells including ghosts

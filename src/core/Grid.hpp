@@ -8,7 +8,9 @@
 namespace mm {
 
 // Ghost layers on each side (2 needed: limited slopes + Riemann stencil).
-inline constexpr int NG = 2;
+// 3 ghost layers: WENO5 needs a 5-cell stencil (r = 3); the MUSCL
+// paths only read 2 but every ghost fill covers the full ring.
+inline constexpr int NG = 3;
 
 // Non-owning view over externally allocated cells (e.g. a shared Metal
 // buffer). Same interface as Grid so case setup/BC code is shared.

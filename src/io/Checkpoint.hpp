@@ -20,7 +20,7 @@ namespace mm {
 namespace ckdetail {
 
 inline constexpr std::uint32_t MAGIC = 0x4d4d434b; // "MMCK"
-inline constexpr std::uint32_t VERSION = 1;
+inline constexpr std::uint32_t VERSION = 2; // v2: NG = 3 ghost ring
 
 struct Header {
     std::uint32_t magic, version;
