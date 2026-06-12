@@ -118,7 +118,7 @@ bool gate1_interfaceAdvection() {
                 "|p-1| startup %.3e / sustained %.3e, max|u-0.5| = "
                 "%.3e, L1(Y) = %.3e\n",
                 pStart, pSust, uErr, yErr);
-    return pStart < 0.03 && pSust < 0.015 && uErr < 0.03 && yErr < 0.05;
+    return pStart < 0.02 && pSust < 0.01 && uErr < 0.01 && yErr < 0.03;
 }
 
 bool gate2_twoGasSod() {

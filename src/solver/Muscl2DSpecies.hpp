@@ -50,9 +50,11 @@ inline Real maxStableDtY(const Grid& g, const std::vector<Real>& Gm,
 
 // Pressure closes on the ADVECTED Gamma field (quasi-conservative
 // transport by the HLLC contact speed) — not on Gamma(Y) — so the
-// energy and Gamma mixing weights match and material interfaces stay
-// free of pressure oscillations (Shyue / Johnsen & Colonius). phi = rho*Y
-// remains the conserved species mass.
+// energy and Gamma mixing weights match (Shyue / Johnsen & Colonius).
+// Reconstruction is PRIMITIVE (rho, u, v, p) + Gamma: face energies are
+// built from face p and face Gamma, so a uniform-(p, u) interface has
+// exactly uniform face states and no pressure oscillation can be
+// generated. phi = rho*Y remains the conserved species mass.
 inline void step2DY(Grid& g, std::vector<Real>& phi,
                     std::vector<Real>& Gm, Real dt, ScratchY& s,
                     const GasPair& gas) {
@@ -76,8 +78,6 @@ inline void step2DY(Grid& g, std::vector<Real>& phi,
         for (int i = 1; i < tx - 1; ++i) {
             const std::size_t id = g.idx(i, j);
             const Cons& q0 = g.q[id];
-            const Cons dqx = limitedSlope(g.at(i - 1, j), q0, g.at(i + 1, j));
-            const Cons dqy = limitedSlope(g.at(i, j - 1), q0, g.at(i, j + 1));
             const Real Y0 = Yof(id);
             const Real dYx = mcSlope(Y0 - Yof(g.idx(i - 1, j)),
                                      Yof(g.idx(i + 1, j)) - Y0);
@@ -93,26 +93,66 @@ inline void step2DY(Grid& g, std::vector<Real>& phi,
                                      Gm[g.idx(i + 1, j)] - G0);
             const Real dGy = mcSlope(G0 - Gm[g.idx(i, j - 1)],
                                      Gm[g.idx(i, j + 1)] - G0);
-            s.gxL[id] = std::clamp(G0 - Real(0.5) * dGx, Gmin, Gmax);
-            s.gxR[id] = std::clamp(G0 + Real(0.5) * dGx, Gmin, Gmax);
-            s.gyB[id] = std::clamp(G0 - Real(0.5) * dGy, Gmin, Gmax);
-            s.gyT[id] = std::clamp(G0 + Real(0.5) * dGy, Gmin, Gmax);
+            // half-dt advection of the face Gamma/Y (cell velocity):
+            // keeps them synchronous with the half-dt-advanced energy —
+            // a t^n face Gamma against a t^(n+1/2) face E is exactly
+            // the residual interface wiggle
+            const Real u0c = q0.mx / std::max(q0.rho, RHO_FLOOR);
+            const Real v0c = q0.my / std::max(q0.rho, RHO_FLOOR);
+            const Real gAdv = hx * u0c * dGx + hy * v0c * dGy;
+            s.gxL[id] = std::clamp(G0 - Real(0.5) * dGx - gAdv, Gmin, Gmax);
+            s.gxR[id] = std::clamp(G0 + Real(0.5) * dGx - gAdv, Gmin, Gmax);
+            s.gyB[id] = std::clamp(G0 - Real(0.5) * dGy - gAdv, Gmin, Gmax);
+            s.gyT[id] = std::clamp(G0 + Real(0.5) * dGy - gAdv, Gmin, Gmax);
 
-            const Cons xl = q0 - Real(0.5) * dqx;
-            const Cons xr = q0 + Real(0.5) * dqx;
-            const Cons yb = q0 - Real(0.5) * dqy;
-            const Cons yt = q0 + Real(0.5) * dqy;
+            // primitive slopes; face states rebuilt from face prims
+            // and face Gamma (positivity by construction: rho, p
+            // clamped at the floors)
+            const Prim w0 = toPrimG(q0, G0);
+            const Prim wm = toPrimG(g.at(i - 1, j), Gm[g.idx(i - 1, j)]);
+            const Prim wp = toPrimG(g.at(i + 1, j), Gm[g.idx(i + 1, j)]);
+            const Prim wb = toPrimG(g.at(i, j - 1), Gm[g.idx(i, j - 1)]);
+            const Prim wt = toPrimG(g.at(i, j + 1), Gm[g.idx(i, j + 1)]);
+            const auto slope = [&](Real m, Real c, Real pl) {
+                return mcSlope(c - m, pl - c);
+            };
+            const auto face = [&](const Prim& w, Real sgn, bool xDir,
+                                  Real dr, Real du, Real dv, Real dp) {
+                Prim f{std::max(w.rho + sgn * Real(0.5) * dr, RHO_FLOOR),
+                       w.u + sgn * Real(0.5) * du,
+                       w.v + sgn * Real(0.5) * dv,
+                       std::max(w.p + sgn * Real(0.5) * dp, P_FLOOR)};
+                (void)xDir;
+                return f;
+            };
+            const Real drx = slope(wm.rho, w0.rho, wp.rho);
+            const Real dux = slope(wm.u, w0.u, wp.u);
+            const Real dvx = slope(wm.v, w0.v, wp.v);
+            const Real dpx = slope(wm.p, w0.p, wp.p);
+            const Real dry = slope(wb.rho, w0.rho, wt.rho);
+            const Real duy = slope(wb.u, w0.u, wt.u);
+            const Real dvy = slope(wb.v, w0.v, wt.v);
+            const Real dpy = slope(wb.p, w0.p, wt.p);
+
+            const Prim pxl = face(w0, -1, true, drx, dux, dvx, dpx);
+            const Prim pxr = face(w0, +1, true, drx, dux, dvx, dpx);
+            const Prim pyb = face(w0, -1, false, dry, duy, dvy, dpy);
+            const Prim pyt = face(w0, +1, false, dry, duy, dvy, dpy);
+
+            const Cons xl = toConsG(pxl, s.gxL[id]);
+            const Cons xr = toConsG(pxr, s.gxR[id]);
+            const Cons yb = toConsG(pyb, s.gyB[id]);
+            const Cons yt = toConsG(pyt, s.gyT[id]);
             const Cons adv =
-                hx * (fluxXG(toPrimG(xl, s.gxL[id]), s.gxL[id]) -
-                      fluxXG(toPrimG(xr, s.gxR[id]), s.gxR[id])) +
-                hy * (fluxYG(toPrimG(yb, s.gyB[id]), s.gyB[id]) -
-                      fluxYG(toPrimG(yt, s.gyT[id]), s.gyT[id]));
+                hx * (fluxXG(pxl, s.gxL[id]) - fluxXG(pxr, s.gxR[id])) +
+                hy * (fluxYG(pyb, s.gyB[id]) - fluxYG(pyt, s.gyT[id]));
             s.xL[id] = xl + adv;
             s.xR[id] = xr + adv;
             s.yB[id] = yb + adv;
             s.yT[id] = yt + adv;
 
-            // positivity fallback, as in the single-gas scheme
+            // the half-dt advance can still produce a non-physical face
+            // in extreme cells: same first-order fallback
             const auto bad = [](const Cons& c) {
                 if (c.rho <= RHO_FLOOR) return true;
                 const Real ke =

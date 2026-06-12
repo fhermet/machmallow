@@ -73,13 +73,16 @@ De « densités différentes » à « gaz différents ».
   Γ = 1/(γ−1) advecté quasi-conservativement par la vitesse de contact
   S* (l'EOS lit ce Γ : poids de mélange E/Γ cohérents), HLLC bi-γ,
   Riemann exact généralisé aux γ par côté. `species_suite` : advection
-  d'interface |p−1| 2.2 %% (démarrage) / 0.9 %% (entretenu — la
-  reconstruction conservative laisse ce résidu borné ; raffinement
-  suivant = reconstruction des primitives), Sod bi-γ à 1.6e-3 de
-  l'exact, masse d'espèce au plancher fp32.
-- [ ] **Suite multi-espèces** : reconstruction primitive (oscillation
-  → ~1e-6), plomberie AMR (φ/Γ dans patchs, prolongation, refluxing),
-  GPU (buffers + kernels), CaseDef (`[state.X] gas = 2`).
+  d'interface |p−1| 1.0 %% (démarrage) / 0.6 %% (entretenu), Sod bi-γ à
+  1.2e-3 de l'exact, masse d'espèce au plancher fp32. Reconstruction
+  PRIMITIVE (ρ,u,v,p)+Γ avec faces Γ avancées du demi-pas (la
+  désynchronisation E/Γ était la moitié du résidu) ; le reliquat vient
+  du mélange E des états-étoiles HLLC — remède définitif = double-flux
+  d'Abgrall-Karni (optionnel, plus tard).
+- [ ] **Suite multi-espèces** : plomberie AMR (φ/Γ dans patchs,
+  prolongation, refluxing), GPU (buffers + kernels), CaseDef
+  (`[state.X] gas = 2`), bulle He + Richtmyer-Meshkov ; double-flux en
+  option si les 0.6 %% gênent.
 - [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
   quantitatif), Richtmyer-Meshkov.
 - **Sortie** : gate d'interface (pas d'oscillation de p), bulle He
