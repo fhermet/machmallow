@@ -82,8 +82,17 @@ possibles, par thème et avec leur point d'entrée dans le code.
   `run --check` (config effective + warnings clés inconnues),
   `run --list`, `cases/TEMPLATE.ini`, gate `casedef_test` (équivalence
   bit-près avec les presets historiques), smoke `--check` de tous les
-  cas en CI. Extensions possibles : nouvelles formes de régions
-  (ellipse, polygone), perturbations 2D, profils le long de y.
+  cas en CI. Puis : **états Rankine-Hugoniot dérivés** (`shock = etat
+  mach M [dir]`, vitesse de front `speed auto`), **pré-vol** (états
+  affichés, warning cellules non carrées avec correction suggérée,
+  estimation pas/coût/temps) et **`run --preview`** (IC en .vti sans
+  calcul). Extensions possibles : nouvelles formes de régions (ellipse,
+  polygone), perturbations 2D/le long de y, diagnostics CSV (item
+  dédié ci-dessous).
+- [ ] **Diagnostics intégraux CSV** — section `[diagnostics]` (masse,
+  énergie cinétique, enstrophie, extrema, cadence) → séries temporelles
+  pour exploiter un cas quantitativement. *Entrée : runCase dans
+  `src/drivers/run.cpp`.*
 - [ ] **Rendu temps réel** — fenêtre Metal affichant ρ pendant la simu
   (les données sont déjà dans des buffers GPU partagés — il ne manque
   qu'une passe de rendu et une boucle d'événements).

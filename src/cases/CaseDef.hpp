@@ -55,23 +55,36 @@ public:
         c.nx = cfg.getInt("grid.nx", 64);
         c.ny = cfg.getInt("grid.ny", 64);
 
-        // named states
+        // named states: plain ones first, then derived (Rankine-Hugoniot
+        // post-shock states referencing a plain state)
+        std::vector<std::string> names;
         for (const std::string& key : cfg.sectionKeys("state")) {
-            // state.NAME.rho etc? No: sections are [state.NAME] -> keys
-            // "state.NAME.rho". Extract NAME.
             const std::string rest = key.substr(6); // after "state."
             const auto dot = rest.find('.');
             if (dot == std::string::npos) continue;
             const std::string name = rest.substr(0, dot);
-            if (c.states_.count(name)) continue;
-            c.states_[name] = {
-                Real(cfg.getReal("state." + name + ".rho", 1)),
-                Real(cfg.getReal("state." + name + ".u", 0)),
-                Real(cfg.getReal("state." + name + ".v", 0)),
-                Real(cfg.getReal("state." + name + ".p", 1))};
+            if (std::find(names.begin(), names.end(), name) ==
+                names.end())
+                names.push_back(name);
         }
+        for (const std::string& name : names)
+            if (!cfg.has("state." + name + ".shock"))
+                c.states_[name] = {
+                    {Real(cfg.getReal("state." + name + ".rho", 1)),
+                     Real(cfg.getReal("state." + name + ".u", 0)),
+                     Real(cfg.getReal("state." + name + ".v", 0)),
+                     Real(cfg.getReal("state." + name + ".p", 1))},
+                    0};
+        for (const std::string& name : names)
+            if (cfg.has("state." + name + ".shock"))
+                c.states_[name] = c.parseShockState_(
+                    cfg.requireString("state." + name + ".shock"));
+        for (const auto& [name, st] : c.states_)
+            if (st.w.rho <= 0 || st.w.p <= 0)
+                throw std::runtime_error("state '" + name +
+                                         "': rho and p must be > 0");
 
-        c.def_ = c.lookupState_(cfg.requireString("ic.default"));
+        c.def_ = c.lookupState_(cfg.requireString("ic.default")).w;
         for (const std::string& key : numbered_(cfg, "ic.region."))
             c.regions_.push_back(c.parseRegion_(cfg.requireString(key)));
         for (const std::string& key : numbered_(cfg, "ic.perturb."))
@@ -118,6 +131,28 @@ public:
         if (mask & SideRight) side_(g, t, 1);
         if (mask & SideBottom) side_(g, t, 2);
         if (mask & SideTop) side_(g, t, 3);
+    }
+
+    // For the preflight printer: name, primitive state, shock speed
+    // (0 unless RH-derived), plus the fastest signal speed of the case.
+    struct StateInfo {
+        std::string name;
+        Prim w;
+        Real shockSpeed;
+    };
+    std::vector<StateInfo> listStates() const {
+        std::vector<StateInfo> out;
+        for (const auto& [name, st] : states_)
+            out.push_back({name, st.w, st.shockSpeed});
+        return out;
+    }
+    Real maxSignalSpeed() const {
+        Real s = 0;
+        for (const auto& [name, st] : states_)
+            s = std::max(s, std::max(std::fabs(st.w.u),
+                                     std::fabs(st.w.v)) +
+                                soundSpeed(st.w));
+        return s;
     }
 
 private:
@@ -207,13 +242,54 @@ private:
         return Real(x);
     }
 
-    Prim lookupState_(const std::string& name) const {
+    struct NamedState {
+        Prim w{};
+        Real shockSpeed = 0; // lab-frame front speed (RH-derived states)
+    };
+
+    const NamedState& lookupState_(const std::string& name) const {
         const auto it = states_.find(name);
         if (it == states_.end())
             throw std::runtime_error("unknown state '" + name +
                                      "' (add a [state." + name +
                                      "] section)");
         return it->second;
+    }
+
+    // "shock = <upstream> mach <Ms> [+x|-x|+y|-y]": Rankine-Hugoniot
+    // post-shock state for a shock moving at Mach Ms (relative to the
+    // upstream gas) in the given direction. Stores the lab-frame shock
+    // speed for `speed auto` fronts.
+    NamedState parseShockState_(const std::string& spec) const {
+        const auto toks = tokens_(spec);
+        if (toks.size() < 3 || toks.size() > 4 || toks[1] != "mach")
+            throw std::runtime_error(
+                "shock state: expected '<state> mach <Ms> [+x|-x|+y|-y]'"
+                ": " +
+                spec);
+        const NamedState& up = lookupState_(toks[0]);
+        const Real Ms = num_(toks[2]);
+        if (Ms <= 1)
+            throw std::runtime_error("shock state: Ms must be > 1");
+        const std::string dir =
+            toks.size() == 4 ? toks[3] : std::string("+x");
+        const Real sgn = (dir == "-x" || dir == "-y") ? Real(-1) : Real(1);
+        const bool alongX = dir == "+x" || dir == "-x";
+        if (!alongX && dir != "+y" && dir != "-y")
+            throw std::runtime_error("shock state: bad direction " + dir);
+
+        const Real c1 = soundSpeed(up.w);
+        const Real M2 = Ms * Ms;
+        NamedState s;
+        s.w = up.w;
+        s.w.rho = up.w.rho * (GAMMA + 1) * M2 / ((GAMMA - 1) * M2 + 2);
+        s.w.p = up.w.p * (1 + 2 * GAMMA / (GAMMA + 1) * (M2 - 1));
+        const Real du = sgn * 2 * c1 / (GAMMA + 1) * (Ms - 1 / Ms);
+        const Real u1 = alongX ? up.w.u : up.w.v;
+        if (alongX) s.w.u += du;
+        else s.w.v += du;
+        s.shockSpeed = u1 + sgn * Ms * c1; // lab frame
+        return s;
     }
 
     Region parseRegion_(const std::string& spec) const {
@@ -223,7 +299,8 @@ private:
             throw std::runtime_error("region needs ': stateName' — " +
                                      spec);
         Region r;
-        r.st = lookupState_(*(colon + 1));
+        const NamedState& ns = lookupState_(*(colon + 1));
+        r.st = ns.w;
         const std::size_t n = std::size_t(colon - toks.begin());
         const auto need = [&](std::size_t want, const char* what) {
             if (n != want)
@@ -241,7 +318,19 @@ private:
             if (n == 6) {
                 if (toks[4] != "speed")
                     throw std::runtime_error("expected 'speed': " + spec);
-                r.speed = num_(toks[5]);
+                if (toks[5] == "auto") {
+                    // RH-derived state: front advances along the
+                    // half-plane's own normal at the lab-frame shock
+                    // speed.
+                    if (ns.shockSpeed == 0)
+                        throw std::runtime_error(
+                            "speed auto needs a 'shock =' derived "
+                            "state: " +
+                            spec);
+                    r.speed = std::fabs(ns.shockSpeed);
+                } else {
+                    r.speed = num_(toks[5]);
+                }
             }
         } else if (toks[0] == "band") {
             need(4, "band");
@@ -304,7 +393,7 @@ private:
             s.type = Bc::Inflow;
             if (i + 1 >= end)
                 throw std::runtime_error("inflow needs a state name");
-            s.inflow = lookupState_(toks[i + 1]);
+            s.inflow = lookupState_(toks[i + 1]).w;
         } else
             throw std::runtime_error("unknown boundary type: " + t);
         return s;
@@ -391,7 +480,7 @@ private:
         }
     }
 
-    std::map<std::string, Prim> states_;
+    std::map<std::string, NamedState> states_;
     Prim def_{};
     std::vector<Region> regions_;
     std::vector<Perturb> perturbs_;

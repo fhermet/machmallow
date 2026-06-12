@@ -139,6 +139,29 @@ bool gate3_khIc() {
     return maxd < 1e-6;
 }
 
+bool gate4_rankineHugoniot() {
+    // bubble.ini derives its post-shock state (Mach 1.5 into rho = 1.4,
+    // p = 1 at rest); reference values computed by hand.
+    const Config cfg = Config::load("cases/bubble.ini");
+    const CaseDef cd = CaseDef::parse(cfg);
+    Prim post{};
+    Real speed = 0;
+    for (const auto& s : cd.listStates())
+        if (s.shockSpeed != 0) {
+            post = s.w;
+            speed = s.shockSpeed;
+        }
+    const double e =
+        std::max({std::fabs(double(post.rho) - 2.6068966),
+                  std::fabs(double(post.u) - 0.6944444),
+                  std::fabs(double(post.p) - 2.4583333),
+                  std::fabs(double(speed) - 1.5)});
+    std::printf("gate 4 — Rankine-Hugoniot state (Ms=1.5): max |diff| = "
+                "%.3e (gate 1e-5)\n",
+                e);
+    return e < 1e-5;
+}
+
 } // namespace
 
 int main() {
@@ -146,6 +169,7 @@ int main() {
     ok = gate1_sodL1() && ok;
     ok = gate2_dmrGhosts() && ok;
     ok = gate3_khIc() && ok;
+    ok = gate4_rankineHugoniot() && ok;
     if (!ok) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;

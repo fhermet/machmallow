@@ -157,11 +157,73 @@ void warnUnusedKeys(const Config& cfg) {
                      k.c_str());
 }
 
+// Preflight: named states (RH-derived included), numerical sanity
+// warnings and a rough cost estimate — printed by --check and before
+// every run.
+void preflight(const CaseDef& cd, const AmrConfig& acfg, double tEnd,
+               double cfl) {
+    for (const auto& s : cd.listStates()) {
+        std::printf("  state %-10s rho %-9.5g u %-9.5g v %-9.5g p %-9.5g",
+                    s.name.c_str(), double(s.w.rho), double(s.w.u),
+                    double(s.w.v), double(s.w.p));
+        if (s.shockSpeed != 0)
+            std::printf("  (front RH, vitesse %.5g)",
+                        double(s.shockSpeed));
+        std::printf("\n");
+    }
+
+    const double dx = double(cd.lx) / cd.nx, dy = double(cd.ly) / cd.ny;
+    if (std::fabs(dx / dy - 1) > 1e-6) {
+        const int nxSq = int(std::lround(double(cd.lx) / dy));
+        std::fprintf(stderr,
+                     "warning: non-square cells (dx/dy = %.3g) — "
+                     "accuracy is anisotropic; suggested grid.nx = %d\n",
+                     dx / dy, nxSq);
+    }
+
+    const int depth = acfg.maxLevels - 1;
+    const double dxFine = dx / (1 << depth);
+    const double smax = double(cd.maxSignalSpeed());
+    const double dt0 = acfg.subcycle ? cfl * dx / smax
+                                     : cfl * dxFine / smax;
+    const double steps = tEnd / dt0;
+    // crude cost: assume ~25% of every level refined; level l holds
+    // cells*4^l cells and (subcycled) takes 2^l substeps per base step
+    const double cells = double(cd.nx) * cd.ny;
+    double work = cells * steps;
+    for (int l = 1; l <= depth; ++l)
+        work += 0.25 * cells * std::pow(4.0, l) * steps *
+                (acfg.subcycle ? double(1 << l) : 1.0);
+    std::printf("  finest 1/%g | ~%.0f pas de base | ~%.1f Gcell-steps "
+                "(si ~25%% raffiné) | ~%.0f s à 150 Mcell/s\n",
+                1.0 / dxFine, steps, work / 1e9, work / 150e6);
+}
+
 int usage() {
-    std::fprintf(
-        stderr,
-        "usage: run <case.ini> | run --check <case.ini> | run --list\n");
+    std::fprintf(stderr,
+                 "usage: run <case.ini>            lancer le cas\n"
+                 "       run --check <case.ini>    config effective + "
+                 "pré-vol, sans calculer\n"
+                 "       run --preview <case.ini>  écrire l'IC en .vti "
+                 "(vérif géométrie)\n"
+                 "       run --list                grammaire des cas\n");
     return EXIT_FAILURE;
+}
+
+// Evaluate the IC on the base grid and write it for ParaView — geometry
+// check in one second, no solver run.
+int preview(const CaseDef& cd, const Config& cfg) {
+    const std::string prefix = cfg.getString("output.prefix", "out/run");
+    std::filesystem::create_directories(
+        std::filesystem::path(prefix).parent_path());
+    Grid g(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly);
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i)
+            g.at(i, j) = cd.state(g.xc(i), g.yc(j), 0);
+    const std::string path = prefix + "_ic.vti";
+    writeVti(path, g);
+    std::printf("IC écrite dans %s\n", path.c_str());
+    return EXIT_SUCCESS;
 }
 
 int list() {
@@ -198,8 +260,10 @@ int main(int argc, char** argv) {
     const std::string a1 = argv[1];
     if (a1 == "--list") return list();
     const bool checkOnly = a1 == "--check";
-    if (checkOnly && argc < 3) return usage();
-    const std::string path = checkOnly ? argv[2] : a1;
+    const bool previewOnly = a1 == "--preview";
+    if ((checkOnly || previewOnly) && argc < 3) return usage();
+    const std::string path =
+        (checkOnly || previewOnly) ? argv[2] : a1;
 
     try {
         const Config cfg = Config::load(path);
@@ -222,6 +286,10 @@ int main(int argc, char** argv) {
                     cd.periodicY ? " | periodicY" : "", acfg.maxLevels,
                     double(acfg.mu));
 
+        if (previewOnly) return preview(cd, cfg);
+
+        preflight(cd, acfg, cfg.getReal("t_end", 0.2),
+                  cfg.getReal("cfl", 0.4));
         if (checkOnly) {
             std::printf("t_end %g | cfl %g | frames %d | tag %g/%g | "
                         "regrid %d | subcycle %d\n",
