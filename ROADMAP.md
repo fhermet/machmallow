@@ -142,8 +142,15 @@ extrema lisses).
   pré-asymptotique), vortex ordre 3.55 et dissipation 5.5× plus
   faible que MUSCL à 64², Sod borné sans over/undershoot (contact
   +19 %% vs HLLC — LLF diffuse le contact, attendu).
-- [ ] **WENO5 dans l'AMR** : ghosts par étage RK (θ-blend aux temps
-  d'étage), reflux pondéré (1/6, 1/6, 2/3), classes ML.
+- [x] ~~WENO5 dans l'AMR (CPU)~~ — fait : `cfg.weno`, 3 étages RK
+  synchrones par niveau avec ghosts re-remplis aux temps d'étage
+  (θ = (k+c)/n), flux accumulés aux poids (1/6, 1/6, 2/3) consommés
+  par le refluxing existant. Gate brutale : hiérarchie 2 niveaux
+  tout-raffinée périodique = grille uniforme **bit-à-bit** (0 diff
+  sur 40 pas). Sod 3 niveaux : L1 1.47× MUSCL sur la même hiérarchie
+  (la prolongation 2ᵉ ordre plie les stencils WENO aux interfaces
+  c-f — connu ; l'intérêt haut-ordre est dans l'intérieur lisse),
+  conservation 2.6e-6.
 - [ ] **Kernels Metal WENO5** + `scheme = weno5` dans CaseDef/run.
 - **Sortie** : acoustique/vortex à l'ordre ≥3 en lisse, interfaces
   RT/KH/RM visiblement plus fines à résolution égale.

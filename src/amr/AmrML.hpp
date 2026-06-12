@@ -22,6 +22,7 @@
 #include "numerics/Limiter.hpp"
 #include "solver/Muscl2D.hpp"
 #include "solver/Muscl2DSpecies.hpp"
+#include "solver/Weno2D.hpp"
 
 #include "amr/Amr2.hpp" // AmrConfig
 
@@ -42,7 +43,9 @@ public:
         int ci0, cj0; // block origin in level-(l-1) cells
         Grid grid;    // own-level data: 2*blockC square + ghosts
         std::vector<Cons> Fx, Fy; // fluxes of this patch's last step
+                                  // (RK-weighted sums in WENO mode)
         std::vector<Cons> old;    // own state at parent-substep start
+        std::vector<Cons> rk0;    // RK step start state (WENO mode)
         // two-gas fields (allocated only when cfg.species)
         std::vector<Real> phi, Gmf, oldPhi, oldGm, Fpx, Fpy;
     };
@@ -63,6 +66,8 @@ public:
         : base(nx, ny, x0, y0, lx, ly), cfg_(cfg), nf_(2 * cfg.blockC) {
         assert(nx % cfg.blockC == 0 && ny % cfg.blockC == 0);
         assert(cfg.maxLevels >= 1);
+        assert(!(cfg.weno && cfg.species) && "weno is single-gas for now");
+        assert(!(cfg.weno && cfg.mu > 0) && "weno is inviscid for now");
         gas_ = GasPair{cfg.gamma1, cfg.gamma2};
         if (cfg_.species) {
             basePhi_.assign(base.q.size(), 0);
@@ -151,7 +156,7 @@ public:
     void step(Real dt, double t) {
         fillPhysicalGhosts(base, t);
         if (cfg_.species) baseScalarGhosts_();
-        advanceTree_(0, dt, t);
+        advanceTree_(0, dt, t, 0, 1);
     }
 
     double totalSpeciesMass() const {
@@ -652,11 +657,80 @@ private:
         }
     }
 
-    void advanceTree_(int l, Real dt, double t) {
+    // WENO5 + SSP-RK3 level step: every stage advances ALL grids of
+    // the level, then the level ghosts are refilled at the stage time
+    // (theta interpolates the parent between its old and new states).
+    // The face fluxes are accumulated with the RK weights (1/6, 1/6,
+    // 2/3) so the refluxing machinery consumes the time-integrated
+    // flux exactly like the one-step MUSCL fluxes.
+    void stepLevelWeno_(int l, Real dt, double t, Real thBase,
+                        Real thSpan) {
+        struct St { Real c, a, b, w; }; // q = a*u0 + b*(q + dt L)
+        static constexpr St ST[3] = {
+            {0, 0, 1, Real(1.0 / 6.0)},
+            {1, Real(0.75), Real(0.25), Real(1.0 / 6.0)},
+            {Real(0.5), Real(1.0 / 3.0), Real(2.0 / 3.0),
+             Real(2.0 / 3.0)}};
+
+        const auto stageGrid = [&](Grid& g, std::vector<Cons>& u0,
+                                   std::vector<Cons>& Fxa,
+                                   std::vector<Cons>& Fya, const St& st,
+                                   bool first) {
+            if (first) {
+                u0 = g.q;
+                Fxa.assign(g.q.size(), Cons{});
+                Fya.assign(g.q.size(), Cons{});
+            }
+            wenoFluxes(g, scratchW_);
+            const Real lx = dt / g.dx, ly = dt / g.dy;
+            for (int j = NG - 1; j < NG + g.ny; ++j)
+                for (int i = NG - 1; i < NG + g.nx; ++i) {
+                    const std::size_t id = g.idx(i, j);
+                    Fxa[id] += st.w * scratchW_.Fx[id];
+                    Fya[id] += st.w * scratchW_.Fy[id];
+                }
+            for (int j = NG; j < NG + g.ny; ++j)
+                for (int i = NG; i < NG + g.nx; ++i) {
+                    const std::size_t id = g.idx(i, j);
+                    const Cons adv =
+                        g.q[id] +
+                        lx * (scratchW_.Fx[g.idx(i - 1, j)] -
+                              scratchW_.Fx[id]) +
+                        ly * (scratchW_.Fy[g.idx(i, j - 1)] -
+                              scratchW_.Fy[id]);
+                    g.q[id] = st.a * u0[id] + st.b * adv;
+                }
+        };
+
+        for (int s = 0; s < 3; ++s) {
+            const St& st = ST[s];
+            // stage 1 reuses the ghosts the caller just filled
+            if (s > 0) {
+                if (l == 0) {
+                    fillPhysicalGhosts(base, t + double(st.c) * dt);
+                } else {
+                    fillLevelGhosts_(l, t + double(st.c) * dt,
+                                     thBase + st.c * thSpan);
+                }
+            }
+            if (l == 0) {
+                stageGrid(base, rkB0_, wFxB_, wFyB_, st, s == 0);
+            } else {
+                for (Patch& p : lvls_[l - 1].patches)
+                    stageGrid(p.grid, p.rk0, p.Fx, p.Fy, st, s == 0);
+            }
+        }
+    }
+
+    void advanceTree_(int l, Real dt, double t, Real thBase,
+                      Real thSpan) {
         const bool hasKids =
             (l + 1 < cfg_.maxLevels) && !lvls_[l].patches.empty();
         if (hasKids) saveOld_(l);
-        stepLevel_(l, dt);
+        if (cfg_.weno)
+            stepLevelWeno_(l, dt, t, thBase, thSpan);
+        else
+            stepLevel_(l, dt);
         if (hasKids) {
             const int lc = l + 1;
             if (cfg_.reflux) refluxBackOut_(lc, dt);
@@ -664,7 +738,8 @@ private:
             const Real cdt = dt / n;
             for (int k = 0; k < n; ++k) {
                 fillLevelGhosts_(lc, t + k * cdt, Real(k) / Real(n));
-                advanceTree_(lc, cdt, t + k * cdt);
+                advanceTree_(lc, cdt, t + k * cdt, Real(k) / Real(n),
+                             Real(1) / Real(n));
                 if (cfg_.reflux) refluxFineApply_(lc, cdt);
             }
             restrictLevel_(lc);
@@ -692,8 +767,12 @@ private:
     ParentCell parentCell_(int lp, int cg, int cgj) {
         if (lp == 0) {
             ParentCell pc{&base,
-                          cfg_.species ? &scratchYB_.Fx : &scratchB_.Fx,
-                          cfg_.species ? &scratchYB_.Fy : &scratchB_.Fy,
+                          cfg_.weno ? &wFxB_
+                          : cfg_.species ? &scratchYB_.Fx
+                                         : &scratchB_.Fx,
+                          cfg_.weno ? &wFyB_
+                          : cfg_.species ? &scratchYB_.Fy
+                                         : &scratchB_.Fy,
                           NG + cg,
                           NG + cgj};
             if (cfg_.species) {
@@ -1022,6 +1101,8 @@ private:
     std::vector<Level> lvls_;
     Scratch2D scratchB_, scratch_;
     ScratchY scratchYB_, scratchY_; // two-gas variants
+    ScratchW scratchW_;             // WENO mode
+    std::vector<Cons> rkB0_, wFxB_, wFyB_; // base RK start + flux sums
     std::vector<Cons> baseOld_;
     std::vector<Real> basePhi_, baseGm_, baseOldPhi_, baseOldGm_;
     GasPair gas_;
