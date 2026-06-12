@@ -68,9 +68,18 @@ Le projet gagne ses yeux et son instrumentation scientifique.
 
 ### v1.2 — Physique des mélanges *(labo)*
 De « densités différentes » à « gaz différents ».
-- [ ] **Multi-espèces** : fraction massique advectée + γ(Y) de mélange
-  (schéma quasi-conservatif d'Abgrall, sans oscillations de pression à
-  l'interface) ; γ paramétrable par cas en sous-produit.
+- [x] ~~Cœur bi-gaz (grille uniforme CPU)~~ — fait : φ = ρY conservatif
+  (flux de masse HLLC × Y amont — Y exactement constant où uniforme),
+  Γ = 1/(γ−1) advecté quasi-conservativement par la vitesse de contact
+  S* (l'EOS lit ce Γ : poids de mélange E/Γ cohérents), HLLC bi-γ,
+  Riemann exact généralisé aux γ par côté. `species_suite` : advection
+  d'interface |p−1| 2.2 %% (démarrage) / 0.9 %% (entretenu — la
+  reconstruction conservative laisse ce résidu borné ; raffinement
+  suivant = reconstruction des primitives), Sod bi-γ à 1.6e-3 de
+  l'exact, masse d'espèce au plancher fp32.
+- [ ] **Suite multi-espèces** : reconstruction primitive (oscillation
+  → ~1e-6), plomberie AMR (φ/Γ dans patchs, prolongation, refluxing),
+  GPU (buffers + kernels), CaseDef (`[state.X] gas = 2`).
 - [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
   quantitatif), Richtmyer-Meshkov.
 - **Sortie** : gate d'interface (pas d'oscillation de p), bulle He
