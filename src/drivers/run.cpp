@@ -145,9 +145,12 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
     const auto logRow = [&](double dt) {
         const double wall =
             std::chrono::duration<double>(Clock::now() - t0).count();
+        double sm = 0;
+        if constexpr (requires { amr.totalSpeciesMass(); })
+            if (cd.species()) sm = amr.totalSpeciesMass();
         log.row(steps, t, dt, computeResiduals(amr, prevBase, dt),
                 amr.cellCount(), patchTotal(amr),
-                computeDiagnostics(amr), wall,
+                computeDiagnostics(amr), sm, wall,
                 wall > 0 ? cellSteps / wall / 1e6 : 0);
     };
     if (log.active()) logRow(0); // initial state

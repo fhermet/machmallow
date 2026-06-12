@@ -21,7 +21,24 @@ inline void writeVthb(const std::string& base, const AMR& amr) {
     const std::string leaf = fs::path(base).filename().string();
 
     const GridRef c = amr.coarseRef();
-    writeVti(base + "/coarse.vti", c);
+    // two-gas hierarchies: per-grid (phi, Gamma) provider for Y output
+    // and the pressure closure (CPU stores two vectors, GPU one packed
+    // float2 buffer)
+    const bool sp = [&] {
+        if constexpr (requires { amr.species(); }) return amr.species();
+        return false;
+    }();
+    const auto baseSc = [&](std::size_t id) -> std::pair<Real, Real> {
+        if constexpr (requires { amr.baseS(); }) {
+            const auto s = amr.baseS()[id];
+            return {s.phi, s.G};
+        } else if constexpr (requires { amr.basePhi(); }) {
+            return {amr.basePhi()[id], amr.baseGm()[id]};
+        } else {
+            return {0, 1 / (GAMMA - 1)};
+        }
+    };
+    writeVtiSc(base + "/coarse.vti", c, baseSc, sp);
 
     FILE* f = std::fopen((base + ".vthb").c_str(), "w");
     if (f == nullptr) throw std::runtime_error("cannot write " + base);
@@ -66,7 +83,24 @@ inline void writeVthbML(const std::string& base, const AMR& amr) {
     const std::string leaf = fs::path(base).filename().string();
 
     const GridRef c = amr.coarseRef();
-    writeVti(base + "/coarse.vti", c);
+    // two-gas hierarchies: per-grid (phi, Gamma) provider for Y output
+    // and the pressure closure (CPU stores two vectors, GPU one packed
+    // float2 buffer)
+    const bool sp = [&] {
+        if constexpr (requires { amr.species(); }) return amr.species();
+        return false;
+    }();
+    const auto baseSc = [&](std::size_t id) -> std::pair<Real, Real> {
+        if constexpr (requires { amr.baseS(); }) {
+            const auto s = amr.baseS()[id];
+            return {s.phi, s.G};
+        } else if constexpr (requires { amr.basePhi(); }) {
+            return {amr.basePhi()[id], amr.baseGm()[id]};
+        } else {
+            return {0, 1 / (GAMMA - 1)};
+        }
+    };
+    writeVtiSc(base + "/coarse.vti", c, baseSc, sp);
 
     FILE* f = std::fopen((base + ".vthb").c_str(), "w");
     if (f == nullptr) throw std::runtime_error("cannot write " + base);
@@ -92,7 +126,20 @@ inline void writeVthbML(const std::string& base, const AMR& amr) {
             char name[64];
             std::snprintf(name, sizeof(name), "l%d_patch_%04zu.vti", l,
                           k);
-            writeVti(base + "/" + name, amr.patchRef(l, patches[k]));
+            const auto& pk = patches[k];
+            const auto patchSc =
+                [&](std::size_t id) -> std::pair<Real, Real> {
+                if constexpr (requires { amr.sOf(pk); }) {
+                    const auto s = amr.sOf(pk)[id];
+                    return {s.phi, s.G};
+                } else if constexpr (requires { pk.phi; }) {
+                    return {pk.phi[id], pk.Gmf[id]};
+                } else {
+                    return {0, 1 / (GAMMA - 1)};
+                }
+            };
+            writeVtiSc(base + "/" + name, amr.patchRef(l, pk), patchSc,
+                       sp);
             std::fprintf(f,
                          "<DataSet index=\"%zu\" amr_box=\"%d %d %d %d "
                          "0 0\" file=\"%s/%s\"/>\n",

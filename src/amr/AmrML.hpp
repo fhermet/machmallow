@@ -81,6 +81,8 @@ public:
     bool species() const { return cfg_.species; }
     std::vector<Real>& basePhi() { return basePhi_; }
     std::vector<Real>& baseGm() { return baseGm_; }
+    const std::vector<Real>& basePhi() const { return basePhi_; }
+    const std::vector<Real>& baseGm() const { return baseGm_; }
     const GasPair& gas() const { return gas_; }
     int fineCells() const { return nf_; }
     const Level& level(int l) const { return lvls_[l - 1]; }
@@ -150,6 +152,34 @@ public:
         fillPhysicalGhosts(base, t);
         if (cfg_.species) scalarPhysical_(base, basePhi_, baseGm_);
         advanceTree_(0, dt, t);
+    }
+
+    double totalSpeciesMass() const {
+        double m = 0;
+        const double a0 = double(base.dx) * base.dy;
+        for (int j = 0; j < base.ny; ++j)
+            for (int i = 0; i < base.nx; ++i)
+                if (cfg_.maxLevels < 2 ||
+                    !covered(1, i / cfg_.blockC, j / cfg_.blockC))
+                    m += double(basePhi_[base.idx(NG + i, NG + j)]) * a0;
+        for (std::size_t k = 0; k < lvls_.size(); ++k) {
+            const int l = int(k) + 1;
+            for (const Patch& p : lvls_[k].patches) {
+                const double al = double(p.grid.dx) * p.grid.dy;
+                for (int j = 0; j < nf_; ++j)
+                    for (int i = 0; i < nf_; ++i) {
+                        const int gi = 2 * p.ci0 + i;
+                        const int gj = 2 * p.cj0 + j;
+                        if (l < cfg_.maxLevels - 1 &&
+                            covered(l + 1, gi / cfg_.blockC,
+                                    gj / cfg_.blockC))
+                            continue;
+                        m += double(p.phi[p.grid.idx(NG + i, NG + j)]) *
+                             al;
+                    }
+            }
+        }
+        return m;
     }
 
     double totalMass() const {

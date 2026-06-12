@@ -134,6 +134,7 @@ public:
     AmrGpuML& operator=(const AmrGpuML&) = delete;
 
     int numLevels() const { return cfg_.maxLevels; }
+    bool species() const { return cfg_.species; }
     int fineCells() const { return nf_; }
     const Level& level(int l) const { return lvls_[l - 1]; }
 

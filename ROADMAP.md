@@ -102,9 +102,13 @@ De « densités différentes » à « gaz différents ».
   Richtmyer-Meshkov air/SF6 (γ 1.09, mode unique périodique). Les cas
   bi-gaz passent par AmrML/AmrGpuML à toute profondeur (les classes
   2 niveaux n'ont pas les champs espèces).
+- [x] ~~Diagnostics & sorties bi-gaz~~ — fait : colonne `species_mass`
+  dans le log CSV (conservée au plancher fp32 sur frontière fermée),
+  champ `Y` dans les .vti/.vthb et pression fermée sur le Γ local
+  (l'ancienne sortie fermait sur γ=1.4 partout : p faux de ~20 %% dans
+  l'hélium).
 - [ ] **Suite multi-espèces** : gate quantitative Haas & Sturtevant
-  (vitesses d'interface vs expérience), masse d'espèce dans le log de
-  diagnostics, Y dans les sorties VTK ; double-flux Abgrall-Karni en
+  (vitesses d'interface vs expérience) ; double-flux Abgrall-Karni en
   option si les 0.6 %% gênent.
 - [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
   quantitatif), Richtmyer-Meshkov.

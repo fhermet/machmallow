@@ -147,20 +147,22 @@ public:
         std::fprintf(f_,
                      "step,t,dt,res_mass,res_momx,res_momy,res_energy,"
                      "cells,patches,rho_min,rho_max,p_min,p_max,mass,"
-                     "kinetic_energy,total_energy,enstrophy,wall_s,"
-                     "mcells_per_s\n");
+                     "kinetic_energy,total_energy,enstrophy,"
+                     "species_mass,wall_s,mcells_per_s\n");
     }
     bool active() const { return f_ != nullptr; }
 
     void row(int step, double t, double dt, const Residuals& r,
              std::size_t cells, std::size_t patches, const DiagRow& d,
-             double wall, double mcells) {
+             double speciesMass, double wall, double mcells) {
         std::fprintf(f_,
                      "%d,%.9g,%.6g,%.6g,%.6g,%.6g,%.6g,%zu,%zu,%.6g,"
-                     "%.6g,%.6g,%.6g,%.9g,%.9g,%.9g,%.9g,%.3f,%.1f\n",
+                     "%.6g,%.6g,%.6g,%.9g,%.9g,%.9g,%.9g,%.9g,%.3f,"
+                     "%.1f\n",
                      step, t, dt, r.rho, r.mx, r.my, r.E, cells, patches,
                      d.rhoMin, d.rhoMax, d.pMin, d.pMax, d.mass,
-                     d.kinetic, d.energy, d.enstrophy, wall, mcells);
+                     d.kinetic, d.energy, d.enstrophy, speciesMass, wall,
+                     mcells);
         std::fflush(f_); // a crash should not lose the series
     }
 
