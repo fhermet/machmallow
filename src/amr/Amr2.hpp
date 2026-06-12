@@ -35,6 +35,8 @@ struct AmrConfig {
     bool subcycle = false;      // coarse at dt, fine at 2 x dt/2
     Real mu = 0;                // dynamic viscosity (0 = inviscid Euler)
     Real gx = 0, gy = 0;        // gravity (split source)
+    bool species = false;       // two-gas model (AmrML/AmrGpuML)
+    Real gamma1 = Real(1.4), gamma2 = Real(1.4);
     bool periodicX = false;     // periodic domain (patch ghosts, reflux
     bool periodicY = false;     // and side masks wrap accordingly)
 };

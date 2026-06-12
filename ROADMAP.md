@@ -79,10 +79,16 @@ De « densités différentes » à « gaz différents ».
   désynchronisation E/Γ était la moitié du résidu) ; le reliquat vient
   du mélange E des états-étoiles HLLC — remède définitif = double-flux
   d'Abgrall-Karni (optionnel, plus tard).
-- [ ] **Suite multi-espèces** : plomberie AMR (φ/Γ dans patchs,
-  prolongation, refluxing), GPU (buffers + kernels), CaseDef
-  (`[state.X] gas = 2`), bulle He + Richtmyer-Meshkov ; double-flux en
-  option si les 0.6 %% gênent.
+- [x] ~~Plomberie AMR multi-espèces (CPU)~~ — fait : φ/Γ dans AmrML
+  (ghosts sibling + prolongation θ-blendée, restriction, refluxing de φ
+  avec back-out/fine-apply, dt espèces) ; single-gas bit-inchangé.
+  Gate : Sod bi-γ sur AMR 3 niveaux subcyclé, L1 3.1e-3 vs exact,
+  masse d'espèce 4.4e-5 (plancher fp32 relatif — φ porte ~9× moins de
+  masse que ρ). Bug attrapé : les ghosts scalaires physiques écrasaient
+  les 4 côtés (y compris intérieurs) → version masquée par côté.
+- [ ] **Suite multi-espèces** : GPU (buffers + kernels bi-gaz),
+  CaseDef (`[state.X] gas = 2`), bulle He + Richtmyer-Meshkov ;
+  double-flux en option si les 0.6 %% gênent.
 - [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
   quantitatif), Richtmyer-Meshkov.
 - **Sortie** : gate d'interface (pas d'oscillation de p), bulle He

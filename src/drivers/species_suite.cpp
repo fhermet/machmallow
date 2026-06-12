@@ -8,6 +8,7 @@
 //      solver (each side keeps its own gamma across the contact)
 //   3. species mass conservation at the fp32 floor
 
+#include "amr/AmrML.hpp"
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "numerics/ExactRiemann.hpp"
@@ -207,6 +208,115 @@ bool gate3_speciesMass() {
     return drift < 1e-5;
 }
 
+// ---- 4: two-gas Sod on multi-level AMR vs the exact solution ---------
+bool gate4_speciesAmr() {
+    const GasPair gas{Real(1.4), Real(1.6)};
+    const exact::State L{1, 0, 1, 1.4};
+    const exact::State R{0.125, 0, 0.1, 1.6};
+    const double tEnd = 0.2;
+
+    AmrConfig cfg;
+    cfg.maxLevels = 3;
+    cfg.subcycle = true;
+    cfg.species = true;
+    cfg.gamma1 = Real(1.4);
+    cfg.gamma2 = Real(1.6);
+    AmrML amr(64, 16, 0, 0, 1, Real(0.25), cfg);
+    amr.fillPhysicalGhosts = [](Grid& g, double) {
+        fillTransmissiveLeft(g);
+        fillTransmissiveRight(g);
+        fillTransmissiveBottom(g);
+        fillTransmissiveTop(g);
+    };
+    amr.fillPatchPhysical = [](Grid& g, double, unsigned sides) {
+        if (sides & SideLeft) fillTransmissiveLeft(g);
+        if (sides & SideRight) fillTransmissiveRight(g);
+        if (sides & SideBottom) fillTransmissiveBottom(g);
+        if (sides & SideTop) fillTransmissiveTop(g);
+    };
+    amr.init(
+        [&](Real x, Real) {
+            const bool right = x >= Real(0.5);
+            const exact::State& st = right ? R : L;
+            return toConsG({Real(st.rho), Real(st.u), 0, Real(st.p)},
+                           gas.Gamma(right ? Real(1) : Real(0)));
+        },
+        [](Real x, Real) { return x >= Real(0.5) ? Real(1) : Real(0); });
+
+    // species mass on the composite
+    const auto phiMass = [&] {
+        double m = 0;
+        const int bC = amr.fineCells() / 2;
+        for (int j = 0; j < 16; ++j)
+            for (int i = 0; i < 64; ++i)
+                if (!amr.covered(1, i / bC, j / bC))
+                    m += double(amr.basePhi()[amr.base.idx(NG + i,
+                                                           NG + j)]) *
+                         amr.base.dx * amr.base.dy;
+        for (int l = 1; l < 3; ++l)
+            for (const auto& p : amr.level(l).patches)
+                for (int j = 0; j < amr.fineCells(); ++j)
+                    for (int i = 0; i < amr.fineCells(); ++i) {
+                        const int gi = 2 * p.ci0 + i, gj = 2 * p.cj0 + j;
+                        if (l < 2 && amr.covered(l + 1, gi / bC, gj / bC))
+                            continue;
+                        m += double(p.phi[p.grid.idx(NG + i, NG + j)]) *
+                             p.grid.dx * p.grid.dy;
+                    }
+        return m;
+    };
+    const double m0 = phiMass();
+    double t = 0, drift = 0;
+    while (t < tEnd - 1e-12) {
+        const Real dt =
+            std::min(amr.maxStableDtAll(CFL), Real(tEnd - t));
+        amr.step(dt, t);
+        t += dt;
+        drift = std::max(drift, std::fabs(phiMass() - m0) /
+                                    std::max(m0, 1e-30));
+    }
+
+    // composite L1(rho) vs exact
+    double err = 0;
+    const int bC = amr.fineCells() / 2;
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 64; ++i)
+            if (!amr.covered(1, i / bC, j / bC))
+                err += std::fabs(
+                           double(amr.base.at(NG + i, NG + j).rho) -
+                           exact::sample(L, R,
+                                         (double(amr.base.xc(NG + i)) -
+                                          0.5) /
+                                             tEnd)
+                               .rho) *
+                       amr.base.dx * amr.base.dy;
+    for (int l = 1; l < 3; ++l)
+        for (const auto& p : amr.level(l).patches)
+            for (int j = NG; j < NG + amr.fineCells(); ++j)
+                for (int i = NG; i < NG + amr.fineCells(); ++i) {
+                    const int gi = 2 * p.ci0 + (i - NG);
+                    const int gj = 2 * p.cj0 + (j - NG);
+                    if (l < 2 && amr.covered(l + 1, gi / bC, gj / bC))
+                        continue;
+                    err += std::fabs(
+                               double(p.grid.at(i, j).rho) -
+                               exact::sample(L, R,
+                                             (double(p.grid.xc(i)) -
+                                              0.5) /
+                                                 tEnd)
+                                   .rho) *
+                           p.grid.dx * p.grid.dy;
+                }
+    err /= 0.25;
+    // phi carries ~9x less mass than rho, so its relative fp32 floor
+    // sits correspondingly higher than the single-gas 1e-6 gates.
+    std::printf("gate 4 — two-gas Sod on 3-level AMR: L1 = %.4e (gate "
+                "5e-3), species mass drift = %.3e (gate 1e-4), patches "
+                "L1 %zu L2 %zu\n",
+                err, drift, amr.patchCount(1), amr.patchCount(2));
+    return err < 5e-3 && drift < 1e-4;
+}
+
 } // namespace
 
 int main() {
@@ -214,6 +324,7 @@ int main() {
     ok = gate1_interfaceAdvection() && ok;
     ok = gate2_twoGasSod() && ok;
     ok = gate3_speciesMass() && ok;
+    ok = gate4_speciesAmr() && ok;
     if (!ok) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;

@@ -21,6 +21,7 @@
 #include "core/Grid.hpp"
 #include "numerics/Limiter.hpp"
 #include "solver/Muscl2D.hpp"
+#include "solver/Muscl2DSpecies.hpp"
 
 #include "amr/Amr2.hpp" // AmrConfig
 
@@ -42,6 +43,8 @@ public:
         Grid grid;    // own-level data: 2*blockC square + ghosts
         std::vector<Cons> Fx, Fy; // fluxes of this patch's last step
         std::vector<Cons> old;    // own state at parent-substep start
+        // two-gas fields (allocated only when cfg.species)
+        std::vector<Real> phi, Gmf, oldPhi, oldGm, Fpx, Fpy;
     };
 
     struct Level { // level l >= 1; stored at lvls_[l-1]
@@ -60,6 +63,11 @@ public:
         : base(nx, ny, x0, y0, lx, ly), cfg_(cfg), nf_(2 * cfg.blockC) {
         assert(nx % cfg.blockC == 0 && ny % cfg.blockC == 0);
         assert(cfg.maxLevels >= 1);
+        gas_ = GasPair{cfg.gamma1, cfg.gamma2};
+        if (cfg_.species) {
+            basePhi_.assign(base.q.size(), 0);
+            baseGm_.assign(base.q.size(), gas_.Gamma(0));
+        }
         lvls_.resize(cfg.maxLevels - 1);
         for (int l = 1; l < cfg_.maxLevels; ++l) {
             Level& L = lvls_[l - 1];
@@ -70,6 +78,10 @@ public:
     }
 
     int numLevels() const { return cfg_.maxLevels; }
+    bool species() const { return cfg_.species; }
+    std::vector<Real>& basePhi() { return basePhi_; }
+    std::vector<Real>& baseGm() { return baseGm_; }
+    const GasPair& gas() const { return gas_; }
     int fineCells() const { return nf_; }
     const Level& level(int l) const { return lvls_[l - 1]; }
 
@@ -80,29 +92,54 @@ public:
 
     template <class IC>
     void init(IC ic) {
+        init(ic, [](Real, Real) { return Real(0); });
+    }
+
+    // Two-gas init: icY gives the mass fraction Y of gas 2.
+    template <class IC, class ICY>
+    void init(IC ic, ICY icY) {
         for (int j = NG; j < NG + base.ny; ++j)
-            for (int i = NG; i < NG + base.nx; ++i)
+            for (int i = NG; i < NG + base.nx; ++i) {
                 base.at(i, j) = ic(base.xc(i), base.yc(j));
+                if (cfg_.species) {
+                    const std::size_t id = base.idx(i, j);
+                    const Real Y = icY(base.xc(i), base.yc(j));
+                    basePhi_[id] = base.q[id].rho * Y;
+                    baseGm_[id] = gas_.Gamma(Y);
+                }
+            }
         fillPhysicalGhosts(base, 0);
+        scalarPhysical_(base, basePhi_, baseGm_);
         // Repeated regrids let each new level tag from real (IC) data.
         for (int pass = 1; pass < cfg_.maxLevels; ++pass) {
             regrid();
             for (Level& L : lvls_)
                 for (Patch& p : L.patches)
                     for (int j = NG; j < NG + nf_; ++j)
-                        for (int i = NG; i < NG + nf_; ++i)
+                        for (int i = NG; i < NG + nf_; ++i) {
                             p.grid.at(i, j) =
                                 ic(p.grid.xc(i), p.grid.yc(j));
+                            if (cfg_.species) {
+                                const std::size_t id = p.grid.idx(i, j);
+                                const Real Y =
+                                    icY(p.grid.xc(i), p.grid.yc(j));
+                                p.phi[id] = p.grid.q[id].rho * Y;
+                                p.Gmf[id] = gas_.Gamma(Y);
+                            }
+                        }
             for (int l = cfg_.maxLevels - 1; l >= 1; --l)
                 restrictLevel_(l);
         }
     }
 
     Real maxStableDtAll(Real cfl) const {
-        Real dt = maxStableDt(base, cfl, cfg_.mu);
+        Real dt = cfg_.species ? maxStableDtY(base, baseGm_, cfl)
+                               : maxStableDt(base, cfl, cfg_.mu);
         for (std::size_t k = 0; k < lvls_.size(); ++k)
             for (const Patch& p : lvls_[k].patches) {
-                Real dtl = maxStableDt(p.grid, cfl, cfg_.mu);
+                Real dtl = cfg_.species
+                    ? maxStableDtY(p.grid, p.Gmf, cfl)
+                    : maxStableDt(p.grid, cfl, cfg_.mu);
                 if (cfg_.subcycle) dtl *= Real(1 << (k + 1));
                 dt = std::min(dt, dtl);
             }
@@ -111,6 +148,7 @@ public:
 
     void step(Real dt, double t) {
         fillPhysicalGhosts(base, t);
+        if (cfg_.species) scalarPhysical_(base, basePhi_, baseGm_);
         advanceTree_(0, dt, t);
     }
 
@@ -362,14 +400,100 @@ private:
                 {},
                 {}};
         const Patch* home = l >= 2 ? ownerAt_(l - 1, ci0, cj0) : nullptr;
+        if (cfg_.species) {
+            p.phi.assign(p.grid.q.size(), 0);
+            p.Gmf.assign(p.grid.q.size(), gas_.Gamma(0));
+        }
         for (int j = NG; j < NG + nf_; ++j)
             for (int i = NG; i < NG + nf_; ++i) {
                 const int gfi = 2 * ci0 + (i - NG);
                 const int gfj = 2 * cj0 + (j - NG);
                 p.grid.at(i, j) = prolong_(l, home, gfi / 2, gfj / 2,
                                            gfi & 1, gfj & 1, Real(-1));
+                if (cfg_.species) {
+                    const std::size_t id = p.grid.idx(i, j);
+                    p.phi[id] = scalarProlong_(l, home, true, gfi / 2,
+                                               gfj / 2, gfi & 1, gfj & 1,
+                                               Real(-1));
+                    p.Gmf[id] = scalarProlong_(l, home, false, gfi / 2,
+                                               gfj / 2, gfi & 1, gfj & 1,
+                                               Real(-1));
+                }
             }
         return p;
+    }
+
+    // Scalar (phi / Gamma) analogues of parentVal_/prolong_.
+    Real scalarParentVal_(int l, const Patch* home, bool isPhi, int cg,
+                          int cgj, Real theta) const {
+        const int nxp = nxAt_(l - 1), nyp = nyAt_(l - 1);
+        if (cfg_.periodicX) cg = (cg % nxp + nxp) % nxp;
+        if (cfg_.periodicY) cgj = (cgj % nyp + nyp) % nyp;
+        const auto pick = [&](const std::vector<Real>& cur,
+                              const std::vector<Real>& old,
+                              std::size_t id) {
+            if (theta < 0 || theta >= 1 || old.empty()) return cur[id];
+            if (theta <= 0) return old[id];
+            return (1 - theta) * old[id] + theta * cur[id];
+        };
+        if (l == 1) {
+            const std::size_t id = base.idx(NG + cg, NG + cgj);
+            return pick(isPhi ? basePhi_ : baseGm_,
+                        isPhi ? baseOldPhi_ : baseOldGm_, id);
+        }
+        const Patch* Q = (cg >= 0 && cg < nxp && cgj >= 0 && cgj < nyp)
+                             ? ownerAt_(l - 1, cg, cgj)
+                             : nullptr;
+        if (Q == nullptr) Q = home;
+        const std::size_t id =
+            Q->grid.idx(NG + cg - 2 * Q->ci0, NG + cgj - 2 * Q->cj0);
+        return pick(isPhi ? Q->phi : Q->Gmf,
+                    isPhi ? Q->oldPhi : Q->oldGm, id);
+    }
+
+    Real scalarProlong_(int l, const Patch* home, bool isPhi, int cg,
+                        int cgj, int ox, int oy, Real theta) const {
+        const Real q0 = scalarParentVal_(l, home, isPhi, cg, cgj, theta);
+        const Real dx = mcSlope(
+            q0 - scalarParentVal_(l, home, isPhi, cg - 1, cgj, theta),
+            scalarParentVal_(l, home, isPhi, cg + 1, cgj, theta) - q0);
+        const Real dy = mcSlope(
+            q0 - scalarParentVal_(l, home, isPhi, cg, cgj - 1, theta),
+            scalarParentVal_(l, home, isPhi, cg, cgj + 1, theta) - q0);
+        return q0 + (ox ? Real(0.25) : Real(-0.25)) * dx +
+               (oy ? Real(0.25) : Real(-0.25)) * dy;
+    }
+
+    // Transmissive physical ghosts for the scalar fields, restricted to
+    // the requested domain sides (interior sides keep their sibling /
+    // prolongation values).
+    static void scalarPhysicalSides_(const Grid& g, std::vector<Real>& a,
+                                     std::vector<Real>& b,
+                                     unsigned sides) {
+        for (auto* f : {&a, &b}) {
+            if (f->empty()) continue;
+            for (int j = 0; j < g.toty(); ++j)
+                for (int k = 0; k < NG; ++k) {
+                    if (sides & SideLeft)
+                        (*f)[g.idx(k, j)] = (*f)[g.idx(NG, j)];
+                    if (sides & SideRight)
+                        (*f)[g.idx(NG + g.nx + k, j)] =
+                            (*f)[g.idx(NG + g.nx - 1, j)];
+                }
+            for (int i = 0; i < g.totx(); ++i)
+                for (int k = 0; k < NG; ++k) {
+                    if (sides & SideBottom)
+                        (*f)[g.idx(i, k)] = (*f)[g.idx(i, NG)];
+                    if (sides & SideTop)
+                        (*f)[g.idx(i, NG + g.ny + k)] =
+                            (*f)[g.idx(i, NG + g.ny - 1)];
+                }
+        }
+    }
+    static void scalarPhysical_(const Grid& g, std::vector<Real>& a,
+                                std::vector<Real>& b) {
+        scalarPhysicalSides_(g, a, b,
+                             SideLeft | SideRight | SideBottom | SideTop);
     }
 
     // ---- ghosts -----------------------------------------------------------
@@ -386,8 +510,13 @@ private:
                 if (cfg_.periodicY) gfj = (gfj % nyl + nyl) % nyl;
                 if (gfi >= 0 && gfi < nxl && gfj >= 0 && gfj < nyl)
                     if (const Patch* s = ownerAt_(l, gfi, gfj)) {
-                        p.grid.at(i, j) = s->grid.at(
+                        const std::size_t src = s->grid.idx(
                             NG + gfi - 2 * s->ci0, NG + gfj - 2 * s->cj0);
+                        p.grid.q[p.grid.idx(i, j)] = s->grid.q[src];
+                        if (cfg_.species) {
+                            p.phi[p.grid.idx(i, j)] = s->phi[src];
+                            p.Gmf[p.grid.idx(i, j)] = s->Gmf[src];
+                        }
                         return;
                     }
                 const int cg = (gfi >= 0) ? gfi / 2 : (gfi - 1) / 2;
@@ -408,6 +537,9 @@ private:
             if (fillPatchPhysical)
                 if (const unsigned sides = domainSides_(l, p))
                     fillPatchPhysical(p.grid, t, sides);
+            if (cfg_.species)
+                if (const unsigned sides = domainSides_(l, p))
+                    scalarPhysicalSides_(p.grid, p.phi, p.Gmf, sides);
         }
     }
 
@@ -415,20 +547,41 @@ private:
     void saveOld_(int l) {
         if (l == 0) {
             baseOld_ = base.q;
+            if (cfg_.species) {
+                baseOldPhi_ = basePhi_;
+                baseOldGm_ = baseGm_;
+            }
             return;
         }
-        for (Patch& p : lvls_[l - 1].patches) p.old = p.grid.q;
+        for (Patch& p : lvls_[l - 1].patches) {
+            p.old = p.grid.q;
+            if (cfg_.species) {
+                p.oldPhi = p.phi;
+                p.oldGm = p.Gmf;
+            }
+        }
     }
 
     void stepLevel_(int l, Real dt) {
         if (l == 0) {
-            step2D(base, dt, scratchB_, cfg_.mu, cfg_.gx, cfg_.gy);
+            if (cfg_.species)
+                step2DY(base, basePhi_, baseGm_, dt, scratchYB_, gas_);
+            else
+                step2D(base, dt, scratchB_, cfg_.mu, cfg_.gx, cfg_.gy);
             return;
         }
         for (Patch& p : lvls_[l - 1].patches) {
-            step2D(p.grid, dt, scratch_, cfg_.mu, cfg_.gx, cfg_.gy);
-            p.Fx = scratch_.Fx;
-            p.Fy = scratch_.Fy;
+            if (cfg_.species) {
+                step2DY(p.grid, p.phi, p.Gmf, dt, scratchY_, gas_);
+                p.Fx = scratchY_.Fx;
+                p.Fy = scratchY_.Fy;
+                p.Fpx = scratchY_.Fpx;
+                p.Fpy = scratchY_.Fpy;
+            } else {
+                step2D(p.grid, dt, scratch_, cfg_.mu, cfg_.gx, cfg_.gy);
+                p.Fx = scratch_.Fx;
+                p.Fy = scratch_.Fy;
+            }
         }
     }
 
@@ -465,15 +618,36 @@ private:
         Grid* g;
         const std::vector<Cons>*Fx, *Fy;
         int li, lj; // local indices (ghost offset included)
+        // two-gas fields (null when species disabled)
+        std::vector<Real>*phi = nullptr, *Gm = nullptr;
+        const std::vector<Real>*Fpx = nullptr, *Fpy = nullptr;
     };
     ParentCell parentCell_(int lp, int cg, int cgj) {
-        if (lp == 0)
-            return {&base, &scratchB_.Fx, &scratchB_.Fy, NG + cg,
-                    NG + cgj};
+        if (lp == 0) {
+            ParentCell pc{&base,
+                          cfg_.species ? &scratchYB_.Fx : &scratchB_.Fx,
+                          cfg_.species ? &scratchYB_.Fy : &scratchB_.Fy,
+                          NG + cg,
+                          NG + cgj};
+            if (cfg_.species) {
+                pc.phi = &basePhi_;
+                pc.Gm = &baseGm_;
+                pc.Fpx = &scratchYB_.Fpx;
+                pc.Fpy = &scratchYB_.Fpy;
+            }
+            return pc;
+        }
         Patch* Q = ownerAt_(lp, cg, cgj);
         assert(Q != nullptr); // guaranteed by nesting
-        return {&Q->grid, &Q->Fx, &Q->Fy, NG + cg - 2 * Q->ci0,
-                NG + cgj - 2 * Q->cj0};
+        ParentCell pc{&Q->grid, &Q->Fx, &Q->Fy, NG + cg - 2 * Q->ci0,
+                      NG + cgj - 2 * Q->cj0};
+        if (cfg_.species) {
+            pc.phi = &Q->phi;
+            pc.Gm = &Q->Gmf;
+            pc.Fpx = &Q->Fpx;
+            pc.Fpy = &Q->Fpy;
+        }
+        return pc;
     }
 
     struct SideNb {
@@ -534,18 +708,37 @@ private:
                     ParentCell pc = parentCell_(lc - 1, cg, cgj);
                     const Real lam =
                         dtParent / (dir < 2 ? pc.g->dx : pc.g->dy);
-                    if (dir == 0) // its right face
+                    const std::size_t pid =
+                        std::size_t(pc.lj) * pc.g->totx() + pc.li;
+                    if (dir == 0) { // its right face
                         pc.g->at(pc.li, pc.lj) +=
                             lam * (*pc.Fx)[pc.g->idx(pc.li, pc.lj)];
-                    else if (dir == 1) // its left face
+                        if (pc.phi)
+                            (*pc.phi)[pid] +=
+                                lam *
+                                (*pc.Fpx)[pc.g->idx(pc.li, pc.lj)];
+                    } else if (dir == 1) { // its left face
                         pc.g->at(pc.li, pc.lj) -=
                             lam * (*pc.Fx)[pc.g->idx(pc.li - 1, pc.lj)];
-                    else if (dir == 2) // its top face
+                        if (pc.phi)
+                            (*pc.phi)[pid] -=
+                                lam *
+                                (*pc.Fpx)[pc.g->idx(pc.li - 1, pc.lj)];
+                    } else if (dir == 2) { // its top face
                         pc.g->at(pc.li, pc.lj) +=
                             lam * (*pc.Fy)[pc.g->idx(pc.li, pc.lj)];
-                    else // its bottom face
+                        if (pc.phi)
+                            (*pc.phi)[pid] +=
+                                lam *
+                                (*pc.Fpy)[pc.g->idx(pc.li, pc.lj)];
+                    } else { // its bottom face
                         pc.g->at(pc.li, pc.lj) -=
                             lam * (*pc.Fy)[pc.g->idx(pc.li, pc.lj - 1)];
+                        if (pc.phi)
+                            (*pc.phi)[pid] -=
+                                lam *
+                                (*pc.Fpy)[pc.g->idx(pc.li, pc.lj - 1)];
+                    }
                 }
             }
     }
@@ -564,28 +757,39 @@ private:
                     const Real lam =
                         dtChild / (dir < 2 ? pc.g->dx : pc.g->dy);
                     Cons ff;
+                    Real fp = 0;
+                    const auto take = [&](const std::vector<Cons>& F,
+                                          const std::vector<Real>& Fp,
+                                          std::size_t a, std::size_t b) {
+                        ff = Real(0.5) * (F[a] + F[b]);
+                        if (cfg_.species)
+                            fp = Real(0.5) * (Fp[a] + Fp[b]);
+                    };
                     if (dir == 0)
-                        ff = Real(0.5) *
-                             (p.Fx[p.grid.idx(NG - 1, NG + 2 * r)] +
-                              p.Fx[p.grid.idx(NG - 1, NG + 2 * r + 1)]);
+                        take(p.Fx, p.Fpx,
+                             p.grid.idx(NG - 1, NG + 2 * r),
+                             p.grid.idx(NG - 1, NG + 2 * r + 1));
                     else if (dir == 1)
-                        ff = Real(0.5) *
-                             (p.Fx[p.grid.idx(NG + nf_ - 1, NG + 2 * r)] +
-                              p.Fx[p.grid.idx(NG + nf_ - 1,
-                                              NG + 2 * r + 1)]);
+                        take(p.Fx, p.Fpx,
+                             p.grid.idx(NG + nf_ - 1, NG + 2 * r),
+                             p.grid.idx(NG + nf_ - 1, NG + 2 * r + 1));
                     else if (dir == 2)
-                        ff = Real(0.5) *
-                             (p.Fy[p.grid.idx(NG + 2 * r, NG - 1)] +
-                              p.Fy[p.grid.idx(NG + 2 * r + 1, NG - 1)]);
+                        take(p.Fy, p.Fpy,
+                             p.grid.idx(NG + 2 * r, NG - 1),
+                             p.grid.idx(NG + 2 * r + 1, NG - 1));
                     else
-                        ff = Real(0.5) *
-                             (p.Fy[p.grid.idx(NG + 2 * r, NG + nf_ - 1)] +
-                              p.Fy[p.grid.idx(NG + 2 * r + 1,
-                                              NG + nf_ - 1)]);
-                    if (dir == 0 || dir == 2)
+                        take(p.Fy, p.Fpy,
+                             p.grid.idx(NG + 2 * r, NG + nf_ - 1),
+                             p.grid.idx(NG + 2 * r + 1, NG + nf_ - 1));
+                    const std::size_t pid =
+                        std::size_t(pc.lj) * pc.g->totx() + pc.li;
+                    if (dir == 0 || dir == 2) {
                         pc.g->at(pc.li, pc.lj) -= lam * ff;
-                    else
+                        if (pc.phi) (*pc.phi)[pid] -= lam * fp;
+                    } else {
                         pc.g->at(pc.li, pc.lj) += lam * ff;
+                        if (pc.phi) (*pc.phi)[pid] += lam * fp;
+                    }
                 }
             }
     }
@@ -603,6 +807,19 @@ private:
                     ParentCell pc =
                         parentCell_(l - 1, p.ci0 + a, p.cj0 + b);
                     pc.g->at(pc.li, pc.lj) = Real(0.25) * sum;
+                    if (cfg_.species) {
+                        const auto avg = [&](const std::vector<Real>& f) {
+                            return Real(0.25) *
+                                   (f[p.grid.idx(fi, fj)] +
+                                    f[p.grid.idx(fi + 1, fj)] +
+                                    f[p.grid.idx(fi, fj + 1)] +
+                                    f[p.grid.idx(fi + 1, fj + 1)]);
+                        };
+                        const std::size_t pid =
+                            std::size_t(pc.lj) * pc.g->totx() + pc.li;
+                        (*pc.phi)[pid] = avg(p.phi);
+                        (*pc.Gm)[pid] = avg(p.Gmf);
+                    }
                 }
     }
 
@@ -737,7 +954,10 @@ private:
     int nf_;
     std::vector<Level> lvls_;
     Scratch2D scratchB_, scratch_;
+    ScratchY scratchYB_, scratchY_; // two-gas variants
     std::vector<Cons> baseOld_;
+    std::vector<Real> basePhi_, baseGm_, baseOldPhi_, baseOldGm_;
+    GasPair gas_;
     std::vector<int> stepCounts_ = std::vector<int>(16, 0);
 };
 
