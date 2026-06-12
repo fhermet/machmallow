@@ -72,6 +72,10 @@ target_include_directories(ml_amr PRIVATE src)
 add_executable(mlgpu_amr src/drivers/mlgpu_amr.cpp)
 target_link_libraries(mlgpu_amr PRIVATE mm_metal)
 
+# Quantitative Haas & Sturtevant gate (two-gas helium bubble, GPU).
+add_executable(hs_suite src/drivers/hs_suite.cpp)
+target_link_libraries(hs_suite PRIVATE mm_metal)
+
 # Velocity tagging + periodic AMR validation (Kelvin-Helmholtz).
 add_executable(kh_amr src/drivers/kh_amr.cpp)
 target_link_libraries(kh_amr PRIVATE mm_metal)

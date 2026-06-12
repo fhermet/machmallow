@@ -52,4 +52,5 @@ jobs:
           ./build/dmr_gpu 60
           ./build/dmr_amr 32 gpu
           ./build/mlgpu_amr 32
+          ./build/hs_suite
           ./build/run cases/sod.ini

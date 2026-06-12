@@ -277,10 +277,7 @@ public:
     void step(Real dt, double t) {
         GridRef b = coarseRef();
         fillPhysicalGhosts(b, t);
-        if (cfg_.species)
-            scalarPhysicalSides_(b, baseS(),
-                                 SideLeft | SideRight | SideBottom |
-                                     SideTop);
+        if (cfg_.species) baseScalarGhosts_();
         advanceTree_(0, dt, t);
     }
 
@@ -632,6 +629,29 @@ private:
         };
         return {float(one(qw.phi, q0.phi, qe.phi, qs.phi, qn.phi)),
                 float(one(qw.G, q0.G, qe.G, qs.G, qn.G))};
+    }
+
+    // Base scalar ghosts: periodic wrap on periodic axes (matching the
+    // conserved fields), transmissive on physical sides.
+    void baseScalarGhosts_() const {
+        const GridRef g = coarseRef();
+        PhiG* a = baseS();
+        if (cfg_.periodicX)
+            for (int j = 0; j < g.toty(); ++j)
+                for (int k = 0; k < NG; ++k) {
+                    a[g.idx(k, j)] = a[g.idx(g.nx + k, j)];
+                    a[g.idx(NG + g.nx + k, j)] = a[g.idx(NG + k, j)];
+                }
+        if (cfg_.periodicY)
+            for (int i = 0; i < g.totx(); ++i)
+                for (int k = 0; k < NG; ++k) {
+                    a[g.idx(i, k)] = a[g.idx(i, g.ny + k)];
+                    a[g.idx(i, NG + g.ny + k)] = a[g.idx(i, NG + k)];
+                }
+        const unsigned sides =
+            (cfg_.periodicX ? 0u : (SideLeft | SideRight)) |
+            (cfg_.periodicY ? 0u : (SideBottom | SideTop));
+        if (sides) scalarPhysicalSides_(g, a, sides);
     }
 
     // Transmissive scalar ghosts on the requested domain sides only.

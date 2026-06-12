@@ -142,8 +142,9 @@ bool gate3_khIc() {
 }
 
 bool gate4_rankineHugoniot() {
-    // bubble.ini derives its post-shock state (Mach 1.5 into rho = 1.4,
-    // p = 1 at rest); reference values computed by hand.
+    // bubble.ini derives its post-shock state (Mach 1.22 into rho = 1.4,
+    // p = 1 at rest — the Haas & Sturtevant shock); reference values
+    // computed by hand.
     const Config cfg = Config::load("cases/bubble.ini");
     const CaseDef cd = CaseDef::parse(cfg);
     Prim post{};
@@ -154,11 +155,11 @@ bool gate4_rankineHugoniot() {
             speed = s.shockSpeed;
         }
     const double e =
-        std::max({std::fabs(double(post.rho) - 2.6068966),
-                  std::fabs(double(post.u) - 0.6944444),
-                  std::fabs(double(post.p) - 2.4583333),
-                  std::fabs(double(speed) - 1.5)});
-    std::printf("gate 4 — Rankine-Hugoniot state (Ms=1.5): max |diff| = "
+        std::max({std::fabs(double(post.rho) - 1.9269096),
+                  std::fabs(double(post.u) - 0.3336066),
+                  std::fabs(double(post.p) - 1.5698000),
+                  std::fabs(double(speed) - 1.22)});
+    std::printf("gate 4 — Rankine-Hugoniot state (Ms=1.22): max |diff| = "
                 "%.3e (gate 1e-5)\n",
                 e);
     return e < 1e-5;

@@ -107,9 +107,23 @@ De « densités différentes » à « gaz différents ».
   champ `Y` dans les .vti/.vthb et pression fermée sur le Γ local
   (l'ancienne sortie fermait sur γ=1.4 partout : p faux de ~20 %% dans
   l'hélium).
-- [ ] **Suite multi-espèces** : gate quantitative Haas & Sturtevant
-  (vitesses d'interface vs expérience) ; double-flux Abgrall-Karni en
-  option si les 0.6 %% gênent.
+- [x] ~~Gate quantitative Haas & Sturtevant~~ — fait : `hs_suite`
+  rejoue l'expérience (choc Mach 1.22 dans l'air, cylindre He+28 %%
+  d'air, γ 1.645, ρ/ρ_air 0.182) et mesure les vitesses d'interface
+  sur l'axe (croisements Y=0.5, pentes LSQ sur les fenêtres des
+  régimes mesurés par l'expérience). Résultats vs H&S 1987 :
+  V_amont +6.7 %%, V_aval +5.6 %%, jet −0.7 %% (gates ±10 %% ;
+  Quirk & Karni 1996 : +4.7/+0.7/−1.3 %%). bubble.ini aligné sur
+  l'expérience (Mach 1.22, He contaminé). Leçon : l'interface amont
+  ACCÉLÈRE vers le jet — la « vitesse initiale » de l'expérience se
+  mesure juste après le passage du choc, pas sur une fenêtre tardive.
+- [x] ~~Cas RM corrigé~~ — le champignon est non-linéaire (ka > 1) :
+  choc rapproché de l'interface, t_end 8 (ka final 1.75, enroulement),
+  BC gauche transmissive (une BC analytic réinjecte le choc réfléchi).
+  Bug corrigé au passage : les ghosts scalaires de la base étaient
+  transmissifs même sur les axes périodiques (wrap désormais).
+- [ ] Double-flux Abgrall-Karni en option si les 0.6 %% gênent
+  (backlog v1.2).
 - [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
   quantitatif), Richtmyer-Meshkov.
 - **Sortie** : gate d'interface (pas d'oscillation de p), bulle He

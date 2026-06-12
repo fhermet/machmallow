@@ -111,7 +111,7 @@ public:
                 }
             }
         fillPhysicalGhosts(base, 0);
-        scalarPhysical_(base, basePhi_, baseGm_);
+        if (cfg_.species) baseScalarGhosts_();
         // Repeated regrids let each new level tag from real (IC) data.
         for (int pass = 1; pass < cfg_.maxLevels; ++pass) {
             regrid();
@@ -150,7 +150,7 @@ public:
 
     void step(Real dt, double t) {
         fillPhysicalGhosts(base, t);
-        if (cfg_.species) scalarPhysical_(base, basePhi_, baseGm_);
+        if (cfg_.species) baseScalarGhosts_();
         advanceTree_(0, dt, t);
     }
 
@@ -520,6 +520,34 @@ private:
                 }
         }
     }
+    // Base scalar ghosts: periodic wrap on periodic axes (matching the
+    // conserved fields), transmissive on physical sides.
+    void baseScalarGhosts_() {
+        for (auto* f : {&basePhi_, &baseGm_}) {
+            if (cfg_.periodicX)
+                for (int j = 0; j < base.toty(); ++j)
+                    for (int k = 0; k < NG; ++k) {
+                        (*f)[base.idx(k, j)] =
+                            (*f)[base.idx(base.nx + k, j)];
+                        (*f)[base.idx(NG + base.nx + k, j)] =
+                            (*f)[base.idx(NG + k, j)];
+                    }
+            if (cfg_.periodicY)
+                for (int i = 0; i < base.totx(); ++i)
+                    for (int k = 0; k < NG; ++k) {
+                        (*f)[base.idx(i, k)] =
+                            (*f)[base.idx(i, base.ny + k)];
+                        (*f)[base.idx(i, NG + base.ny + k)] =
+                            (*f)[base.idx(i, NG + k)];
+                    }
+        }
+        const unsigned sides =
+            (cfg_.periodicX ? 0u : (SideLeft | SideRight)) |
+            (cfg_.periodicY ? 0u : (SideBottom | SideTop));
+        if (sides)
+            scalarPhysicalSides_(base, basePhi_, baseGm_, sides);
+    }
+
     static void scalarPhysical_(const Grid& g, std::vector<Real>& a,
                                 std::vector<Real>& b) {
         scalarPhysicalSides_(g, a, b,
