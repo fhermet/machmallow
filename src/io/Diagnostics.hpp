@@ -13,6 +13,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace mm {
 
@@ -96,6 +97,45 @@ DiagRow computeDiagnostics(const AMR& amr) {
     return d;
 }
 
+// Per-equation residuals, industrial-CFD style: RMS of the discrete
+// time derivative (U^{n+1} - U^n)/dt over the base grid (which carries
+// the restricted composite, so this is regrid-stable). For a case that
+// approaches a steady state they drop by orders of magnitude; for an
+// unsteady flow they plateau at the physical activity level.
+struct Residuals {
+    double rho = 0, mx = 0, my = 0, E = 0;
+};
+
+template <class AMR>
+void snapshotBase(const AMR& amr, std::vector<Cons>& out) {
+    const GridRef b = amr.coarseRef();
+    out.assign(b.q, b.q + std::size_t(b.totx()) * b.toty());
+}
+
+template <class AMR>
+Residuals computeResiduals(const AMR& amr, const std::vector<Cons>& prev,
+                           double dt) {
+    Residuals r;
+    if (dt <= 0 || prev.empty()) return r;
+    const GridRef b = amr.coarseRef();
+    for (int j = NG; j < NG + b.ny; ++j)
+        for (int i = NG; i < NG + b.nx; ++i) {
+            const std::size_t id = b.idx(i, j);
+            const Cons& q = b.q[id];
+            const Cons& p = prev[id];
+            r.rho += double(q.rho - p.rho) * (q.rho - p.rho);
+            r.mx += double(q.mx - p.mx) * (q.mx - p.mx);
+            r.my += double(q.my - p.my) * (q.my - p.my);
+            r.E += double(q.E - p.E) * (q.E - p.E);
+        }
+    const double n = double(b.nx) * b.ny * dt * dt;
+    r.rho = std::sqrt(r.rho / n);
+    r.mx = std::sqrt(r.mx / n);
+    r.my = std::sqrt(r.my / n);
+    r.E = std::sqrt(r.E / n);
+    return r;
+}
+
 // CSV time-series writer for the per-run log file.
 class DiagLog {
 public:
@@ -105,21 +145,22 @@ public:
         if (f_ == nullptr)
             throw std::runtime_error("cannot write log: " + path);
         std::fprintf(f_,
-                     "step,t,dt,cells,patches,rho_min,rho_max,p_min,"
-                     "p_max,mass,kinetic_energy,total_energy,enstrophy,"
-                     "wall_s,mcells_per_s\n");
+                     "step,t,dt,res_mass,res_momx,res_momy,res_energy,"
+                     "cells,patches,rho_min,rho_max,p_min,p_max,mass,"
+                     "kinetic_energy,total_energy,enstrophy,wall_s,"
+                     "mcells_per_s\n");
     }
     bool active() const { return f_ != nullptr; }
 
-    void row(int step, double t, double dt, std::size_t cells,
-             std::size_t patches, const DiagRow& d, double wall,
-             double mcells) {
+    void row(int step, double t, double dt, const Residuals& r,
+             std::size_t cells, std::size_t patches, const DiagRow& d,
+             double wall, double mcells) {
         std::fprintf(f_,
-                     "%d,%.9g,%.6g,%zu,%zu,%.6g,%.6g,%.6g,%.6g,%.9g,"
-                     "%.9g,%.9g,%.9g,%.3f,%.1f\n",
-                     step, t, dt, cells, patches, d.rhoMin, d.rhoMax,
-                     d.pMin, d.pMax, d.mass, d.kinetic, d.energy,
-                     d.enstrophy, wall, mcells);
+                     "%d,%.9g,%.6g,%.6g,%.6g,%.6g,%.6g,%zu,%zu,%.6g,"
+                     "%.6g,%.6g,%.6g,%.9g,%.9g,%.9g,%.9g,%.3f,%.1f\n",
+                     step, t, dt, r.rho, r.mx, r.my, r.E, cells, patches,
+                     d.rhoMin, d.rhoMax, d.pMin, d.pMax, d.mass,
+                     d.kinetic, d.energy, d.enstrophy, wall, mcells);
         std::fflush(f_); // a crash should not lose the series
     }
 

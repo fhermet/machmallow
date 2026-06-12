@@ -92,7 +92,9 @@ possibles, par thème et avec leur point d'entrée dans le code.
 - [x] ~~Diagnostics intégraux CSV~~ — fait : `[diagnostics] every/file`
   → journal CSV du calcul (`io/Diagnostics.hpp`) : step, t, dt,
   cellules, patchs, extrema ρ/p, masse, énergies cinétique/totale,
-  enstrophie, temps mur, débit — composite sur toute la hiérarchie
+  enstrophie, temps mur, débit, et **résidus par équation** (RMS de
+  dU/dt sur la base restreinte : masse, qdm x/y, énergie — le suivi de
+  convergence standard) — composite sur toute la hiérarchie
   (2 niveaux et ML), flush par ligne. Limitation documentée : la
   vorticité utilise des différences clampées par grille (biais aux
   coutures de patchs — tendances fiables, valeurs absolues aux

@@ -86,27 +86,31 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
     int steps = 0, frame = 0;
     std::size_t cellSteps = 0, maxPatches = 0;
     const auto t0 = Clock::now();
+    std::vector<Cons> prevBase; // base snapshot for the residuals
     const auto logRow = [&](double dt) {
         const double wall =
             std::chrono::duration<double>(Clock::now() - t0).count();
-        log.row(steps, t, dt, amr.cellCount(), patchTotal(amr),
+        log.row(steps, t, dt, computeResiduals(amr, prevBase, dt),
+                amr.cellCount(), patchTotal(amr),
                 computeDiagnostics(amr), wall,
                 wall > 0 ? cellSteps / wall / 1e6 : 0);
     };
     if (log.active()) logRow(0); // initial state
-    while (t < tEnd && (maxSteps == 0 || steps < maxSteps)) {
+    while (t < tEnd * (1 - 1e-9) && (maxSteps == 0 || steps < maxSteps)) {
         Real dt = std::min(amr.maxStableDtAll(cfl), Real(tEnd - t));
         if (steps < 10) dt *= Real(0.3); // gentle start
+        if (log.active()) snapshotBase(amr, prevBase);
         amr.step(dt, t);
         t += dt;
         ++steps;
         cellSteps += amr.cellCount();
         maxPatches = std::max(maxPatches, patchTotal(amr));
         if (log.active() &&
-            (steps % diagEvery == 0 || t >= tEnd ||
+            (steps % diagEvery == 0 || t >= tEnd * (1 - 1e-9) ||
              (maxSteps > 0 && steps >= maxSteps)))
             logRow(dt);
-        if (frames > 0 && (t >= nextFrame - 1e-12 || t >= tEnd)) {
+        if (frames > 0 &&
+            (t >= nextFrame - 1e-12 || t >= tEnd * (1 - 1e-9))) {
             char name[256];
             std::snprintf(name, sizeof(name), "%s_%04d", prefix.c_str(),
                           ++frame);
