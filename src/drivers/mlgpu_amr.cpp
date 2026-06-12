@@ -5,6 +5,9 @@
 //      tolerance with identical per-level patch counts
 //   2. doubly periodic 3-level KH on the GPU: closed-domain mass drift
 //      at the fp32 floor
+//   3. two-gas Sod on 3-level subcycled AMR, full run in lock-step with
+//      the CPU AmrML: composite L1 vs the generalized exact solution,
+//      species mass drift, and CPU/GPU agreement
 // Then: 3-level DMR (base 1/64 -> finest 1/256) with timing, frames out.
 
 #include "amr/AmrGpuML.hpp"
@@ -13,6 +16,8 @@
 #include "cases/Dmr.hpp"
 #include "core/Boundary.hpp"
 #include "io/VtiWriter.hpp"
+#include "numerics/ExactRiemann.hpp"
+#include "physics/TwoGas.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -118,6 +123,119 @@ bool gate2_periodic(MetalContext& ctx) {
     return drift < 1e-6;
 }
 
+bool gate3_speciesGpu(MetalContext& ctx) {
+    const GasPair gas{Real(1.4), Real(1.6)};
+    const exact::State L{1, 0, 1, 1.4};
+    const exact::State R{0.125, 0, 0.1, 1.6};
+    const double tEnd = 0.2;
+
+    AmrConfig cfg;
+    cfg.maxLevels = 3;
+    cfg.subcycle = true;
+    cfg.species = true;
+    cfg.gamma1 = Real(1.4);
+    cfg.gamma2 = Real(1.6);
+
+    AmrML cpu(64, 16, 0, 0, 1, Real(0.25), cfg);
+    AmrGpuML gpu(ctx, 64, 16, 0, 0, 1, Real(0.25), cfg);
+    const auto wire = [](auto& amr) {
+        amr.fillPhysicalGhosts = [](auto& g, double) {
+            fillTransmissiveLeft(g);
+            fillTransmissiveRight(g);
+            fillTransmissiveBottom(g);
+            fillTransmissiveTop(g);
+        };
+        amr.fillPatchPhysical = [](auto& g, double, unsigned sides) {
+            if (sides & SideLeft) fillTransmissiveLeft(g);
+            if (sides & SideRight) fillTransmissiveRight(g);
+            if (sides & SideBottom) fillTransmissiveBottom(g);
+            if (sides & SideTop) fillTransmissiveTop(g);
+        };
+    };
+    wire(cpu);
+    wire(gpu);
+    const auto ic = [&](Real x, Real) {
+        const bool right = x >= Real(0.5);
+        const exact::State& st = right ? R : L;
+        return toConsG({Real(st.rho), Real(st.u), 0, Real(st.p)},
+                       gas.Gamma(right ? Real(1) : Real(0)));
+    };
+    const auto icY = [](Real x, Real) {
+        return x >= Real(0.5) ? Real(1) : Real(0);
+    };
+    cpu.init(ic, icY);
+    gpu.init(ic, icY);
+
+    const double m0 = gpu.totalSpeciesMass();
+    double t = 0, drift = 0;
+    while (t < tEnd - 1e-12) {
+        const Real dt =
+            std::min(cpu.maxStableDtAll(CFL), Real(tEnd - t));
+        cpu.step(dt, t);
+        gpu.step(dt, t);
+        t += dt;
+        drift = std::max(drift,
+                         std::fabs(gpu.totalSpeciesMass() - m0) /
+                             std::max(m0, 1e-30));
+    }
+
+    // CPU/GPU agreement on the base (uncovered cells)
+    const GridRef g = gpu.coarseRef();
+    const int bC = gpu.fineCells() / 2;
+    double maxRel = 0;
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 64; ++i) {
+            if (gpu.covered(1, i / bC, j / bC)) continue;
+            const Real* pa = &cpu.base.at(NG + i, NG + j).rho;
+            const Real* pb = &g.at(NG + i, NG + j).rho;
+            for (int k = 0; k < NVARS; ++k)
+                maxRel = std::max(maxRel,
+                                  std::fabs(double(pa[k]) - pb[k]) /
+                                      (std::fabs(double(pa[k])) + 1e-3));
+        }
+
+    // composite L1(rho) vs the generalized exact solution
+    double err = 0;
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 64; ++i)
+            if (!gpu.covered(1, i / bC, j / bC))
+                err += std::fabs(
+                           double(g.at(NG + i, NG + j).rho) -
+                           exact::sample(L, R,
+                                         (double(g.xc(NG + i)) - 0.5) /
+                                             tEnd)
+                               .rho) *
+                       g.dx * g.dy;
+    for (int l = 1; l < 3; ++l)
+        for (const auto& p : gpu.level(l).patches) {
+            const GridRef pg = gpu.patchRef(l, p);
+            for (int j = NG; j < NG + gpu.fineCells(); ++j)
+                for (int i = NG; i < NG + gpu.fineCells(); ++i) {
+                    const int gi = 2 * p.ci0 + (i - NG);
+                    const int gj = 2 * p.cj0 + (j - NG);
+                    if (l < 2 && gpu.covered(l + 1, gi / bC, gj / bC))
+                        continue;
+                    err += std::fabs(
+                               double(pg.at(i, j).rho) -
+                               exact::sample(L, R,
+                                             (double(pg.xc(i)) - 0.5) /
+                                                 tEnd)
+                                   .rho) *
+                           pg.dx * pg.dy;
+                }
+        }
+    err /= 0.25;
+    std::printf("gate 3 — two-gas Sod on 3-level AMR (GPU): L1 = %.4e "
+                "(gate 5e-3), species mass drift = %.3e (gate 1e-5), "
+                "CPU/GPU max rel diff = %.3e (gate 1e-2), patches "
+                "L1 %zu|%zu L2 %zu|%zu\n",
+                err, drift, maxRel, cpu.patchCount(1), gpu.patchCount(1),
+                cpu.patchCount(2), gpu.patchCount(2));
+    return err < 5e-3 && drift < 1e-5 && maxRel < 1e-2 &&
+           cpu.patchCount(1) == gpu.patchCount(1) &&
+           cpu.patchCount(2) == gpu.patchCount(2);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -125,7 +243,8 @@ int main(int argc, char** argv) {
     MetalContext ctx;
     std::printf("GPU: %s\n", ctx.device()->name()->utf8String());
 
-    if (!gate1_lockstep(ctx) || !gate2_periodic(ctx)) {
+    if (!gate1_lockstep(ctx) || !gate2_periodic(ctx) ||
+        !gate3_speciesGpu(ctx)) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;
     }

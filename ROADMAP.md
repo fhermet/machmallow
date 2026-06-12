@@ -86,9 +86,17 @@ De « densités différentes » à « gaz différents ».
   masse d'espèce 4.4e-5 (plancher fp32 relatif — φ porte ~9× moins de
   masse que ρ). Bug attrapé : les ghosts scalaires physiques écrasaient
   les 4 côtés (y compris intérieurs) → version masquée par côté.
-- [ ] **Suite multi-espèces** : GPU (buffers + kernels bi-gaz),
-  CaseDef (`[state.X] gas = 2`), bulle He + Richtmyer-Meshkov ;
-  double-flux en option si les 0.6 %% gênent.
+- [x] ~~GPU multi-espèces~~ — fait : kernels Metal bi-γ en miroir de
+  `step2DY` (reconstruction primitive + Γ de face advecté demi-dt,
+  HLLC γ-par-côté, flux φ upwindé, transport quasi-conservatif de Γ),
+  scalaires (φ, Γ) en float2 par cellule dans le pool de slots,
+  plomberie complète AmrGpuML (ghosts θ-blendés, restriction, reflux
+  de φ). Gate : Sod bi-γ 3 niveaux GPU en lock-step CPU complet —
+  L1 2.62e-3 vs exact (= CPU à 1e-7 près), masse d'espèce 2.0e-6,
+  écart CPU/GPU 1.6e-4 (fp32), patchs identiques.
+- [ ] **Suite multi-espèces** : CaseDef (`[state.X] gas = 2`),
+  bulle He + Richtmyer-Meshkov ; double-flux en option si les
+  0.6 %% gênent.
 - [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
   quantitatif), Richtmyer-Meshkov.
 - **Sortie** : gate d'interface (pas d'oscillation de p), bulle He

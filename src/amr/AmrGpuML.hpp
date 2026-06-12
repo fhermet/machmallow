@@ -32,7 +32,9 @@ public:
         int bi, bj, ci0, cj0;
         int slot;
         std::vector<Cons> old; // own state at parent-substep start
+        std::vector<Euler2DGpu::PhiG> sold; // scalar (phi, Gamma) old
     };
+    using PhiG = Euler2DGpu::PhiG;
 
     struct Level {
         int nbx = 0, nby = 0;
@@ -94,6 +96,20 @@ public:
         fluxYP_ = ctx.makePipeline(lib_, "flux_y_pool");
         updateP_ = ctx.makePipeline(lib_, "update_pool");
         waveP_ = ctx.makePipeline(lib_, "wave_pool");
+
+        if (cfg_.species) {
+            gas_ = GasPair{cfg_.gamma1, cfg_.gamma2};
+            coarse_.enableSpecies(gas_);
+            sP_ = ctx.device()->newBuffer(
+                std::size_t(capacity_) * stride_ * sizeof(PhiG),
+                MTL::ResourceStorageModeShared);
+            fXP_ = mk(); fYP_ = mk(); sFxP_ = mk(); sFyP_ = mk();
+            predictorYP_ = ctx.makePipeline(lib_, "predictor_y_pool");
+            fluxXYP_ = ctx.makePipeline(lib_, "flux_x_y_pool");
+            fluxYYP_ = ctx.makePipeline(lib_, "flux_y_y_pool");
+            updateYP_ = ctx.makePipeline(lib_, "update_y_pool");
+            waveYP_ = ctx.makePipeline(lib_, "wave_y_pool");
+        }
     }
 
     ~AmrGpuML() {
@@ -104,9 +120,14 @@ public:
         for (MTL::Buffer* b :
              {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_, smaxP_})
             b->release();
+        for (MTL::Buffer* b : {sP_, fXP_, fYP_, sFxP_, sFyP_})
+            if (b) b->release();
         for (MTL::ComputePipelineState* p :
              {predictorP_, fluxXP_, fluxYP_, updateP_, waveP_})
             p->release();
+        for (MTL::ComputePipelineState* p :
+             {predictorYP_, fluxXYP_, fluxYYP_, updateYP_, waveYP_})
+            if (p) p->release();
         lib_->release();
     }
     AmrGpuML(const AmrGpuML&) = delete;
@@ -130,6 +151,14 @@ public:
                        dyp / 2,
                        static_cast<Cons*>(qP_->contents()) +
                            std::size_t(p.slot) * stride_};
+    }
+
+    PhiG* baseS() const {
+        return const_cast<AmrGpuML*>(this)->coarse_.sData();
+    }
+    PhiG* sOf(const Patch& p) const {
+        return static_cast<PhiG*>(sP_->contents()) +
+               std::size_t(p.slot) * stride_;
     }
 
     bool covered(int l, int bi, int bj) const {
@@ -158,6 +187,40 @@ public:
         }
     }
 
+    // Two-gas init: icY(x, y) -> mass fraction of gas 2. phi and Gamma
+    // are rebuilt from Y on every level after each regrid pass.
+    template <class IC, class ICY>
+    void init(IC ic, ICY icY) {
+        GridRef b = coarseRef();
+        PhiG* bs = baseS();
+        const auto setS = [&](PhiG* arr, const GridRef& g, int i, int j) {
+            const Real Y = icY(g.xc(i), g.yc(j));
+            arr[g.idx(i, j)] = {float(g.at(i, j).rho * Y),
+                                float(gas_.Gamma(Y))};
+        };
+        for (int j = NG; j < NG + b.ny; ++j)
+            for (int i = NG; i < NG + b.nx; ++i)
+                b.at(i, j) = ic(b.xc(i), b.yc(j));
+        fillPhysicalGhosts(b, 0);
+        for (int j = 0; j < b.toty(); ++j)
+            for (int i = 0; i < b.totx(); ++i) setS(bs, b, i, j);
+        for (int pass = 1; pass < cfg_.maxLevels; ++pass) {
+            regrid();
+            for (int l = 1; l < cfg_.maxLevels; ++l)
+                for (Patch& p : lvls_[l - 1].patches) {
+                    GridRef g = patchRef(l, p);
+                    PhiG* ps = sOf(p);
+                    for (int j = NG; j < NG + nf_; ++j)
+                        for (int i = NG; i < NG + nf_; ++i) {
+                            g.at(i, j) = ic(g.xc(i), g.yc(j));
+                            setS(ps, g, i, j);
+                        }
+                }
+            for (int l = cfg_.maxLevels - 1; l >= 1; --l)
+                restrictLevel_(l);
+        }
+    }
+
     Real maxStableDtAll(Real cfl) {
         coarse_.zeroWave();
         auto* smp = static_cast<std::uint32_t*>(smaxP_->contents());
@@ -168,8 +231,14 @@ public:
         MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
         coarse_.encodeWave(cmd);
         for (int l = 1; l < cfg_.maxLevels; ++l)
-            if (!lvls_[l - 1].patches.empty())
-                encodePool_(cmd, l, waveP_, {qP_, smaxP_}, 0, nf_, nf_);
+            if (!lvls_[l - 1].patches.empty()) {
+                if (cfg_.species)
+                    encodePool_(cmd, l, waveYP_, {qP_, sP_, smaxP_}, 0,
+                                nf_, nf_);
+                else
+                    encodePool_(cmd, l, waveP_, {qP_, smaxP_}, 0, nf_,
+                                nf_);
+            }
         cmd->commit();
         cmd->waitUntilCompleted();
 
@@ -207,6 +276,10 @@ public:
     void step(Real dt, double t) {
         GridRef b = coarseRef();
         fillPhysicalGhosts(b, t);
+        if (cfg_.species)
+            scalarPhysicalSides_(b, baseS(),
+                                 SideLeft | SideRight | SideBottom |
+                                     SideTop);
         advanceTree_(0, dt, t);
     }
 
@@ -232,6 +305,35 @@ public:
                                     gj / cfg_.blockC))
                             continue;
                         m += double(g.at(NG + i, NG + j).rho) * al;
+                    }
+            }
+        return m;
+    }
+
+    double totalSpeciesMass() const {
+        double m = 0;
+        const GridRef b = coarseRef();
+        const PhiG* bs = baseS();
+        const double a0 = double(b.dx) * b.dy;
+        for (int j = 0; j < b.ny; ++j)
+            for (int i = 0; i < b.nx; ++i)
+                if (cfg_.maxLevels < 2 ||
+                    !covered(1, i / cfg_.blockC, j / cfg_.blockC))
+                    m += double(bs[b.idx(NG + i, NG + j)].phi) * a0;
+        for (int l = 1; l < cfg_.maxLevels; ++l)
+            for (const Patch& p : lvls_[l - 1].patches) {
+                const GridRef g = patchRef(l, p);
+                const PhiG* ps = sOf(p);
+                const double al = double(g.dx) * g.dy;
+                for (int j = 0; j < nf_; ++j)
+                    for (int i = 0; i < nf_; ++i) {
+                        const int gi = 2 * p.ci0 + i;
+                        const int gj = 2 * p.cj0 + j;
+                        if (l < cfg_.maxLevels - 1 &&
+                            covered(l + 1, gi / cfg_.blockC,
+                                    gj / cfg_.blockC))
+                            continue;
+                        m += double(ps[g.idx(NG + i, NG + j)].phi) * al;
                     }
             }
         return m;
@@ -306,7 +408,8 @@ private:
             : 0;
         const Euler2DGpu::Params p{pTot_, pTot_, nf_, nf_, dxl, dyl,
                                    dt,    stride_, cfg_.mu, kT,
-                                   cfg_.gx, cfg_.gy};
+                                   cfg_.gx, cfg_.gy, gas_.gamma1,
+                                   gas_.gamma2};
         MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
         enc->setComputePipelineState(pso);
         int slot = 0;
@@ -322,6 +425,17 @@ private:
         MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
         if (l == 0) {
             coarse_.encodeStep(cmd, dt);
+        } else if (cfg_.species) {
+            encodePool_(cmd, l, predictorYP_,
+                        {qP_, sP_, xLP_, xRP_, yBP_, yTP_, fXP_, fYP_},
+                        dt, pTot_ - 2, pTot_ - 2);
+            encodePool_(cmd, l, fluxXYP_, {xLP_, xRP_, fXP_, FxP_, sFxP_},
+                        dt, nf_ + 1, nf_);
+            encodePool_(cmd, l, fluxYYP_, {yBP_, yTP_, fYP_, FyP_, sFyP_},
+                        dt, nf_, nf_ + 1);
+            encodePool_(cmd, l, updateYP_,
+                        {qP_, sP_, FxP_, FyP_, sFxP_, sFyP_}, dt, nf_,
+                        nf_);
         } else {
             encodePool_(cmd, l, predictorP_, {qP_, xLP_, xRP_, yBP_, yTP_},
                         dt, pTot_ - 2, pTot_ - 2);
@@ -341,6 +455,15 @@ private:
     }
     const Cons* fyOf_(const Patch& p) const {
         return static_cast<const Cons*>(FyP_->contents()) +
+               std::size_t(p.slot) * stride_;
+    }
+    // packed (Fpx, Ssx, Fgx, 0) — only .rho (= Fp) is refluxed
+    const Cons* sfxOf_(const Patch& p) const {
+        return static_cast<const Cons*>(sFxP_->contents()) +
+               std::size_t(p.slot) * stride_;
+    }
+    const Cons* sfyOf_(const Patch& p) const {
+        return static_cast<const Cons*>(sFyP_->contents()) +
                std::size_t(p.slot) * stride_;
     }
 
@@ -461,20 +584,95 @@ private:
         return q0 + sx * dqx + sy * dqy;
     }
 
+    PhiG sblend_(const PhiG& cur, const PhiG* oldArr, std::size_t idx,
+                 Real theta) const {
+        if (theta < 0 || theta >= 1 || oldArr == nullptr) return cur;
+        if (theta <= 0) return oldArr[idx];
+        const Real t = theta;
+        return {float((1 - t) * oldArr[idx].phi + t * cur.phi),
+                float((1 - t) * oldArr[idx].G + t * cur.G)};
+    }
+
+    PhiG sparentVal_(int l, const Patch* home, int cg, int cgj,
+                     Real theta) const {
+        const int nxp = nxAt_(l - 1), nyp = nyAt_(l - 1);
+        if (cfg_.periodicX) cg = (cg % nxp + nxp) % nxp;
+        if (cfg_.periodicY) cgj = (cgj % nyp + nyp) % nyp;
+        if (l == 1) {
+            const GridRef b = coarseRef();
+            const std::size_t id = b.idx(NG + cg, NG + cgj);
+            return sblend_(baseS()[id],
+                           baseOldS_.empty() ? nullptr : baseOldS_.data(),
+                           id, theta);
+        }
+        const Patch* Q = (cg >= 0 && cg < nxp && cgj >= 0 && cgj < nyp)
+                             ? ownerAt_(l - 1, cg, cgj)
+                             : nullptr;
+        if (Q == nullptr) Q = home;
+        const std::size_t id = patchRef(l - 1, *Q).idx(
+            NG + cg - 2 * Q->ci0, NG + cgj - 2 * Q->cj0);
+        return sblend_(sOf(*Q)[id],
+                       Q->sold.empty() ? nullptr : Q->sold.data(), id,
+                       theta);
+    }
+
+    PhiG sprolong_(int l, const Patch* home, int cg, int cgj, int ox,
+                   int oy, Real theta) const {
+        const PhiG q0 = sparentVal_(l, home, cg, cgj, theta);
+        const PhiG qw = sparentVal_(l, home, cg - 1, cgj, theta);
+        const PhiG qe = sparentVal_(l, home, cg + 1, cgj, theta);
+        const PhiG qs = sparentVal_(l, home, cg, cgj - 1, theta);
+        const PhiG qn = sparentVal_(l, home, cg, cgj + 1, theta);
+        const Real sx = ox ? Real(0.25) : Real(-0.25);
+        const Real sy = oy ? Real(0.25) : Real(-0.25);
+        const auto one = [&](Real w, Real c, Real e, Real so, Real n) {
+            return c + sx * mcSlope(c - w, e - c) +
+                   sy * mcSlope(c - so, n - c);
+        };
+        return {float(one(qw.phi, q0.phi, qe.phi, qs.phi, qn.phi)),
+                float(one(qw.G, q0.G, qe.G, qs.G, qn.G))};
+    }
+
+    // Transmissive scalar ghosts on the requested domain sides only.
+    void scalarPhysicalSides_(const GridRef& g, PhiG* a,
+                              unsigned sides) const {
+        for (int j = 0; j < g.toty(); ++j)
+            for (int k = 0; k < NG; ++k) {
+                if (sides & SideLeft)
+                    a[g.idx(k, j)] = a[g.idx(NG, j)];
+                if (sides & SideRight)
+                    a[g.idx(NG + g.nx + k, j)] =
+                        a[g.idx(NG + g.nx - 1, j)];
+            }
+        for (int i = 0; i < g.totx(); ++i)
+            for (int k = 0; k < NG; ++k) {
+                if (sides & SideBottom)
+                    a[g.idx(i, k)] = a[g.idx(i, NG)];
+                if (sides & SideTop)
+                    a[g.idx(i, NG + g.ny + k)] =
+                        a[g.idx(i, NG + g.ny - 1)];
+            }
+    }
+
     Patch makePatch_(int l, int bi, int bj) {
         assert(!freeSlots_.empty());
         const int slot = freeSlots_.back();
         freeSlots_.pop_back();
-        Patch p{bi, bj, bi * cfg_.blockC, bj * cfg_.blockC, slot, {}};
+        Patch p{bi, bj, bi * cfg_.blockC, bj * cfg_.blockC, slot, {}, {}};
         const Patch* home =
             l >= 2 ? ownerAt_(l - 1, p.ci0, p.cj0) : nullptr;
         GridRef g = patchRef(l, p);
+        PhiG* ps = cfg_.species ? sOf(p) : nullptr;
         for (int j = NG; j < NG + nf_; ++j)
             for (int i = NG; i < NG + nf_; ++i) {
                 const int gfi = 2 * p.ci0 + (i - NG);
                 const int gfj = 2 * p.cj0 + (j - NG);
                 g.at(i, j) = prolong_(l, home, gfi / 2, gfj / 2, gfi & 1,
                                       gfj & 1, Real(-1));
+                if (ps)
+                    ps[g.idx(i, j)] =
+                        sprolong_(l, home, gfi / 2, gfj / 2, gfi & 1,
+                                  gfj & 1, Real(-1));
             }
         return p;
     }
@@ -486,6 +684,7 @@ private:
         parallelFor(lv.patches.size(), [&](std::size_t k) {
             Patch& p = lv.patches[k];
             GridRef g = patchRef(l, p);
+            PhiG* ps = cfg_.species ? sOf(p) : nullptr;
             const Patch* home =
                 l >= 2 ? ownerAt_(l - 1, p.ci0, p.cj0) : nullptr;
             const auto fillCell = [&](int i, int j) {
@@ -496,14 +695,21 @@ private:
                 if (gfi >= 0 && gfi < nxl && gfj >= 0 && gfj < nyl)
                     if (const Patch* sp = ownerAt_(l, gfi, gfj)) {
                         const GridRef sg = patchRef(l, *sp);
-                        g.at(i, j) = sg.at(NG + gfi - 2 * sp->ci0,
-                                           NG + gfj - 2 * sp->cj0);
+                        const std::size_t src =
+                            sg.idx(NG + gfi - 2 * sp->ci0,
+                                   NG + gfj - 2 * sp->cj0);
+                        g.q[g.idx(i, j)] = sg.q[src];
+                        if (ps) ps[g.idx(i, j)] = sOf(*sp)[src];
                         return;
                     }
                 const int cg = (gfi >= 0) ? gfi / 2 : (gfi - 1) / 2;
                 const int cgj = (gfj >= 0) ? gfj / 2 : (gfj - 1) / 2;
                 g.at(i, j) = prolong_(l, home, cg, cgj, gfi - 2 * cg,
                                       gfj - 2 * cgj, theta);
+                if (ps)
+                    ps[g.idx(i, j)] = sprolong_(l, home, cg, cgj,
+                                                gfi - 2 * cg,
+                                                gfj - 2 * cgj, theta);
             };
             for (int j = 0; j < NG; ++j)
                 for (int i = 0; i < g.totx(); ++i) fillCell(i, j);
@@ -516,6 +722,9 @@ private:
             if (fillPatchPhysical)
                 if (const unsigned sides = domainSides_(l, p))
                     fillPatchPhysical(g, t, sides);
+            if (ps)
+                if (const unsigned sides = domainSides_(l, p))
+                    scalarPhysicalSides_(g, ps, sides);
         });
     }
 
@@ -524,11 +733,20 @@ private:
         if (l == 0) {
             const GridRef b = coarseRef();
             baseOld_.assign(b.q, b.q + std::size_t(b.totx()) * b.toty());
+            if (cfg_.species) {
+                const PhiG* bs = baseS();
+                baseOldS_.assign(bs,
+                                 bs + std::size_t(b.totx()) * b.toty());
+            }
             return;
         }
         for (Patch& p : lvls_[l - 1].patches) {
             const GridRef g = patchRef(l, p);
             p.old.assign(g.q, g.q + std::size_t(stride_));
+            if (cfg_.species) {
+                const PhiG* ps = sOf(p);
+                p.sold.assign(ps, ps + std::size_t(stride_));
+            }
         }
     }
 
@@ -564,21 +782,37 @@ private:
         Cons* cells;
         const Cons *Fx, *Fy;
         int totx, li, lj;
+        // two-gas fields (null when species disabled); the scalar flux
+        // arrays are packed (Fp, Ss, Fg, 0) and only .rho is refluxed
+        PhiG* sc = nullptr;
+        const Cons *sFx = nullptr, *sFy = nullptr;
     };
     ParentCell parentCell_(int lp, int cg, int cgj) {
         if (lp == 0) {
             const GridRef b = coarseRef();
-            return {b.q,      coarse_.fx(), coarse_.fy(),
-                    b.totx(), NG + cg,      NG + cgj};
+            ParentCell pc{b.q,      coarse_.fx(), coarse_.fy(),
+                          b.totx(), NG + cg,      NG + cgj};
+            if (cfg_.species) {
+                pc.sc = baseS();
+                pc.sFx = coarse_.sfx();
+                pc.sFy = coarse_.sfy();
+            }
+            return pc;
         }
         const Patch* Q = ownerAt_(lp, cg, cgj);
         assert(Q != nullptr);
-        return {patchRef(lp, *Q).q,
-                fxOf_(*Q),
-                fyOf_(*Q),
-                pTot_,
-                NG + cg - 2 * Q->ci0,
-                NG + cgj - 2 * Q->cj0};
+        ParentCell pc{patchRef(lp, *Q).q,
+                      fxOf_(*Q),
+                      fyOf_(*Q),
+                      pTot_,
+                      NG + cg - 2 * Q->ci0,
+                      NG + cgj - 2 * Q->cj0};
+        if (cfg_.species) {
+            pc.sc = sOf(*Q);
+            pc.sFx = sfxOf_(*Q);
+            pc.sFy = sfyOf_(*Q);
+        }
+        return pc;
     }
 
     struct SideNb {
@@ -642,14 +876,26 @@ private:
                     const auto fid = [&](int a, int b2) {
                         return std::size_t(b2) * pc.totx + a;
                     };
-                    if (dir == 0)
+                    float* ph = pc.sc
+                        ? &pc.sc[fid(pc.li, pc.lj)].phi
+                        : nullptr;
+                    if (dir == 0) {
                         cell += lam * pc.Fx[fid(pc.li, pc.lj)];
-                    else if (dir == 1)
+                        if (ph)
+                            *ph += lam * pc.sFx[fid(pc.li, pc.lj)].rho;
+                    } else if (dir == 1) {
                         cell -= lam * pc.Fx[fid(pc.li - 1, pc.lj)];
-                    else if (dir == 2)
+                        if (ph)
+                            *ph -= lam * pc.sFx[fid(pc.li - 1, pc.lj)].rho;
+                    } else if (dir == 2) {
                         cell += lam * pc.Fy[fid(pc.li, pc.lj)];
-                    else
+                        if (ph)
+                            *ph += lam * pc.sFy[fid(pc.li, pc.lj)].rho;
+                    } else {
                         cell -= lam * pc.Fy[fid(pc.li, pc.lj - 1)];
+                        if (ph)
+                            *ph -= lam * pc.sFy[fid(pc.li, pc.lj - 1)].rho;
+                    }
                 }
             }
     }
@@ -659,6 +905,8 @@ private:
         for (const Patch& p : lvls_[lc - 1].patches) {
             const Cons* fxF = fxOf_(p);
             const Cons* fyF = fyOf_(p);
+            const Cons* sfxF = cfg_.species ? sfxOf_(p) : nullptr;
+            const Cons* sfyF = cfg_.species ? sfyOf_(p) : nullptr;
             const auto pid = [&](int a, int b) {
                 return std::size_t(b) * pTot_ + a;
             };
@@ -674,26 +922,52 @@ private:
                     const Real dyp = b.dy / Real(1 << (lc - 1));
                     const Real lam = dtChild / (dir < 2 ? dxp : dyp);
                     Cons ff;
-                    if (dir == 0)
+                    Real fp = 0;
+                    if (dir == 0) {
                         ff = Real(0.5) * (fxF[pid(NG - 1, NG + 2 * r)] +
                                           fxF[pid(NG - 1, NG + 2 * r + 1)]);
-                    else if (dir == 1)
+                        if (sfxF)
+                            fp = Real(0.5) *
+                                 (sfxF[pid(NG - 1, NG + 2 * r)].rho +
+                                  sfxF[pid(NG - 1, NG + 2 * r + 1)].rho);
+                    } else if (dir == 1) {
                         ff = Real(0.5) *
                              (fxF[pid(NG + nf_ - 1, NG + 2 * r)] +
                               fxF[pid(NG + nf_ - 1, NG + 2 * r + 1)]);
-                    else if (dir == 2)
+                        if (sfxF)
+                            fp = Real(0.5) *
+                                 (sfxF[pid(NG + nf_ - 1, NG + 2 * r)].rho +
+                                  sfxF[pid(NG + nf_ - 1, NG + 2 * r + 1)]
+                                      .rho);
+                    } else if (dir == 2) {
                         ff = Real(0.5) * (fyF[pid(NG + 2 * r, NG - 1)] +
                                           fyF[pid(NG + 2 * r + 1, NG - 1)]);
-                    else
+                        if (sfyF)
+                            fp = Real(0.5) *
+                                 (sfyF[pid(NG + 2 * r, NG - 1)].rho +
+                                  sfyF[pid(NG + 2 * r + 1, NG - 1)].rho);
+                    } else {
                         ff = Real(0.5) *
                              (fyF[pid(NG + 2 * r, NG + nf_ - 1)] +
                               fyF[pid(NG + 2 * r + 1, NG + nf_ - 1)]);
+                        if (sfyF)
+                            fp = Real(0.5) *
+                                 (sfyF[pid(NG + 2 * r, NG + nf_ - 1)].rho +
+                                  sfyF[pid(NG + 2 * r + 1, NG + nf_ - 1)]
+                                      .rho);
+                    }
                     Cons& cell = pc.cells[std::size_t(pc.lj) * pc.totx +
                                           pc.li];
-                    if (dir == 0 || dir == 2)
+                    float* ph = pc.sc
+                        ? &pc.sc[std::size_t(pc.lj) * pc.totx + pc.li].phi
+                        : nullptr;
+                    if (dir == 0 || dir == 2) {
                         cell -= lam * ff;
-                    else
+                        if (ph) *ph -= lam * fp;
+                    } else {
                         cell += lam * ff;
+                        if (ph) *ph += lam * fp;
+                    }
                 }
             }
         }
@@ -703,6 +977,7 @@ private:
         const int bC = cfg_.blockC;
         for (const Patch& p : lvls_[l - 1].patches) {
             const GridRef g = patchRef(l, p);
+            const PhiG* ps = cfg_.species ? sOf(p) : nullptr;
             for (int b = 0; b < bC; ++b)
                 for (int a = 0; a < bC; ++a) {
                     const int fi = NG + 2 * a, fj = NG + 2 * b;
@@ -711,8 +986,23 @@ private:
                                      g.at(fi + 1, fj + 1);
                     ParentCell pc =
                         parentCell_(l - 1, p.ci0 + a, p.cj0 + b);
-                    pc.cells[std::size_t(pc.lj) * pc.totx + pc.li] =
-                        Real(0.25) * sum;
+                    const std::size_t pid =
+                        std::size_t(pc.lj) * pc.totx + pc.li;
+                    pc.cells[pid] = Real(0.25) * sum;
+                    if (ps) {
+                        const auto id = [&](int x, int y) {
+                            return g.idx(x, y);
+                        };
+                        pc.sc[pid] = {
+                            Real(0.25) * (ps[id(fi, fj)].phi +
+                                          ps[id(fi + 1, fj)].phi +
+                                          ps[id(fi, fj + 1)].phi +
+                                          ps[id(fi + 1, fj + 1)].phi),
+                            Real(0.25) * (ps[id(fi, fj)].G +
+                                          ps[id(fi + 1, fj)].G +
+                                          ps[id(fi, fj + 1)].G +
+                                          ps[id(fi + 1, fj + 1)].G)};
+                    }
                 }
         }
     }
@@ -849,6 +1139,8 @@ private:
     std::vector<Level> lvls_;
     std::vector<int> freeSlots_;
     std::vector<Cons> baseOld_;
+    std::vector<PhiG> baseOldS_;
+    GasPair gas_;
     std::vector<int> stepCounts_ = std::vector<int>(16, 0);
 
     MTL::Library* lib_ = nullptr;
@@ -858,6 +1150,11 @@ private:
     MTL::Buffer *qP_ = nullptr, *xLP_ = nullptr, *xRP_ = nullptr,
                 *yBP_ = nullptr, *yTP_ = nullptr, *FxP_ = nullptr,
                 *FyP_ = nullptr, *smaxP_ = nullptr;
+    MTL::Buffer *sP_ = nullptr, *fXP_ = nullptr, *fYP_ = nullptr,
+                *sFxP_ = nullptr, *sFyP_ = nullptr;
+    MTL::ComputePipelineState *predictorYP_ = nullptr,
+                              *fluxXYP_ = nullptr, *fluxYYP_ = nullptr,
+                              *updateYP_ = nullptr, *waveYP_ = nullptr;
 };
 
 } // namespace mm

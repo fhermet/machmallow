@@ -21,6 +21,7 @@ struct Params {
     int stride;   // cells per pool slot (0 for plain kernels)
     float mu, kT; // dynamic viscosity and heat conductivity (0 = Euler)
     float gx, gy; // gravity (split source in the update kernel)
+    float g1, g2; // two-gas gammas (species kernels only)
 };
 
 // ---- physics ------------------------------------------------------------
@@ -351,4 +352,374 @@ kernel void wave_pool(device const float4* q [[buffer(0)]],
 {
     waveBody(q, smax, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
              int(g.y) + NG);
+}
+
+// ---- two-gas kernels (species transport, mirrors Muscl2DSpecies.hpp) ------
+//
+// Cell scalars ride in a float2 buffer s = (phi, Gamma); the predictor
+// emits packed face buffers fX = (yxL, yxR, gxL, gxR) and
+// fY = (yyB, yyT, gyB, gyT); the flux kernels emit packed scalar fluxes
+// sFx = (Fpx, Ssx, Fgx, 0). Reconstruction is PRIMITIVE + Gamma with the
+// face Gamma advanced by half dt (see the CPU file for the why).
+
+inline float4 toPrimG(float4 q, float G) {
+    const float rho = max(q.x, RHO_FLOOR);
+    const float u = q.y / rho;
+    const float v = q.z / rho;
+    const float p = max((q.w - 0.5f * rho * (u * u + v * v)) / G, P_FLOOR);
+    return float4(rho, u, v, p);
+}
+inline float4 toConsG(float4 w, float G) {
+    const float ke = 0.5f * w.x * (w.y * w.y + w.z * w.z);
+    return float4(w.x, w.x * w.y, w.x * w.z, w.w * G + ke);
+}
+inline float4 fluxXG(float4 w, float G) {
+    const float4 q = toConsG(w, G);
+    return float4(q.y, q.y * w.y + w.w, q.z * w.y, (q.w + w.w) * w.y);
+}
+inline float4 fluxYG(float4 w, float G) {
+    const float4 q = toConsG(w, G);
+    return float4(q.z, q.y * w.z, q.z * w.z + w.w, (q.w + w.w) * w.z);
+}
+
+inline float mcSlope1(float dm, float dp) {
+    if (dm * dp <= 0.0f) return 0.0f;
+    const float c = 0.5f * (dm + dp);
+    return copysign(min(abs(c), 2.0f * min(abs(dm), abs(dp))), c);
+}
+
+// HLLC with per-side gamma; also returns the contact speed Ss.
+inline float4 hllcFluxXG(float4 L, float gL, float4 R, float gR,
+                         thread float& SsOut) {
+    const float cL = sqrt(gL * L.w / L.x);
+    const float cR = sqrt(gR * R.w / R.x);
+    const float GL = 1.0f / (gL - 1.0f), GR = 1.0f / (gR - 1.0f);
+
+    const float rhoBar = 0.5f * (L.x + R.x);
+    const float cBar = 0.5f * (cL + cR);
+    const float pPvrs =
+        0.5f * (L.w + R.w) - 0.5f * (R.y - L.y) * rhoBar * cBar;
+    const float pStar = max(0.0f, pPvrs);
+
+    const float qfL = pStar <= L.w
+        ? 1.0f
+        : sqrt(1.0f + (gL + 1.0f) / (2.0f * gL) * (pStar / L.w - 1.0f));
+    const float qfR = pStar <= R.w
+        ? 1.0f
+        : sqrt(1.0f + (gR + 1.0f) / (2.0f * gR) * (pStar / R.w - 1.0f));
+    const float SL = L.y - cL * qfL;
+    const float SR = R.y + cR * qfR;
+    const float Ss =
+        (R.w - L.w + L.x * L.y * (SL - L.y) - R.x * R.y * (SR - R.y)) /
+        (L.x * (SL - L.y) - R.x * (SR - R.y));
+    SsOut = Ss;
+
+    const auto side = [&](float4 w, float G, float S) {
+        const float4 q = toConsG(w, G);
+        const float4 f =
+            float4(q.y, q.y * w.y + w.w, q.z * w.y, (q.w + w.w) * w.y);
+        const float coef = w.x * (S - w.y) / (S - Ss);
+        const float4 qs = float4(
+            coef, coef * Ss, coef * w.z,
+            coef * (q.w / w.x +
+                    (Ss - w.y) * (Ss + w.w / (w.x * (S - w.y)))));
+        return f + S * (qs - q);
+    };
+    if (SL >= 0.0f) return fluxXG(L, GL);
+    if (Ss >= 0.0f) return side(L, GL, SL);
+    if (SR >= 0.0f) return side(R, GR, SR);
+    return fluxXG(R, GR);
+}
+
+inline void predictorYBody(device const float4* q, device const float2* sc,
+                           device float4* xL, device float4* xR,
+                           device float4* yB, device float4* yT,
+                           device float4* fX, device float4* fY,
+                           constant Params& P, int base, int i, int j) {
+    const int id = base + j * P.tx + i;
+    const int iw = id - 1, ie = id + 1;
+    const int js = id - P.tx, jn = id + P.tx;
+
+    const float4 q0 = q[id];
+    const float hx = 0.5f * P.dt / P.dx;
+    const float hy = 0.5f * P.dt / P.dy;
+    const float Gmin = min(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+    const float Gmax = max(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+
+    const auto Yof = [&](int a) {
+        return clamp(sc[a].x / max(q[a].x, RHO_FLOOR), 0.0f, 1.0f);
+    };
+    const float Y0 = Yof(id);
+    const float dYx = mcSlope1(Y0 - Yof(iw), Yof(ie) - Y0);
+    const float dYy = mcSlope1(Y0 - Yof(js), Yof(jn) - Y0);
+    float4 fxv = clamp(float4(Y0 - 0.5f * dYx, Y0 + 0.5f * dYx, 0.0f, 0.0f),
+                       0.0f, 1.0f);
+    float4 fyv = clamp(float4(Y0 - 0.5f * dYy, Y0 + 0.5f * dYy, 0.0f, 0.0f),
+                       0.0f, 1.0f);
+
+    const float G0 = sc[id].y;
+    const float dGx = mcSlope1(G0 - sc[iw].y, sc[ie].y - G0);
+    const float dGy = mcSlope1(G0 - sc[js].y, sc[jn].y - G0);
+    const float u0c = q0.y / max(q0.x, RHO_FLOOR);
+    const float v0c = q0.z / max(q0.x, RHO_FLOOR);
+    const float gAdv = hx * u0c * dGx + hy * v0c * dGy;
+    fxv.z = clamp(G0 - 0.5f * dGx - gAdv, Gmin, Gmax);
+    fxv.w = clamp(G0 + 0.5f * dGx - gAdv, Gmin, Gmax);
+    fyv.z = clamp(G0 - 0.5f * dGy - gAdv, Gmin, Gmax);
+    fyv.w = clamp(G0 + 0.5f * dGy - gAdv, Gmin, Gmax);
+
+    // primitive slopes; face states rebuilt from face prims + face Gamma
+    const float4 w0 = toPrimG(q0, G0);
+    const float4 wm = toPrimG(q[iw], sc[iw].y);
+    const float4 wp = toPrimG(q[ie], sc[ie].y);
+    const float4 wb = toPrimG(q[js], sc[js].y);
+    const float4 wt = toPrimG(q[jn], sc[jn].y);
+    float4 dwx, dwy;
+    for (int c = 0; c < 4; ++c) {
+        dwx[c] = mcSlope1(w0[c] - wm[c], wp[c] - w0[c]);
+        dwy[c] = mcSlope1(w0[c] - wb[c], wt[c] - w0[c]);
+    }
+    const auto face = [&](float4 w, float sgn, float4 d) {
+        float4 f = w + sgn * 0.5f * d;
+        f.x = max(f.x, RHO_FLOOR);
+        f.w = max(f.w, P_FLOOR);
+        return f;
+    };
+    const float4 pxl = face(w0, -1.0f, dwx);
+    const float4 pxr = face(w0, +1.0f, dwx);
+    const float4 pyb = face(w0, -1.0f, dwy);
+    const float4 pyt = face(w0, +1.0f, dwy);
+
+    const float4 adv = hx * (fluxXG(pxl, fxv.z) - fluxXG(pxr, fxv.w)) +
+                       hy * (fluxYG(pyb, fyv.z) - fluxYG(pyt, fyv.w));
+    float4 fxl = toConsG(pxl, fxv.z) + adv;
+    float4 fxr = toConsG(pxr, fxv.w) + adv;
+    float4 fyb = toConsG(pyb, fyv.z) + adv;
+    float4 fyt = toConsG(pyt, fyv.w) + adv;
+
+    const auto bad = [](float4 c) {
+        if (c.x <= RHO_FLOOR) return true;
+        const float ke = 0.5f * (c.y * c.y + c.z * c.z) / c.x;
+        return c.w - ke <= 0.0f;
+    };
+    if (bad(fxl) || bad(fxr) || bad(fyb) || bad(fyt)) {
+        fxl = fxr = fyb = fyt = q0;
+        fxv = float4(Y0, Y0, G0, G0);
+        fyv = float4(Y0, Y0, G0, G0);
+    }
+    xL[id] = fxl;
+    xR[id] = fxr;
+    yB[id] = fyb;
+    yT[id] = fyt;
+    fX[id] = fxv;
+    fY[id] = fyv;
+}
+
+inline void fluxXYBody(device const float4* xL, device const float4* xR,
+                       device const float4* fX, device float4* Fx,
+                       device float4* sFx, constant Params& P, int base,
+                       int i, int j) {
+    const int id = base + j * P.tx + i;
+    const int idp = id + 1;
+    const float GL = fX[id].w, GR = fX[idp].z;
+    float ss = 0.0f;
+    const float4 F = hllcFluxXG(toPrimG(xR[id], GL), 1.0f + 1.0f / GL,
+                                toPrimG(xL[idp], GR), 1.0f + 1.0f / GR,
+                                ss);
+    Fx[id] = F;
+    sFx[id] = float4(F.x * (F.x > 0.0f ? fX[id].y : fX[idp].x), ss,
+                     ss * (ss > 0.0f ? GL : GR), 0.0f);
+}
+
+inline void fluxYYBody(device const float4* yB, device const float4* yT,
+                       device const float4* fY, device float4* Fy,
+                       device float4* sFy, constant Params& P, int base,
+                       int i, int j) {
+    const int id = base + j * P.tx + i;
+    const int idp = id + P.tx;
+    const float GB = fY[id].w, GT = fY[idp].z;
+    const float4 L = toPrimG(yT[id], GB);
+    const float4 R = toPrimG(yB[idp], GT);
+    float ss = 0.0f;
+    const float4 F = hllcFluxXG(float4(L.x, L.z, L.y, L.w),
+                                1.0f + 1.0f / GB,
+                                float4(R.x, R.z, R.y, R.w),
+                                1.0f + 1.0f / GT, ss);
+    Fy[id] = float4(F.x, F.z, F.y, F.w);
+    sFy[id] = float4(F.x * (F.x > 0.0f ? fY[id].y : fY[idp].x), ss,
+                     ss * (ss > 0.0f ? GB : GT), 0.0f);
+}
+
+inline void updateYBody(device float4* q, device float2* sc,
+                        device const float4* Fx, device const float4* Fy,
+                        device const float4* sFx, device const float4* sFy,
+                        constant Params& P, int base, int i, int j) {
+    const int id = base + j * P.tx + i;
+    const int iw = id - 1, js = id - P.tx;
+    const float lx = P.dt / P.dx, ly = P.dt / P.dy;
+    const float Gmin = min(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+    const float Gmax = max(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+
+    q[id] = q[id] + lx * (Fx[iw] - Fx[id]) + ly * (Fy[js] - Fy[id]);
+    float2 sv = sc[id];
+    sv.x += lx * (sFx[iw].x - sFx[id].x) + ly * (sFy[js].x - sFy[id].x);
+    sv.y = clamp(sv.y -
+                     lx * (sFx[id].z - sFx[iw].z -
+                           sv.y * (sFx[id].y - sFx[iw].y)) -
+                     ly * (sFy[id].z - sFy[js].z -
+                           sv.y * (sFy[id].y - sFy[js].y)),
+                 Gmin, Gmax);
+    sc[id] = sv;
+}
+
+inline void waveYBody(device const float4* q, device const float2* sc,
+                      device atomic_uint* smax, constant Params& P,
+                      int base, int i, int j) {
+    const int id = base + j * P.tx + i;
+    const float4 w = toPrimG(q[id], sc[id].y);
+    const float c = sqrt((1.0f + 1.0f / sc[id].y) * w.w / w.x);
+
+    const float sx = simd_max(fabs(w.y) + c);
+    const float sy = simd_max(fabs(w.z) + c);
+    const float rmn = simd_min(w.x);
+    if (simd_is_first()) {
+        atomic_fetch_max_explicit(&smax[0], as_type<uint>(sx),
+                                  memory_order_relaxed);
+        atomic_fetch_max_explicit(&smax[1], as_type<uint>(sy),
+                                  memory_order_relaxed);
+        atomic_fetch_min_explicit(&smax[2], as_type<uint>(rmn),
+                                  memory_order_relaxed);
+    }
+}
+
+// ---- plain species kernels -------------------------------------------------
+
+kernel void predictor_y(device const float4* q [[buffer(0)]],
+                        device const float2* sc [[buffer(1)]],
+                        device float4* xL [[buffer(2)]],
+                        device float4* xR [[buffer(3)]],
+                        device float4* yB [[buffer(4)]],
+                        device float4* yT [[buffer(5)]],
+                        device float4* fX [[buffer(6)]],
+                        device float4* fY [[buffer(7)]],
+                        constant Params& P [[buffer(8)]],
+                        uint2 g [[thread_position_in_grid]])
+{
+    predictorYBody(q, sc, xL, xR, yB, yT, fX, fY, P, 0, int(g.x) + 1,
+                   int(g.y) + 1);
+}
+
+kernel void flux_x_y(device const float4* xL [[buffer(0)]],
+                     device const float4* xR [[buffer(1)]],
+                     device const float4* fX [[buffer(2)]],
+                     device float4* Fx [[buffer(3)]],
+                     device float4* sFx [[buffer(4)]],
+                     constant Params& P [[buffer(5)]],
+                     uint2 g [[thread_position_in_grid]])
+{
+    fluxXYBody(xL, xR, fX, Fx, sFx, P, 0, int(g.x) + NG - 1,
+               int(g.y) + NG);
+}
+
+kernel void flux_y_y(device const float4* yB [[buffer(0)]],
+                     device const float4* yT [[buffer(1)]],
+                     device const float4* fY [[buffer(2)]],
+                     device float4* Fy [[buffer(3)]],
+                     device float4* sFy [[buffer(4)]],
+                     constant Params& P [[buffer(5)]],
+                     uint2 g [[thread_position_in_grid]])
+{
+    fluxYYBody(yB, yT, fY, Fy, sFy, P, 0, int(g.x) + NG,
+               int(g.y) + NG - 1);
+}
+
+kernel void update_y(device float4* q [[buffer(0)]],
+                     device float2* sc [[buffer(1)]],
+                     device const float4* Fx [[buffer(2)]],
+                     device const float4* Fy [[buffer(3)]],
+                     device const float4* sFx [[buffer(4)]],
+                     device const float4* sFy [[buffer(5)]],
+                     constant Params& P [[buffer(6)]],
+                     uint2 g [[thread_position_in_grid]])
+{
+    updateYBody(q, sc, Fx, Fy, sFx, sFy, P, 0, int(g.x) + NG,
+                int(g.y) + NG);
+}
+
+kernel void wave_y(device const float4* q [[buffer(0)]],
+                   device const float2* sc [[buffer(1)]],
+                   device atomic_uint* smax [[buffer(2)]],
+                   constant Params& P [[buffer(3)]],
+                   uint2 g [[thread_position_in_grid]])
+{
+    waveYBody(q, sc, smax, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+
+// ---- pool species kernels ---------------------------------------------------
+
+kernel void predictor_y_pool(device const float4* q [[buffer(0)]],
+                             device const float2* sc [[buffer(1)]],
+                             device float4* xL [[buffer(2)]],
+                             device float4* xR [[buffer(3)]],
+                             device float4* yB [[buffer(4)]],
+                             device float4* yT [[buffer(5)]],
+                             device float4* fX [[buffer(6)]],
+                             device float4* fY [[buffer(7)]],
+                             constant Params& P [[buffer(8)]],
+                             device const uint* slots [[buffer(9)]],
+                             uint3 g [[thread_position_in_grid]])
+{
+    predictorYBody(q, sc, xL, xR, yB, yT, fX, fY, P,
+                   int(slots[g.z]) * P.stride, int(g.x) + 1, int(g.y) + 1);
+}
+
+kernel void flux_x_y_pool(device const float4* xL [[buffer(0)]],
+                          device const float4* xR [[buffer(1)]],
+                          device const float4* fX [[buffer(2)]],
+                          device float4* Fx [[buffer(3)]],
+                          device float4* sFx [[buffer(4)]],
+                          constant Params& P [[buffer(5)]],
+                          device const uint* slots [[buffer(6)]],
+                          uint3 g [[thread_position_in_grid]])
+{
+    fluxXYBody(xL, xR, fX, Fx, sFx, P, int(slots[g.z]) * P.stride,
+               int(g.x) + NG - 1, int(g.y) + NG);
+}
+
+kernel void flux_y_y_pool(device const float4* yB [[buffer(0)]],
+                          device const float4* yT [[buffer(1)]],
+                          device const float4* fY [[buffer(2)]],
+                          device float4* Fy [[buffer(3)]],
+                          device float4* sFy [[buffer(4)]],
+                          constant Params& P [[buffer(5)]],
+                          device const uint* slots [[buffer(6)]],
+                          uint3 g [[thread_position_in_grid]])
+{
+    fluxYYBody(yB, yT, fY, Fy, sFy, P, int(slots[g.z]) * P.stride,
+               int(g.x) + NG, int(g.y) + NG - 1);
+}
+
+kernel void update_y_pool(device float4* q [[buffer(0)]],
+                          device float2* sc [[buffer(1)]],
+                          device const float4* Fx [[buffer(2)]],
+                          device const float4* Fy [[buffer(3)]],
+                          device const float4* sFx [[buffer(4)]],
+                          device const float4* sFy [[buffer(5)]],
+                          constant Params& P [[buffer(6)]],
+                          device const uint* slots [[buffer(7)]],
+                          uint3 g [[thread_position_in_grid]])
+{
+    updateYBody(q, sc, Fx, Fy, sFx, sFy, P, int(slots[g.z]) * P.stride,
+                int(g.x) + NG, int(g.y) + NG);
+}
+
+kernel void wave_y_pool(device const float4* q [[buffer(0)]],
+                        device const float2* sc [[buffer(1)]],
+                        device atomic_uint* smax [[buffer(2)]],
+                        constant Params& P [[buffer(3)]],
+                        device const uint* slots [[buffer(4)]],
+                        uint3 g [[thread_position_in_grid]])
+{
+    waveYBody(q, sc, smax, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
+              int(g.y) + NG);
 }
