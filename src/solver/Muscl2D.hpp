@@ -156,6 +156,20 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
             s.xR[id] = xr + adv;
             s.yB[id] = yb + adv;
             s.yT[id] = yt + adv;
+
+            // Positivity: near vacuum the conserved-variable
+            // reconstruction can produce faces with rho <= 0 or negative
+            // internal energy (huge velocities after flooring) — fall
+            // back to first order for this cell.
+            const auto bad = [](const Cons& c) {
+                if (c.rho <= RHO_FLOOR) return true;
+                const Real ke =
+                    Real(0.5) * (c.mx * c.mx + c.my * c.my) / c.rho;
+                return c.E - ke <= 0;
+            };
+            if (bad(s.xL[id]) || bad(s.xR[id]) || bad(s.yB[id]) ||
+                bad(s.yT[id]))
+                s.xL[id] = s.xR[id] = s.yB[id] = s.yT[id] = q0;
         }
     }
 

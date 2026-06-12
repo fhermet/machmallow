@@ -26,6 +26,7 @@ jobs:
           ./build/sod2d
           ./build/sod_amr
           ./build/ml_amr
+          ./build/analytic_suite
           ./build/casedef_test
           for c in cases/*.ini; do ./build/run --check "$c"; done
 

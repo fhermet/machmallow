@@ -115,6 +115,16 @@ possibles, par thème et avec leur point d'entrée dans le code.
   Le run coupé/repris est bit-identique au run continu (porte dans
   `kh_amr`).
 
+- [x] ~~Suite de validation analytique~~ — fait : `analytic_suite` —
+  batterie de Riemann de Toro T2-T5 vs solveur exact (le T2 quasi-vide a
+  exigé un **fix de positivité** : retour à l'ordre 1 local quand la
+  reconstruction produit des faces non physiques, CPU + GPU), onde
+  acoustique périodique (ordre lisse 1.31 ≈ la théorie TVD 4/3 — les
+  limiteurs écrêtent les extrema lisses ; remède complet = WENO),
+  vortex isentropique (ordre 2.35), exposant de Sedov (0.490 vs 0.5).
+  Extensions : taux de croissance RT/KH vs théorie linéaire (fit sur le
+  journal CSV), problèmes de Riemann 2D à 4 quadrants.
+
 ## Leçons à retenir (notes de conception)
 
 - **BCs physiques des patchs de bord : toujours au niveau fin**
@@ -128,3 +138,9 @@ possibles, par thème et avec leur point d'entrée dans le code.
 - Benchmarks sur Apple Silicon : variance ±30 % sur les petits cas
   (gouverneur de fréquence GPU) — toujours best-of-N, et les gros cas
   sont plus fiables.
+- L'ordre de convergence se mesure **en régime lisse ET sur le bon
+  régime de grilles** : les limiteurs TVD plafonnent à 4/3 aux extrema
+  lisses (sinus), le raidissement non linéaire O(A²) plafonne les tests
+  à retour-sur-IC aux grandes N, et le plancher fp32 plafonne tout en
+  dessous de ~1e-6 — chaque gate doit savoir lequel des trois elle
+  mesure.

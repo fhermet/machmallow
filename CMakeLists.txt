@@ -55,6 +55,11 @@ target_link_libraries(dmr_amr PRIVATE mm_metal)
 add_executable(shear src/drivers/shear.cpp)
 target_link_libraries(shear PRIVATE mm_metal)
 
+# Analytic validation suite (Toro battery, acoustic order, isentropic
+# vortex, Sedov exponent).
+add_executable(analytic_suite src/drivers/analytic_suite.cpp)
+target_include_directories(analytic_suite PRIVATE src)
+
 # Multi-level AMR validation (CPU reference).
 add_executable(ml_amr src/drivers/ml_amr.cpp)
 target_include_directories(ml_amr PRIVATE src)

@@ -130,10 +130,21 @@ inline void predictorBody(device const float4* q, device float4* xL,
     const float4 adv = hx * (fluxX(toPrim(xl)) - fluxX(toPrim(xr))) +
                        hy * (fluxY(toPrim(yb)) - fluxY(toPrim(yt)));
 
-    xL[id] = xl + adv;
-    xR[id] = xr + adv;
-    yB[id] = yb + adv;
-    yT[id] = yt + adv;
+    float4 fxl = xl + adv, fxr = xr + adv;
+    float4 fyb = yb + adv, fyt = yt + adv;
+    // Positivity fallback to first order (mirrors the CPU path).
+    const auto bad = [](float4 c) {
+        if (c.x <= RHO_FLOOR) return true;
+        const float ke = 0.5f * (c.y * c.y + c.z * c.z) / c.x;
+        return c.w - ke <= 0.0f;
+    };
+    if (bad(fxl) || bad(fxr) || bad(fyb) || bad(fyt)) {
+        fxl = fxr = fyb = fyt = q0;
+    }
+    xL[id] = fxl;
+    xR[id] = fxr;
+    yB[id] = fyb;
+    yT[id] = fyt;
 }
 
 inline void fluxXBody(device const float4* xL, device const float4* xR,
