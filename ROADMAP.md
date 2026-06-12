@@ -1,129 +1,101 @@
-# machmallow — pistes futures
+# machmallow — vision et roadmap
 
-La feuille de route initiale (phases 0–7) est complète : solveur Euler +
-Navier-Stokes 2D, AMR block-structured hybride CPU/GPU avec subcycling,
-validé à chaque étage (voir README). Ce document liste les extensions
-possibles, par thème et avec leur point d'entrée dans le code.
+## Vision
 
-## Numérique
+machmallow est un **laboratoire personnel de CFD compressible sur Apple
+Silicon**, à quatre facettes indissociables :
 
-- [x] ~~AMR multi-niveaux (3+)~~ — fait : `AmrML` (CPU) + `AmrGpuML`
-  (hybride, un seul pool de slots pour tous les niveaux), récursion
-  Berger-Colella complète (subcycling, ghosts θ-blendés, refluxing par
-  paire, nesting forcé au regrid, cadence de regrid par niveau), clé
-  `amr.levels` dans `run`. Validé : AmrML(2) ≡ Amr2 bit-exact ; DMR
-  3 niveaux finest 1/1024 en 31 s (rouleaux KH de la ligne de glissement
-  résolus) ; conservation périodique au plancher fp32 à 3 niveaux.
-  **Restes** : checkpoint multi-niveaux ; perf des petits patchs profonds
-  (sync par niveau par sous-pas) ; précision ratio ~1.4 vs uniforme-fin
-  (churn de déraffinement + mémoire du contact → estimateur de
-  Richardson).
-- [ ] **Schémas d'ordre élevé** — WENO5 + RK3-SSP en option du
-  MUSCL-Hancock. Demande 3 ghosts (NG=3) et des stencils plus larges →
-  impact sur le ghost fill AMR et les kernels Metal.
-  *Entrée : `src/numerics/`, `shaders/euler2d.metal`, `core/Grid.hpp` (NG).*
-- [ ] **Ratio de raffinement 4** — réduit le nombre de niveaux nécessaires ;
-  touche prolongation/restriction/refluxing (4 faces fines par face
-  grossière) et le θ-blend (4 sous-pas).
-- [x] ~~Tagging plus riche~~ — fait : critère vitesse
-  (`AmrConfig.tagVelocity`, saut de vitesse normalisé par c locale) en
-  plus du gradient de densité ; validé par `kh_amr` (cisaillement
-  isochore raffiné, invisible au critère densité). Extensions possibles :
-  gradient de pression, estimateur de Richardson.
-- [ ] **Gamma / gaz paramétrables** — `GAMMA` est `constexpr`
-  (`core/Types.hpp`) et dupliqué dans le shader ; passer en paramètre de
-  cas (struct physique + `Params` GPU).
+1. **Comprendre en construisant** — chaque méthode numérique est
+   implémentée from scratch, lisible de bout en bout (mini-AMReX) ;
+2. **Prouver par des références** — rien n'entre sans porte de
+   validation quantitative (solutions exactes, théorie, conservation) ;
+3. **Exploiter et montrer** — étudier la physique des instabilités
+   compressibles avec une expérience native Mac (zéro-copie, temps réel) ;
+4. **Utilisable comme un outil industriel** — simple et pratique : un
+   fichier de cas suffit, le pré-vol attrape les erreurs avant le
+   calcul, le journal suit la convergence, les sorties s'exploitent
+   directement. La cible d'usage : poser un cas et obtenir un résultat
+   fiable sans lire le code.
 
-## Physique
+Règle directrice : **un ajout = un fichier de cas qui le pilote + une
+porte qui le verrouille + une UX au niveau du reste.** Tout passe par le
+système déclaratif et la CI.
 
-- [x] ~~Plomberie visqueuse AMR~~ — `AmrConfig.mu` câblé partout (CPU et
-  GPU, dt visqueux avec réduction ρ_min sur GPU). **Reste** : un cas de
-  validation visqueux *avec raffinement* (couche limite plaque plane /
-  Blasius) — le tagging actuel (gradient de ρ) ne raffine pas les
-  écoulements isochores, voir « tagging plus riche ».
-- [ ] **Parois no-slip** — BC réfléchissante actuelle = slip ; ajouter le
-  miroir complet (u, v inversés) + paroi isotherme/adiabatique pour les
-  cas NS muraux. *Entrée : `core/Boundary.hpp`.*
-- [x] ~~Kelvin-Helmholtz + BCs périodiques~~ — fait : domaines périodiques
-  complets sur AMR (wrap des ghosts de patchs, du refluxing aux raccords
-  et des masques de bords ; conservation exacte vérifiée en domaine
-  fermé par `kh_amr`), preset `kh` dans `run` (`cases/kh.ini`).
-- [x] ~~Rayleigh-Taylor + gravité~~ — fait : source splittée
-  (`[physics] gravity`, énergie au point milieu, cell-locale donc
-  refluxing intact), perturbations `p hydro` (équilibre hydrostatique)
-  et `sing` (seed sinus × gaussienne), murs reflective hydrostatiques
-  sous gravité (le miroir de pression inversait le gradient → pompage
-  d'énergie jusqu'au blow-up, diagnostiqué via le journal CSV).
-  `cases/rt.ini` : zone de mélange turbulente complète à t=12 (1/512).
-  Gates : chute libre exacte (3e-7) + lock-step CPU/GPU gravité.
-  Extension : autres sources (Coriolis, chauffage).
+## Acquis (v1.0 — fondations, complet)
 
-## Performance
+Solveur Euler/Navier-Stokes 2D float32, MUSCL-Hancock + HLLC avec
+positivité, AMR block-structured multi-niveaux hybride CPU/GPU
+(subcycling Berger-Colella, refluxing, nesting, périodique), gravité,
+cas 100 % déclaratifs (régions, fronts RH mobiles, BCs analytiques),
+outillage complet (pré-vol, preview, journal CSV avec résidus,
+checkpoint 2 niveaux, CI macOS) et validation : Sod/Toro T2-T5 vs
+Riemann exact, acoustique (ordre TVD 4/3), vortex isentropique (2.35),
+Sedov (0.490), couche erf visqueuse, chute libre, conservation au
+plancher fp32, lock-steps CPU/GPU partout. Détails : git log.
 
-- [ ] **Pipelining des soumissions GPU** — le pas hybride est synchrone
-  (waitUntilCompleted) car le CPU remplit les ghosts entre deux pas.
-  Piste : découpler ghost fill par dépendances de patchs, ou recouvrir
-  le regrid/reflux CPU avec le pas GPU suivant via double buffering.
-- [ ] **Ghost fill sur GPU** — kernels de copie sibling + prolongation ;
-  supprimerait la section CPU restante (~10 % du pas) et une partie des
-  syncs. Le regrid resterait CPU.
-- [ ] **Kernels fusionnés** — predictor+flux en un kernel avec tuiles en
-  threadgroup memory ; à profiler avant d'investir (le pas est déjà
-  ~80 % calcul GPU utile).
-- [ ] **Profiling Metal System Trace** — nécessite Xcode complet (les CLT
-  seules n'ont pas `xctrace`) ; l'instrumentation chrono intégrée
-  (`AmrGpu::timings`) couvre le besoin en attendant.
+## Jalons
 
-## Qualité / outillage
+### Fil rouge « outil industriel » *(transverse, un peu à chaque jalon)*
+- [ ] Guide utilisateur (poser un cas en 10 minutes, lire le journal,
+  exploiter les sorties) — distinct de la doc du code.
+- [ ] Post-traitement fourni : script de tracé (champs + journal CSV)
+  prêt à l'emploi, sans dépendre de ParaView pour le quotidien.
+- [ ] Messages d'erreur systématiquement actionnables (fichier:ligne,
+  correction suggérée) ; sondes ponctuelles ; checkpoint multi-niveaux
+  (reprendre n'importe quel calcul).
 
-- [x] ~~CI~~ — fait : `.github/workflows/ci.yml` (macos-15) — build + les
-  3 harnais CPU obligatoires + les harnais GPU avec sonde Metal (skip
-  propre si le runner n'a pas de device, échec franc sinon). Attention :
-  les minutes macOS comptent 10× sur les dépôts privés.
-- [x] ~~Configs de cas en fichiers~~ — fait, puis **industrialisé** :
-  solveur 100 % déclaratif (`cases/CaseDef.hpp`) — états nommés, IC par
-  régions (fronts de choc mobiles inclus), perturbations, BCs par côté
-  segmentables + `analytic` (réévaluation des régions au temps t : BC
-  exacte du DMR sans C++). Plus de presets dans run.cpp. Outils :
-  `run --check` (config effective + warnings clés inconnues),
-  `run --list`, `cases/TEMPLATE.ini`, gate `casedef_test` (équivalence
-  bit-près avec les presets historiques), smoke `--check` de tous les
-  cas en CI. Puis : **états Rankine-Hugoniot dérivés** (`shock = etat
-  mach M [dir]`, vitesse de front `speed auto`), **pré-vol** (états
-  affichés, warning cellules non carrées avec correction suggérée,
-  estimation pas/coût/temps) et **`run --preview`** (IC en .vti sans
-  calcul). Extensions possibles : nouvelles formes de régions (ellipse,
-  polygone), perturbations 2D/le long de y, diagnostics CSV (item
-  dédié ci-dessous).
-- [x] ~~Diagnostics intégraux CSV~~ — fait : `[diagnostics] every/file`
-  → journal CSV du calcul (`io/Diagnostics.hpp`) : step, t, dt,
-  cellules, patchs, extrema ρ/p, masse, énergies cinétique/totale,
-  enstrophie, temps mur, débit, et **résidus par équation** (RMS de
-  dU/dt sur la base restreinte : masse, qdm x/y, énergie — le suivi de
-  convergence standard) — composite sur toute la hiérarchie
-  (2 niveaux et ML), flush par ligne. Limitation documentée : la
-  vorticité utilise des différences clampées par grille (biais aux
-  coutures de patchs — tendances fiables, valeurs absolues aux
-  interfaces raides sous-estimées). Extension possible : sondes
-  ponctuelles, quantités au choix.
-- [ ] **Rendu temps réel** — fenêtre Metal affichant ρ pendant la simu
-  (les données sont déjà dans des buffers GPU partagés — il ne manque
-  qu'une passe de rendu et une boucle d'événements).
-- [x] ~~Restart / checkpointing~~ — fait : `io/Checkpoint.hpp` (dump
-  binaire coarse + patchs + t + compteur de pas, `restoreBlocks` dans les
-  deux classes AMR), clés `output.checkpoint` / `restart` dans `run`.
-  Le run coupé/repris est bit-identique au run continu (porte dans
-  `kh_amr`).
+### v1.1 — Voir et mesurer *(démo + labo)*
+Le projet gagne ses yeux et son instrumentation scientifique.
+- [ ] **Rendu temps réel Metal** : fenêtre affichant ρ (ou schlieren)
+  pendant la simu, contours de patchs AMR, pause/reprise. Les données
+  sont déjà dans des buffers GPU partagés — il manque la passe de rendu.
+- [ ] **Taux de croissance RT/KH vs théorie linéaire** : fit du journal
+  CSV (énergie cinétique ~ e^{2σt}) comparé à σ = √(Agk) (RT) et au
+  taux KH ; nouvelle gate dans `analytic_suite`.
+- **Sortie** : démo live du KH/RT + gate de croissance en CI.
 
-- [x] ~~Suite de validation analytique~~ — fait : `analytic_suite` —
-  batterie de Riemann de Toro T2-T5 vs solveur exact (le T2 quasi-vide a
-  exigé un **fix de positivité** : retour à l'ordre 1 local quand la
-  reconstruction produit des faces non physiques, CPU + GPU), onde
-  acoustique périodique (ordre lisse 1.31 ≈ la théorie TVD 4/3 — les
-  limiteurs écrêtent les extrema lisses ; remède complet = WENO),
-  vortex isentropique (ordre 2.35), exposant de Sedov (0.490 vs 0.5).
-  Extensions : taux de croissance RT/KH vs théorie linéaire (fit sur le
-  journal CSV), problèmes de Riemann 2D à 4 quadrants.
+### v1.2 — Physique des mélanges *(labo)*
+De « densités différentes » à « gaz différents ».
+- [ ] **Multi-espèces** : fraction massique advectée + γ(Y) de mélange
+  (schéma quasi-conservatif d'Abgrall, sans oscillations de pression à
+  l'interface) ; γ paramétrable par cas en sous-produit.
+- [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
+  quantitatif), Richtmyer-Meshkov.
+- **Sortie** : gate d'interface (pas d'oscillation de p), bulle He
+  comparée aux vitesses caractéristiques publiées.
+
+### v1.3 — Ordre élevé *(pédago + labo)*
+Lever la limite TVD quantifiée par la suite analytique (ordre 4/3 aux
+extrema lisses).
+- [ ] **WENO5 + RK3-SSP** en option du MUSCL (NG = 3, kernels Metal,
+  impact ghost fill AMR).
+- **Sortie** : acoustique à l'ordre ~5 en lisse, interfaces RT/KH/RM
+  visiblement plus fines à résolution égale.
+
+### v1.4 — La troisième dimension *(démo + pédago)*
+Le grand chantier, mené comme le multi-niveaux : CPU de référence →
+portes de validation → GPU.
+- [ ] Extension 3D du cœur (Grid, schéma, AMR, pool, CaseDef, rendu).
+- **Sortie** : un cas 3D AMR ~100M cellules effectives sur le M4,
+  visualisé en temps réel.
+
+## Backlog (tiré dans un jalon quand il sert, jamais en direct)
+
+Mode stationnaire (local time stepping — donnerait tout leur sens aux
+résidus du journal) ; no-slip + Blasius/Couette ; tagging de Richardson ;
+checkpoint multi-niveaux ; perf (pipelining GPU, ghost fill GPU, syncs
+multi-niveaux) ; sondes ponctuelles ; régions ellipse/polygone ; Riemann
+2D 4-quadrants ; ratio de raffinement 4 ; sources additionnelles
+(Coriolis, chauffage) ; Metal System Trace (nécessite Xcode complet).
+
+## Non-objectifs (pour rester net)
+
+- Pas de MPI / multi-machine — un Mac, c'est le cadre du projet.
+- Pas de modèles de turbulence (RANS/LES) ni de solveur implicite.
+- Pas un code de production en *échelle* (maillages non structurés,
+  généralité tous-azimuts) — mais une **UX de niveau industriel** est,
+  elle, un objectif explicite (facette 4) : la simplicité d'usage prime
+  sur la généralité, la lisibilité du code sur l'optimisation extrême.
 
 ## Leçons à retenir (notes de conception)
 
@@ -144,3 +116,10 @@ possibles, par thème et avec leur point d'entrée dans le code.
   à retour-sur-IC aux grandes N, et le plancher fp32 plafonne tout en
   dessous de ~1e-6 — chaque gate doit savoir lequel des trois elle
   mesure.
+- Murs réfléchissants sous gravité : extrapoler la pression
+  hydrostatiquement dans les ghosts (le miroir inverse le gradient et
+  pompe de l'énergie jusqu'au blow-up).
+- Tagging : les stencils doivent lire les ghosts (jamais clamper aux
+  coutures de patchs) ; le wrap périodique s'applique à TOUS les niveaux
+  y compris les coordonnées parent de la prolongation ; la cadence de
+  regrid doit être par niveau (buffer invariant d'échelle).
