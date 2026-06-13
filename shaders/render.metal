@@ -14,6 +14,7 @@ struct RUniforms {
     int pTot, stride; // pool slot layout
     float lo, hi;     // density color range
     int showGrid;     // 1 = draw patch outlines
+    int ng;           // ghost layers (cell (i,j) lives at index i+ng)
 };
 
 struct VSOut {
@@ -68,7 +69,8 @@ fragment float4 lv_fragment(VSOut in [[stage_in]],
         const uint slot = tbl[(cy / nf) * (nxl / nf) + cx / nf];
         if (slot == 0xffffffffu) continue;
         const int lx = cx % nf, ly = cy % nf;
-        rho = pool[slot * U.stride + (ly + 2) * U.pTot + (lx + 2)].x;
+        rho = pool[slot * U.stride + (ly + U.ng) * U.pTot +
+                   (lx + U.ng)].x;
         if (U.showGrid != 0 &&
             (lx == 0 || ly == 0 || lx == nf - 1 || ly == nf - 1))
             edge = 0.25 + 0.15 * float(l);
@@ -77,7 +79,7 @@ fragment float4 lv_fragment(VSOut in [[stage_in]],
     if (!found) {
         const int cx = clamp(int(in.uv.x * U.nx0), 0, U.nx0 - 1);
         const int cy = clamp(int(in.uv.y * U.ny0), 0, U.ny0 - 1);
-        rho = baseQ[(cy + 2) * (U.nx0 + 4) + cx + 2].x;
+        rho = baseQ[(cy + U.ng) * (U.nx0 + 2 * U.ng) + cx + U.ng].x;
     }
 
     float3 c = colormap((rho - U.lo) / max(U.hi - U.lo, 1e-9f));

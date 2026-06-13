@@ -242,6 +242,14 @@ multi-niveaux) ; sondes ponctuelles ; régions ellipse/polygone ; Riemann
   coutures de patchs) ; le wrap périodique s'applique à TOUS les niveaux
   y compris les coordonnées parent de la prolongation ; la cadence de
   regrid doit être par niveau (buffer invariant d'échelle).
+- **Le shader de rendu lit la même mémoire que le solveur** : le passage
+  NG 2→3 (v1.3) a été vérifié bit-identique sur le chemin DONNÉES
+  (sorties headless), mais le fragment shader du live codait l'offset
+  ghost en dur (`+2`, largeur `nx0+4`) → tous les cas affichés brouillés
+  (quel que soit le schéma) alors que les gates passaient. Offset ghost
+  désormais passé en uniform (`ng`). Leçon : une vérif « bit-identique »
+  doit couvrir TOUS les consommateurs de la mémoire, pas seulement le
+  solveur — le rendu zéro-copie en est un.
 - **KH inviscide raide = mal posé** (σ ∝ k, aucune coupure) : la
   structure fine des enroulements est du bruit de troncature amplifié,
   donc SCHÉMA-DÉPENDANTE. MUSCL et WENO5-HLLC divergent complètement en

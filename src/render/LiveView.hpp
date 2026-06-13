@@ -75,6 +75,7 @@ private:
         std::int32_t nx0, ny0, blockC, levels, pTot, stride;
         float lo, hi;
         std::int32_t showGrid;
+        std::int32_t ng; // ghost layers (must match core/Grid.hpp NG)
     };
 
     void draw_() {
@@ -102,7 +103,8 @@ private:
                           amr_.renderStride(),
                           float(lo_),
                           float(hi_),
-                          grid_ ? 1 : 0};
+                          grid_ ? 1 : 0,
+                          NG};
         enc->setFragmentBuffer(amr_.renderBaseQ(), 0, 0);
         enc->setFragmentBuffer(amr_.renderPoolQ(), 0, 1);
         enc->setFragmentBytes(&u, sizeof(u), 2);
