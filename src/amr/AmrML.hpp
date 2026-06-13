@@ -67,7 +67,6 @@ public:
         assert(nx % cfg.blockC == 0 && ny % cfg.blockC == 0);
         assert(cfg.maxLevels >= 1);
         assert(!(cfg.weno && cfg.species) && "weno is single-gas for now");
-        assert(!(cfg.weno && cfg.mu > 0) && "weno is inviscid for now");
         gas_ = GasPair{cfg.gamma1, cfg.gamma2};
         if (cfg_.species) {
             basePhi_.assign(base.q.size(), 0);
@@ -681,7 +680,7 @@ private:
                 Fxa.assign(g.q.size(), Cons{});
                 Fya.assign(g.q.size(), Cons{});
             }
-            wenoFluxes(g, scratchW_);
+            wenoFluxes(g, scratchW_, cfg_.mu);
             const Real lx = dt / g.dx, ly = dt / g.dy;
             for (int j = NG - 1; j < NG + g.ny; ++j)
                 for (int i = NG - 1; i < NG + g.nx; ++i) {

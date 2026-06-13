@@ -98,7 +98,6 @@ public:
         waveP_ = ctx.makePipeline(lib_, "wave_pool");
 
         assert(!(cfg.weno && cfg.species) && "weno is single-gas");
-        assert(!(cfg.weno && cfg.mu > 0) && "weno is inviscid");
         if (cfg_.weno) {
             coarse_.enableWeno();
             u0P_ = mk(); FxAP_ = mk(); FyAP_ = mk();

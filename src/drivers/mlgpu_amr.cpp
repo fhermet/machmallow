@@ -334,6 +334,83 @@ bool gate4_wenoGpu(MetalContext& ctx) {
            cpu.patchCount(2) == gpu.patchCount(2);
 }
 
+// Viscous WENO5 on the GPU: a diffusing shear layer on a 2-level
+// hierarchy, GPU (AmrGpuML) in lock-step with the CPU AmrML WENO path.
+// Exercises the Metal WENO viscous flux kernel + the pool path.
+bool gate5_wenoViscousGpu(MetalContext& ctx) {
+    constexpr Real MU = Real(5e-3), V0 = Real(0.2);
+    const auto exactV = [&](double x, double t) {
+        return 0.5 * double(V0) *
+               std::erf((x - 0.5) / std::sqrt(4.0 * double(MU) * t));
+    };
+    AmrConfig cfg;
+    cfg.maxLevels = 2;
+    cfg.subcycle = true;
+    cfg.weno = true;
+    cfg.mu = MU;
+    // rho is uniform, so tag on the velocity jump to refine the layer
+    // and exercise the patch (pool) viscous WENO kernel
+    cfg.tagThreshold = Real(1e30);
+    cfg.tagVelocity = Real(0.02);
+    cfg.regridEvery = 2;
+    AmrML cpu(64, 16, 0, 0, 1, Real(0.25), cfg);
+    AmrGpuML gpu(ctx, 64, 16, 0, 0, 1, Real(0.25), cfg);
+    const auto wire = [](auto& amr) {
+        amr.fillPhysicalGhosts = [](auto& g, double) {
+            fillTransmissiveLeft(g);
+            fillTransmissiveRight(g);
+            fillPeriodicY(g);
+        };
+        amr.fillPatchPhysical = [](auto& g, double, unsigned sides) {
+            if (sides & SideLeft) fillTransmissiveLeft(g);
+            if (sides & SideRight) fillTransmissiveRight(g);
+        };
+    };
+    wire(cpu);
+    wire(gpu);
+    const auto ic = [&](Real x, Real) {
+        return toCons({Real(1), 0, Real(exactV(x, 0.05)), 1});
+    };
+    cpu.init(ic);
+    gpu.init(ic);
+
+    double t = 0.05;
+    while (t < 0.2 * (1 - 1e-9)) {
+        const Real dt =
+            std::min(cpu.maxStableDtAll(CFL), Real(0.2 - t));
+        cpu.step(dt, t);
+        gpu.step(dt, t);
+        t += dt;
+    }
+    const GridRef g = gpu.coarseRef();
+    const int bC = gpu.fineCells() / 2;
+    double maxRel = 0, err = 0;
+    int n = 0;
+    const int jrow = NG + 8;
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 64; ++i) {
+            if (gpu.covered(1, i / bC, j / bC)) continue;
+            const Real* pa = &cpu.base.at(NG + i, NG + j).rho;
+            const Real* pb = &g.at(NG + i, NG + j).rho;
+            for (int k = 0; k < NVARS; ++k)
+                maxRel = std::max(maxRel,
+                                  std::fabs(double(pa[k]) - pb[k]) /
+                                      (std::fabs(double(pa[k])) + 1e-3));
+            if (NG + j == jrow) {
+                err += std::fabs(double(toPrim(g.at(NG + i, NG + j)).v) -
+                                 exactV(double(g.xc(NG + i)), 0.2));
+                ++n;
+            }
+        }
+    if (n) err /= n;
+    std::printf("gate 5 — viscous WENO5 shear on 2-level AMR (GPU): "
+                "mean |v-exact| %.3e (gate 5e-3), CPU/GPU max rel diff "
+                "%.3e (gate 1e-2), patches %zu|%zu\n",
+                err, maxRel, cpu.patchCount(1), gpu.patchCount(1));
+    return err < 5e-3 && maxRel < 1e-2 &&
+           cpu.patchCount(1) == gpu.patchCount(1);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -342,7 +419,8 @@ int main(int argc, char** argv) {
     std::printf("GPU: %s\n", ctx.device()->name()->utf8String());
 
     if (!gate1_lockstep(ctx) || !gate2_periodic(ctx) ||
-        !gate3_speciesGpu(ctx) || !gate4_wenoGpu(ctx)) {
+        !gate3_speciesGpu(ctx) || !gate4_wenoGpu(ctx) ||
+        !gate5_wenoViscousGpu(ctx)) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;
     }

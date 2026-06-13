@@ -64,10 +64,14 @@ struct Scratch2D {
 };
 
 // Central-difference viscous fluxes (Stokes stress + Fourier heat flux),
-// subtracted from the convective fluxes already stored in the scratch.
-// Gradients use the t^n cell values; compact normal stencil, 4-point
-// transverse average — fits within the 2 ghost layers.
-inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu) {
+// subtracted from the convective face fluxes. Gradients use the current
+// cell values; compact normal stencil, 4-point transverse average — fits
+// within the ghost ring. Operates on the flux arrays directly so both
+// the MUSCL scratch and the WENO scratch can reuse it (the parabolic
+// term is 2nd-order central in both: only the convective part needs the
+// high-order reconstruction).
+inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
+                             std::vector<Cons>& Fy, Real mu) {
     const Real kT = heatConductivity(mu);
     const Real c23 = Real(2.0 / 3.0), c43 = Real(4.0 / 3.0);
 
@@ -91,7 +95,7 @@ inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu) {
             const Real txy = mu * (uy + vx);
             const Real ub = Real(0.5) * (w00.u + w10.u);
             const Real vb = Real(0.5) * (w00.v + w10.v);
-            Cons& F = s.Fx[g.idx(i, j)];
+            Cons& F = Fx[g.idx(i, j)];
             F.mx -= txx;
             F.my -= txy;
             F.E -= ub * txx + vb * txy + kT * Tx;
@@ -117,11 +121,14 @@ inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu) {
             const Real tyy = mu * (c43 * vy - c23 * ux);
             const Real ub = Real(0.5) * (w00.u + w01.u);
             const Real vb = Real(0.5) * (w00.v + w01.v);
-            Cons& F = s.Fy[g.idx(i, j)];
+            Cons& F = Fy[g.idx(i, j)];
             F.mx -= txy;
             F.my -= tyy;
             F.E -= ub * txy + vb * tyy + kT * Ty;
         }
+}
+inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu) {
+    addViscousFluxes(g, s.Fx, s.Fy, mu);
 }
 
 // Advance one step of size dt. Ghost cells must be filled by the caller.

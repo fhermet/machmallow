@@ -193,6 +193,68 @@ bool gate3_vortex() {
     return ord >= 2 && w64 < m64 / 4;
 }
 
+// Viscous shear layer: v(x,t) = (V0/2) erf((x-0.5)/sqrt(4 nu t)) is an
+// exact solution of compressible NS at uniform rho/p (the transverse
+// momentum decouples into the heat equation). Start from the profile at
+// t0, diffuse to t1, compare — quantifies the WENO viscous flux against
+// the analytic answer and head-to-head with MUSCL.
+double shearError(int N, bool weno) {
+    constexpr Real MU = Real(5e-3), V0 = Real(0.2);
+    constexpr double T0 = 0.05, T1 = 0.2;
+    const auto exactV = [&](double x, double t) {
+        return 0.5 * double(V0) *
+               std::erf((x - 0.5) / std::sqrt(4.0 * double(MU) * t));
+    };
+    Grid g(N, 8, 0, 0, 1, Real(8) / N);
+    for (int j = 0; j < g.toty(); ++j)
+        for (int i = 0; i < g.totx(); ++i)
+            g.at(i, j) =
+                toCons({Real(1), 0, Real(exactV(g.xc(i), T0)), 1});
+    const auto fill = [](Grid& gg) {
+        fillTransmissiveLeft(gg);
+        fillTransmissiveRight(gg);
+        fillPeriodicY(gg);
+    };
+    ScratchW sw;
+    Scratch2D sm;
+    double t = T0;
+    while (t < T1) {
+        const Real dt =
+            std::min(maxStableDt(g, CFL, MU), Real(T1 - t));
+        if (weno) {
+            stepWeno2D(g, dt, sw, fill, MU);
+        } else {
+            fill(g);
+            step2D(g, dt, sm, MU);
+        }
+        t += dt;
+    }
+    double e = 0;
+    const int j = NG + 4;
+    for (int i = NG; i < NG + N; ++i)
+        e += std::fabs(double(toPrim(g.at(i, j)).v) -
+                       exactV(g.xc(i), T1)) *
+             g.dx;
+    return e;
+}
+
+bool gate6_viscousShear() {
+    const double w64 = shearError(64, true);
+    const double w128 = shearError(128, true);
+    const double m128 = shearError(128, false);
+    const double ord = std::log2(w64 / w128);
+    // The viscous flux is the SAME 2nd-order central operator in both
+    // schemes, and with u = 0 / smooth v the convective flux is exactly
+    // benign — so convergence to the exact erf at order ~2 is the
+    // correctness proof; the residual gap to MUSCL is pure RK3-vs-
+    // Hancock temporal constant (same error class, gated < 2x).
+    std::printf("gate 6 — viscous shear (erf) vs exact: L1 %.3e -> "
+                "%.3e, order %.2f (gate >= 1.8); weno %.3e vs muscl "
+                "%.3e at N=128 (gate < 2x)\n",
+                w64, w128, ord, w128, m128);
+    return ord >= 1.8 && w128 < 2 * m128;
+}
+
 // The strongest stage-ghost test there is: a fully refined,
 // non-subcycled 2-level hierarchy on a doubly periodic domain must
 // reproduce the uniform fine grid BIT FOR BIT — every patch ghost is a
@@ -339,6 +401,7 @@ int main() {
     ok = gate3_vortex() && ok;
     ok = gate4_allRefinedBitExact() && ok;
     ok = gate5_sodAmr() && ok;
+    ok = gate6_viscousShear() && ok;
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

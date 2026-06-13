@@ -392,9 +392,6 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(
                     "scheme = weno5 is single-gas for now (no "
                     "[species])");
-            if (acfg.mu > 0)
-                throw std::runtime_error(
-                    "scheme = weno5 is inviscid for now (mu must be 0)");
         } else if (scheme != "muscl") {
             throw std::runtime_error("unknown scheme: " + scheme +
                                      " (expected muscl | weno5)");

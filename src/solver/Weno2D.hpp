@@ -24,6 +24,7 @@
 
 #include "core/Grid.hpp"
 #include "physics/Euler.hpp"
+#include "solver/Muscl2D.hpp" // hllcFluxX/Y, addViscousFluxes
 
 #include <algorithm>
 #include <cmath>
@@ -72,7 +73,9 @@ inline Real weno5(Real v0, Real v1, Real v2, Real v3, Real v4) {
 
 // Face fluxes of the current state into s.Fx/s.Fy (x-faces stored at
 // the left cell's index, like the MUSCL scratch). Ghosts must be valid.
-inline void wenoFluxes(const Grid& g, ScratchW& s) {
+// With mu > 0 the central-difference viscous flux is added to each face
+// (2nd-order parabolic term; the convective part stays WENO5+HLLC).
+inline void wenoFluxes(const Grid& g, ScratchW& s, Real mu = 0) {
     s.resize(g.q.size());
     using wenodetail::weno5;
 
@@ -106,12 +109,15 @@ inline void wenoFluxes(const Grid& g, ScratchW& s) {
     faces(1, true, s.Fx, NG - 1, NG + g.nx, NG, NG + g.ny);
     // y-faces between j and j+1
     faces(g.totx(), false, s.Fy, NG, NG + g.nx, NG - 1, NG + g.ny);
+
+    if (mu > 0) addViscousFluxes(g, s.Fx, s.Fy, mu);
 }
 
 // One SSP-RK3 step; fill(g) refreshes the ghosts and is called before
-// every stage's flux evaluation.
+// every stage's flux evaluation. mu > 0 enables the viscous flux.
 template <class Fill>
-inline void stepWeno2D(Grid& g, Real dt, ScratchW& s, Fill&& fill) {
+inline void stepWeno2D(Grid& g, Real dt, ScratchW& s, Fill&& fill,
+                       Real mu = 0) {
     s.resize(g.q.size());
     const Real lx = dt / g.dx, ly = dt / g.dy;
     const auto applyRhs = [&](Real a, Real b) {
@@ -128,13 +134,13 @@ inline void stepWeno2D(Grid& g, Real dt, ScratchW& s, Fill&& fill) {
     };
     s.u0 = g.q;
     fill(g);
-    wenoFluxes(g, s);
+    wenoFluxes(g, s, mu);
     applyRhs(0, 1);
     fill(g);
-    wenoFluxes(g, s);
+    wenoFluxes(g, s, mu);
     applyRhs(Real(0.75), Real(0.25));
     fill(g);
-    wenoFluxes(g, s);
+    wenoFluxes(g, s, mu);
     applyRhs(Real(1.0 / 3.0), Real(2.0 / 3.0));
 }
 

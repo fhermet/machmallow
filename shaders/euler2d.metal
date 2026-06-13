@@ -768,7 +768,57 @@ inline void wenoFluxBody(device const float4* q, device float4* F,
     }
     L.x = max(L.x, RHO_FLOOR); L.w = max(L.w, P_FLOOR);
     R.x = max(R.x, RHO_FLOOR); R.w = max(R.w, P_FLOOR);
-    const float4 out = xDir ? hllcFluxX(L, R) : hllcFluxY(L, R);
+    float4 out = xDir ? hllcFluxX(L, R) : hllcFluxY(L, R);
+
+    // viscous flux: same 2nd-order central stencil as the MUSCL path
+    // (Stokes stress + Fourier heat flux), evaluated from this stage's
+    // cell values; subtracted from the convective face flux
+    if (P.mu > 0.0f) {
+        const float c43 = 4.0f / 3.0f, c23 = 2.0f / 3.0f;
+        if (xDir) {
+            const float4 w00 = toPrim(q[id]);
+            const float4 w10 = toPrim(q[id + 1]);
+            const float4 w0p = toPrim(q[id + P.tx]);
+            const float4 w0m = toPrim(q[id - P.tx]);
+            const float4 w1p = toPrim(q[id + P.tx + 1]);
+            const float4 w1m = toPrim(q[id - P.tx + 1]);
+            const float ux = (w10.y - w00.y) / P.dx;
+            const float vx = (w10.z - w00.z) / P.dx;
+            const float Tx = (w10.w / w10.x - w00.w / w00.x) / P.dx;
+            const float uy =
+                ((w0p.y + w1p.y) - (w0m.y + w1m.y)) / (4.0f * P.dy);
+            const float vy =
+                ((w0p.z + w1p.z) - (w0m.z + w1m.z)) / (4.0f * P.dy);
+            const float txx = P.mu * (c43 * ux - c23 * vy);
+            const float txy = P.mu * (uy + vx);
+            const float ub = 0.5f * (w00.y + w10.y);
+            const float vb = 0.5f * (w00.z + w10.z);
+            out.y -= txx;
+            out.z -= txy;
+            out.w -= ub * txx + vb * txy + P.kT * Tx;
+        } else {
+            const float4 w00 = toPrim(q[id]);
+            const float4 w01 = toPrim(q[id + P.tx]);
+            const float4 wp0 = toPrim(q[id + 1]);
+            const float4 wm0 = toPrim(q[id - 1]);
+            const float4 wp1 = toPrim(q[id + P.tx + 1]);
+            const float4 wm1 = toPrim(q[id + P.tx - 1]);
+            const float uy = (w01.y - w00.y) / P.dy;
+            const float vy = (w01.z - w00.z) / P.dy;
+            const float Ty = (w01.w / w01.x - w00.w / w00.x) / P.dy;
+            const float ux =
+                ((wp0.y + wp1.y) - (wm0.y + wm1.y)) / (4.0f * P.dx);
+            const float vx =
+                ((wp0.z + wp1.z) - (wm0.z + wm1.z)) / (4.0f * P.dx);
+            const float txy = P.mu * (uy + vx);
+            const float tyy = P.mu * (c43 * vy - c23 * ux);
+            const float ub = 0.5f * (w00.y + w01.y);
+            const float vb = 0.5f * (w00.z + w01.z);
+            out.y -= txy;
+            out.z -= tyy;
+            out.w -= ub * txy + vb * tyy + P.kT * Ty;
+        }
+    }
     F[id] = out;
     FA[id] = (P.rks == 0 ? float4(0.0f) : FA[id]) + P.rkw * out;
 }

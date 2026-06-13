@@ -175,10 +175,21 @@ extrema lisses).
   la CONSTANTE ; (b) e64 de l'onde d'entropie = plancher temporel RK3
   (identique entre variantes à 5 chiffres) — chaque mesure d'ordre
   doit savoir quel plafond elle touche.
+- [x] ~~WENO5 visqueux (Navier-Stokes)~~ — fait : le flux de Stokes +
+  Fourier (différences centrées 2ᵉ ordre, opérateur factorisé partagé
+  avec MUSCL) s'ajoute aux flux de face HLLC à chaque étage RK, CPU +
+  Metal + AMR. `scheme = weno5` accepte désormais `mu > 0`. Gates :
+  couche de cisaillement erf vs solution exacte à l'ordre 2.15
+  (`weno_suite`), parité CPU/GPU 4.4e-4 sur hiérarchie 2 niveaux
+  raffinée (`mlgpu_amr` gate 5) ; KH visqueux 3 niveaux tourne en
+  bout-en-bout. Note : avec u=0/v lisse l'opérateur visqueux est
+  identique à MUSCL, donc l'écart résiduel (~1.5×) est le seul
+  constant temporel RK3-vs-Hancock — la preuve de correction est
+  l'ordre 2 vers l'exact.
 - **Sortie v1.3 : ATTEINTE** — vortex à l'ordre ≥3 et 6× moins
   dissipé que MUSCL, interfaces KH/RM visiblement plus fines à
-  résolution égale ; WENO5 + HLLC du fichier de cas (`scheme = weno5`)
-  jusqu'au GPU, en lock-step CPU.
+  résolution égale ; WENO5 + HLLC (Euler ET Navier-Stokes) du fichier
+  de cas (`scheme = weno5`) jusqu'au GPU, en lock-step CPU.
 
 ### v1.4 — La troisième dimension *(démo + pédago)*
 Le grand chantier, mené comme le multi-niveaux : CPU de référence →
