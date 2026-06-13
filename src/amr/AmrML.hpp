@@ -67,7 +67,8 @@ public:
         : base(nx, ny, x0, y0, lx, ly), cfg_(cfg), nf_(2 * cfg.blockC) {
         assert(nx % cfg.blockC == 0 && ny % cfg.blockC == 0);
         assert(cfg.maxLevels >= 1);
-        gas_ = GasPair{cfg.gamma1, cfg.gamma2};
+        if (cfg_.react) cfg_.species = true; // reaction rides on phi=rho*lam
+        gas_ = GasPair{cfg_.gamma1, cfg_.gamma2};
         if (cfg_.species) {
             basePhi_.assign(base.q.size(), 0);
             baseGm_.assign(base.q.size(), gas_.Gamma(0));
@@ -633,6 +634,32 @@ private:
         }
     }
 
+    // Strang reaction half-step over a level's cells (base or patches):
+    // constant-volume per-cell source — heat into E, progress lambda
+    // (carried as phi = rho*lambda) advanced. lambda transport is done
+    // by the species hyperbolic step; here only the source acts.
+    void reactLevel_(int l, Real dt) {
+        const auto cells = [&](Grid& g, std::vector<Real>& phi) {
+            for (int j = NG; j < NG + g.ny; ++j)
+                for (int i = NG; i < NG + g.nx; ++i) {
+                    const std::size_t id = g.idx(i, j);
+                    Cons& c = g.q[id];
+                    const Real rho = std::max(c.rho, RHO_FLOOR);
+                    const Real ke =
+                        Real(0.5) * (c.mx * c.mx + c.my * c.my) / rho;
+                    Real eInt = (c.E - ke) / rho;
+                    Real lam =
+                        std::clamp(phi[id] / rho, Real(0), Real(1));
+                    react(eInt, lam, dt, cfg_.reaction, gas_.gamma1);
+                    c.E = rho * eInt + ke;
+                    phi[id] = rho * lam;
+                }
+        };
+        if (l == 0) cells(base, basePhi_);
+        else
+            for (Patch& p : lvls_[l - 1].patches) cells(p.grid, p.phi);
+    }
+
     void stepLevel_(int l, Real dt) {
         if (l == 0) {
             if (cfg_.species)
@@ -791,11 +818,17 @@ private:
                       Real thSpan) {
         const bool hasKids =
             (l + 1 < cfg_.maxLevels) && !lvls_[l].patches.empty();
-        if (hasKids) saveOld_(l);
+        if (hasKids) saveOld_(l); // captures the true start (incl. phi)
+        // Strang split: R(dt/2) . A(dt) . R(dt/2). The reaction is a
+        // per-cell source (no flux), so it is bracketed around this
+        // level's own hyperbolic advance at this level's dt; children
+        // react in their own recursion.
+        if (cfg_.react) reactLevel_(l, dt / 2);
         if (cfg_.weno)
             stepLevelWeno_(l, dt, t, thBase, thSpan);
         else
             stepLevel_(l, dt);
+        if (cfg_.react) reactLevel_(l, dt / 2);
         if (hasKids) {
             const int lc = l + 1;
             if (cfg_.reflux) refluxBackOut_(lc, dt);

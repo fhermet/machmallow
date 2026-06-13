@@ -254,11 +254,18 @@ source) et l'EOS à Γ variable.
   une paroi réfléchissante ; (b) Ea trop grand / A trop petit → la zone
   de réaction se découple du choc (échec de détonabilité) — il faut une
   réaction assez rapide et peu raide en T (Ea=8, zone ~10 mailles).
-- [ ] GPU (kernel source par cellule) + AMR (raffiner la fine zone de
-  réaction — cas d'usage idéal) + `[reaction]` déclaratif (A, Ea, q).
+- [x] ~~AMR (CPU) : réaction dans la hiérarchie multi-niveaux~~ — fait :
+  `reactLevel_` encadre le pas hyperbolique de chaque niveau (Strang
+  par niveau, source locale donc sans interaction avec reflux/restrict),
+  `cfg.react` (implique species, γ1=γ2). Gate : détonation CJ sur AMR
+  3 niveaux, le raffinement (tagué sur le saut de densité) suit le front
+  mobile, D_CJ préservé à **+0.8 %%** (vs +1.3 %% uniforme).
+- [ ] GPU (kernel source par cellule, lock-step) + `[reaction]`
+  déclaratif (A, Ea, q, Tign) dans le système de cas.
 - **Validation par étapes** (méthodo no-slip) : réacteur 0D ✓
   (isotherme exact, équilibre adiabatique, raideur) → détonation CJ 1D ✓
-  (D_CJ à 1.3 %%) → reste la cellule de détonation 2D.
+  (D_CJ à 1.3 %% uniforme, +0.8 %% sur AMR 3 niveaux) → reste la
+  cellule de détonation 2D.
 - **Sortie** : détonation CJ à la vitesse théorique, structure ZND
   résolue, cellule de détonation 2D raffinée par AMR.
 - Effort : cœur CPU + gate CJ ~1-2 sessions ; intégration GPU/AMR

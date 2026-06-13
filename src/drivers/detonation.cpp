@@ -19,6 +19,7 @@
 //     F = c0^2/(g-1) + D^2/2 + q - w1^2 (g+1)/(2(g-1)).
 // (Strong-q limit reproduces D_CJ -> sqrt(2(g^2-1) q), the known result.)
 
+#include "amr/AmrML.hpp"
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "physics/Reaction.hpp"
@@ -92,6 +93,76 @@ void fillBC(Grid& g, std::vector<Real>& phi, std::vector<Real>& gm) {
             }
 }
 
+// Least-squares leading-shock speed from (t, x_front) over a window.
+double fitSpeed(const std::vector<double>& ts,
+                const std::vector<double>& xs, double xlo, double xhi,
+                int& n) {
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    n = 0;
+    for (std::size_t k = 0; k < ts.size(); ++k)
+        if (xs[k] > xlo && xs[k] < xhi) {
+            sx += ts[k]; sy += xs[k];
+            sxx += ts[k] * ts[k]; sxy += ts[k] * xs[k];
+            ++n;
+        }
+    return n >= 2 ? (n * sxy - sx * sy) / (n * sxx - sx * sx) : 0;
+}
+
+// The same closed-tube CJ detonation on a 2-level AMR hierarchy, the
+// refinement tracking the shock + reaction zone (tagged on the density
+// gradient). Validates the Strang reaction through the recursive AMR
+// step; returns the measured leading-shock speed.
+double runAmr(const Reaction& r, const GasPair& gas, double q, double L,
+              double Dcj) {
+    AmrConfig cfg;
+    cfg.maxLevels = 3;        // base 1/500 -> finest 1/2000 (= uniform)
+    cfg.subcycle = false;     // all levels at the finest dt
+    cfg.react = true;         // implies species (phi = rho*lambda)
+    cfg.gamma1 = cfg.gamma2 = GAM;
+    cfg.reaction = r;
+    cfg.tagThreshold = Real(0.10); // the shock's density jump tags it
+    cfg.regridEvery = 2;           // track the fast-moving front
+    const int nb = 512, ny = 8;
+    AmrML amr(nb, ny, 0, 0, L, Real(ny) * (L / nb), cfg);
+    amr.fillPhysicalGhosts = [](Grid& g, double) {
+        fillReflectiveLeft(g);
+        fillTransmissiveRight(g);
+        fillPeriodicY(g);
+    };
+    amr.fillPatchPhysical = [](Grid& g, double, unsigned s) {
+        if (s & SideLeft) fillReflectiveLeft(g);
+        if (s & SideRight) fillTransmissiveRight(g);
+    };
+    amr.init(
+        [&](Real x, Real) {
+            const bool drive = x < Real(0.2);
+            return toConsG({RHO0, 0, 0, drive ? Real(30) : P0},
+                           gas.Gamma(0));
+        },
+        [](Real x, Real) { return x < Real(0.2) ? Real(1) : Real(0); });
+
+    const int jr = NG + ny / 2;
+    const auto frontX = [&]() {
+        const GridRef b = amr.coarseRef();
+        for (int i = NG + b.nx - 1; i >= NG; --i)
+            if (toPrim(b.at(i, jr)).p > Real(1.5) * P0)
+                return double(b.xc(i));
+        return 0.0;
+    };
+    double t = 0;
+    std::vector<double> ts, xs;
+    const double tEnd = 1.5;
+    while (t < tEnd) {
+        const Real dt = std::min(amr.maxStableDtAll(CFL), Real(tEnd - t));
+        amr.step(dt, t);
+        t += dt;
+        ts.push_back(t);
+        xs.push_back(frontX());
+    }
+    int n = 0;
+    return fitSpeed(ts, xs, 0.6 * L, 0.85 * L, n);
+}
+
 } // namespace
 
 int main() {
@@ -143,38 +214,32 @@ int main() {
         xs.push_back(frontX());
     }
 
-    // Least-squares leading-shock speed over a position window.
-    const auto speed = [&](double xlo, double xhi, int& np) {
-        double sx = 0, sy = 0, sxx = 0, sxy = 0;
-        int n = 0;
-        for (std::size_t k = 0; k < ts.size(); ++k)
-            if (xs[k] > xlo * L && xs[k] < xhi * L) {
-                sx += ts[k]; sy += xs[k];
-                sxx += ts[k] * ts[k]; sxy += ts[k] * xs[k];
-                ++n;
-            }
-        np = n;
-        return n >= 2 ? (n * sxy - sx * sy) / (n * sxx - sx * sx) : 0;
-    };
-    // relaxation diagnostic: speed in successive windows
+    int n = 0;
+    const double Dmeas = fitSpeed(ts, xs, 0.6 * L, 0.85 * L, n);
+    // relaxation diagnostic: the overdriven ignition decays to CJ
     for (double w0 : {0.2, 0.4, 0.6}) {
         int np;
-        const double D = speed(w0, w0 + 0.2, np);
+        const double D = fitSpeed(ts, xs, w0 * L, (w0 + 0.2) * L, np);
         std::printf("  window [%.1f,%.1f]L: D=%.4f (%.1f%%)\n", w0,
                     w0 + 0.2, D, 100 * (D / Dcj - 1));
     }
-    int n = 0;
-    const double Dmeas = speed(0.6, 0.85, n);
+
+    // ---- same detonation through the multi-level AMR (refines the
+    // reaction zone) -> validate the Strang reaction in AmrML ----
+    const double Damr = runAmr(r, gas, q, L, Dcj);
 
     std::printf("CJ detonation: q=%.1f, gamma=%.1f, c0=%.3f\n", q,
                 double(GAM), c0);
-    std::printf("  D_CJ exact   = %.4f  (%.2f c0; strong-limit "
+    std::printf("  D_CJ exact      = %.4f  (%.2f c0; strong-limit "
                 "sqrt(2(g^2-1)q) = %.4f)\n",
                 Dcj, Dcj / c0, std::sqrt(2 * (GAM * GAM - 1) * q));
-    std::printf("  D measured   = %.4f  (%.1f%%, %d pts)\n", Dmeas,
-                100 * (Dmeas / Dcj - 1), n);
+    std::printf("  D uniform       = %.4f  (%.1f%%, gate 3%%)\n", Dmeas,
+                100 * (Dmeas / Dcj - 1));
+    std::printf("  D on 2-level AMR= %.4f  (%.1f%%, gate 5%%)\n", Damr,
+                100 * (Damr / Dcj - 1));
 
-    const bool ok = std::fabs(Dmeas / Dcj - 1) < 0.03;
+    const bool ok = std::fabs(Dmeas / Dcj - 1) < 0.03 &&
+                    std::fabs(Damr / Dcj - 1) < 0.05;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

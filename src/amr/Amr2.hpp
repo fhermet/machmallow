@@ -13,6 +13,7 @@
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "numerics/Limiter.hpp"
+#include "physics/Reaction.hpp"
 #include "solver/Muscl2D.hpp"
 
 #include <algorithm>
@@ -35,9 +36,12 @@ struct AmrConfig {
     bool subcycle = false;      // coarse at dt, fine at 2 x dt/2
     Real mu = 0;                // dynamic viscosity (0 = inviscid Euler)
     Real gx = 0, gy = 0;        // gravity (split source)
-    bool species = false;
+    bool species = false; // two-gas model (AmrML/AmrGpuML)
     bool weno = false; // WENO5 + SSP-RK3 instead of MUSCL-Hancock
-                       // (multi-level classes only, single-gas)       // two-gas model (AmrML/AmrGpuML)
+                       // (multi-level classes only, single-gas)
+    bool react = false;   // single-step reaction (implies species,
+                          // gamma1 = gamma2); Strang-split source
+    Reaction reaction;    // rate (A, Ea), heat q, ignition Tign
     Real gamma1 = Real(1.4), gamma2 = Real(1.4);
     bool periodicX = false;     // periodic domain (patch ghosts, reflux
     bool periodicY = false;     // and side masks wrap accordingly)
