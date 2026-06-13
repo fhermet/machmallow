@@ -60,6 +60,10 @@ target_link_libraries(shear PRIVATE mm_metal)
 add_executable(analytic_suite src/drivers/analytic_suite.cpp)
 target_include_directories(analytic_suite PRIVATE src)
 
+# GPU/hybrid vs pure-CPU throughput benchmark (study, run manually).
+add_executable(benchmark src/drivers/benchmark.cpp)
+target_link_libraries(benchmark PRIVATE mm_metal)
+
 # Convergence study: observed L1 order of both schemes (smooth + Sod).
 add_executable(convergence src/drivers/convergence.cpp)
 target_include_directories(convergence PRIVATE src)

@@ -39,8 +39,9 @@ plancher fp32, lock-steps CPU/GPU partout. Détails : git log.
 - [ ] Guide utilisateur (poser un cas en 10 minutes, lire le journal,
   exploiter les sorties) — distinct de la doc du code.
 - [~] Post-traitement fourni : amorcé — `tools/plot_convergence.py`
-  (courbes log-log d'ordre depuis un CSV) ; reste le tracé des champs
-  et du journal. Sans dépendre de ParaView pour le quotidien.
+  (courbes d'ordre) et `tools/plot_benchmark.py` (apport GPU vs taille,
+  depuis le driver `benchmark`) ; reste le tracé des champs et du
+  journal. Sans dépendre de ParaView pour le quotidien.
 - [ ] Messages d'erreur systématiquement actionnables (fichier:ligne,
   correction suggérée) ; sondes ponctuelles ; checkpoint multi-niveaux
   (reprendre n'importe quel calcul).
