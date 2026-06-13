@@ -231,10 +231,18 @@ d'Arrhenius** + variable d'avancement λ + chaleur de réaction q (« Euler
 réactif ») ; PAS de chimie détaillée multi-espèces (hors-périmètre, type
 CHEMKIN). Le terme source réutilise le précédent de la gravité (split
 source) et l'EOS à Γ variable.
-- [ ] Intégrateur de réaction raide : splitting de Strang + ODE par
-  cellule (RK sous-cyclé ou implicite LOCAL — pas l'implicite global en
-  espace, qui reste non-objectif). C'est le cœur du travail et le risque
-  principal (raideur exponentielle d'Arrhenius).
+- [x] ~~Intégrateur de réaction raide (ODE par cellule)~~ — fait :
+  `Reaction.hpp` (Arrhenius une étape) + `react()` RK4 sous-cyclé
+  adaptatif. Énergie asservie à l'avancement (e = e0 + q·Δλ exact),
+  donc conservatif par construction et sans incohérence de clamp.
+  Driver `reactor` (réacteur 0D), gates : isotherme exact (err 8e-8),
+  équilibre adiabatique (T = T0+(γ-1)q exact, énergie à 5e-7), raide
+  (A=1e4, dt grossier → borné et convergé : le sous-cyclage gère la
+  raideur). Reste : splitting de Strang pour COUPLER au flot (le risque
+  de raideur, lui, est levé).
+- [ ] Splitting de Strang : advection hyperbolique + `react()` par
+  cellule (implicite LOCAL si besoin — pas l'implicite global en
+  espace, non-objectif).
 - [ ] Couplage chaleur ↔ énergie + transport de λ (sur le transport
   d'espèce existant).
 - [ ] GPU (kernel source par cellule) + AMR (raffiner la fine zone de

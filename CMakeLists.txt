@@ -60,6 +60,10 @@ target_link_libraries(shear PRIVATE mm_metal)
 add_executable(analytic_suite src/drivers/analytic_suite.cpp)
 target_include_directories(analytic_suite PRIVATE src)
 
+# v1.5 reacting flow: 0D constant-volume reactor (reaction integrator).
+add_executable(reactor src/drivers/reactor.cpp)
+target_include_directories(reactor PRIVATE src)
+
 # No-slip wall validation: Blasius flat-plate boundary layer (GPU).
 add_executable(blasius src/drivers/blasius.cpp)
 target_link_libraries(blasius PRIVATE mm_metal)

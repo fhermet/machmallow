@@ -30,6 +30,7 @@ jobs:
           ./build/species_suite
           ./build/weno_suite
           ./build/convergence
+          ./build/reactor
           ./build/casedef_test
           for c in cases/*.ini; do ./build/run --check "$c"; done
 
