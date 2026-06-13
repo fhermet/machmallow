@@ -240,16 +240,25 @@ source) et l'EOS à Γ variable.
   (A=1e4, dt grossier → borné et convergé : le sous-cyclage gère la
   raideur). Reste : splitting de Strang pour COUPLER au flot (le risque
   de raideur, lui, est levé).
-- [ ] Splitting de Strang : advection hyperbolique + `react()` par
-  cellule (implicite LOCAL si besoin — pas l'implicite global en
-  espace, non-objectif).
-- [ ] Couplage chaleur ↔ énergie + transport de λ (sur le transport
-  d'espèce existant).
+- [x] ~~Splitting de Strang + couplage chaleur/λ (1D)~~ — fait :
+  R(dt/2)·A(dt)·R(dt/2), A = `step2DY` réutilisé avec γ1=γ2 (λ porté
+  par φ=ρλ, Γ constant), R = `reactGrid` (réaction à volume constant
+  par cellule : chaleur dans E, λ avancé). Driver `detonation`.
+- [x] ~~Détonation de Chapman-Jouguet 1D~~ — fait : D_CJ exact résolu
+  numériquement (Rankine-Hugoniot avec chaleur + tangence CJ ; limite
+  forte → √(2(γ²−1)q) vérifiée). Tube fermé (paroi réfléchissante,
+  allumage chaud) : la détonation surconduite **relaxe vers CJ** par la
+  détente de Taylor — vitesse mesurée +5.6 %% → +2.5 %% → +1.4 %% en
+  fenêtres successives, **+1.3 %% établie** vs D_CJ=4.68. Leçons : (a)
+  bord transmissif = réservoir infini → surconduite permanente, il faut
+  une paroi réfléchissante ; (b) Ea trop grand / A trop petit → la zone
+  de réaction se découple du choc (échec de détonabilité) — il faut une
+  réaction assez rapide et peu raide en T (Ea=8, zone ~10 mailles).
 - [ ] GPU (kernel source par cellule) + AMR (raffiner la fine zone de
   réaction — cas d'usage idéal) + `[reaction]` déclaratif (A, Ea, q).
-- **Validation par étapes** (méthodo no-slip) : réacteur 0D (délai
-  d'allumage / équilibre exacts) → **détonation Chapman-Jouguet 1D**
-  (vitesse D_CJ exacte, structure ZND) → cellule de détonation 2D.
+- **Validation par étapes** (méthodo no-slip) : réacteur 0D ✓
+  (isotherme exact, équilibre adiabatique, raideur) → détonation CJ 1D ✓
+  (D_CJ à 1.3 %%) → reste la cellule de détonation 2D.
 - **Sortie** : détonation CJ à la vitesse théorique, structure ZND
   résolue, cellule de détonation 2D raffinée par AMR.
 - Effort : cœur CPU + gate CJ ~1-2 sessions ; intégration GPU/AMR
