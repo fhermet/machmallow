@@ -124,10 +124,10 @@ De « densités différentes » à « gaz différents ».
   transmissifs même sur les axes périodiques (wrap désormais).
 - [ ] Double-flux Abgrall-Karni en option si les 0.6 %% gênent
   (backlog v1.2).
-- [ ] **Cas** : vraie bulle d'hélium dans l'air (Haas & Sturtevant
-  quantitatif), Richtmyer-Meshkov.
-- **Sortie** : gate d'interface (pas d'oscillation de p), bulle He
-  comparée aux vitesses caractéristiques publiées.
+- **Sortie v1.2 : ATTEINTE** — bulle He (Haas & Sturtevant) et
+  Richtmyer-Meshkov air/SF6 pilotées par fichier de cas, gate
+  d'interface (pas d'oscillation de p) + gate quantitative des
+  vitesses caractéristiques (`hs_suite`) en CI.
 
 ### v1.3 — Ordre élevé *(pédago + labo)*
 Lever la limite TVD quantifiée par la suite analytique (ordre 4/3 aux
@@ -175,8 +175,10 @@ extrema lisses).
   la CONSTANTE ; (b) e64 de l'onde d'entropie = plancher temporel RK3
   (identique entre variantes à 5 chiffres) — chaque mesure d'ordre
   doit savoir quel plafond elle touche.
-- **Sortie** : acoustique/vortex à l'ordre ≥3 en lisse, interfaces
-  RT/KH/RM visiblement plus fines à résolution égale.
+- **Sortie v1.3 : ATTEINTE** — vortex à l'ordre ≥3 et 6× moins
+  dissipé que MUSCL, interfaces KH/RM visiblement plus fines à
+  résolution égale ; WENO5 + HLLC du fichier de cas (`scheme = weno5`)
+  jusqu'au GPU, en lock-step CPU.
 
 ### v1.4 — La troisième dimension *(démo + pédago)*
 Le grand chantier, mené comme le multi-niveaux : CPU de référence →
@@ -229,3 +231,14 @@ multi-niveaux) ; sondes ponctuelles ; régions ellipse/polygone ; Riemann
   coutures de patchs) ; le wrap périodique s'applique à TOUS les niveaux
   y compris les coordonnées parent de la prolongation ; la cadence de
   regrid doit être par niveau (buffer invariant d'échelle).
+- **KH inviscide raide = mal posé** (σ ∝ k, aucune coupure) : la
+  structure fine des enroulements est du bruit de troncature amplifié,
+  donc SCHÉMA-DÉPENDANTE. MUSCL et WENO5-HLLC divergent complètement en
+  petits billows (motifs différents, pas seulement +14-19 %%
+  d'enstrophie sur le rouleau primaire), et raffiner donne PLUS
+  d'enroulements, jamais une convergence. Pour comparer deux schémas il
+  faut une coupure physique — `mu > 0` ou une couche de cisaillement
+  tanh d'épaisseur résolue (cf. Lecoanet 2016) — alors les deux
+  convergent vers le même champ, WENO5 à plus basse résolution. Le
+  splitting de flux (LLF) aggrave : il dissipe ∝ |u|+c sur TOUTES les
+  ondes, donc lisse contacts et cisaillement que HLLC garde nets.
