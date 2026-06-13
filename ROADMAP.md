@@ -280,7 +280,8 @@ source) et l'EOS à Γ variable.
 - [x] ~~Déflagration (chemin réactif visqueux)~~ — fait : `step2DY`
   porte le flux de Stokes+Fourier (mu > 0, opérateur partagé) + dt
   visqueux + `species + mu` autorisé. La flamme se propage par
-  CONDUCTION (driver `deflagration` + `cases/deflagration.ini`, CPU) :
+  CONDUCTION (driver `deflagration` — étude manuelle, hors CI car
+  dt ~ dx²/ν sur une longue propagation ; + `cases/deflagration.ini`) :
   subsonique (Mach 0.17), 3× plus rapide qu'avec la seule diffusion
   numérique (mu=0). q petit pour que la compression seule ne puisse pas
   allumer (T_brûlé > Tign de peu) → c'est la conduction qui mène.
