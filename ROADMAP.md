@@ -186,10 +186,22 @@ extrema lisses).
   identique à MUSCL, donc l'écart résiduel (~1.5×) est le seul
   constant temporel RK3-vs-Hancock — la preuve de correction est
   l'ordre 2 vers l'exact.
+- [x] ~~WENO5 bi-gaz (croise v1.2 + v1.3)~~ — fait : reconstruction
+  WENO5 des états de face (ρ,u,v,p) + Y + Γ, HLLC γ-par-côté, flux
+  d'espèce upwindé, Γ quasi-conservatif sur la vitesse de contact ;
+  méthode des lignes donc pas de terme demi-pas (face-p et face-Γ
+  synchrones par construction). CPU (cœur + AMR) et GPU (kernels Metal
+  + pool). `scheme = weno5` accepte désormais `[species]`. Gates :
+  Sod bi-γ uniforme L1 1.49e-3, AMR 3 niveaux L1 4.09e-3 (entre MUSCL
+  3.1e-3 et WENO mono-gaz 4.27e-3), GPU en lock-step CPU complet
+  (L1 = CPU à 4 chiffres, masse d'espèce 4.4e-6). Bug attrapé : le
+  wave kernel manquait dans `enableWenoSpecies` (crash de
+  `gpu.maxStableDtAll`), invisible car la gate pilotait le `dt` par le
+  CPU → la gate exerce désormais aussi la réduction GPU.
 - **Sortie v1.3 : ATTEINTE** — vortex à l'ordre ≥3 et 6× moins
   dissipé que MUSCL, interfaces KH/RM visiblement plus fines à
-  résolution égale ; WENO5 + HLLC (Euler ET Navier-Stokes) du fichier
-  de cas (`scheme = weno5`) jusqu'au GPU, en lock-step CPU.
+  résolution égale ; WENO5 + HLLC (Euler, Navier-Stokes ET bi-gaz) du
+  fichier de cas (`scheme = weno5`) jusqu'au GPU, en lock-step CPU.
 
 ### v1.4 — La troisième dimension *(démo + pédago)*
 Le grand chantier, mené comme le multi-niveaux : CPU de référence →
