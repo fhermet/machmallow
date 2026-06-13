@@ -102,6 +102,10 @@ public:
                 std::size_t(capacity_) * stride_ * sizeof(PhiG),
                 MTL::ResourceStorageModeShared);
         };
+        if (cfg_.react) { // reaction rides on the species scalar
+            assert(!cfg_.weno && "weno + reaction not supported");
+            cfg_.species = true;
+        }
         if (cfg_.weno && cfg_.species) {
             // WENO5 + RK3 two-gas: scalar state + per-stage RK starts +
             // both conserved and species flux sums (for refluxing)
@@ -131,6 +135,10 @@ public:
             fluxYYP_ = ctx.makePipeline(lib_, "flux_y_y_pool");
             updateYP_ = ctx.makePipeline(lib_, "update_y_pool");
             waveYP_ = ctx.makePipeline(lib_, "wave_y_pool");
+            if (cfg_.react) {
+                coarse_.enableReaction(cfg_.reaction);
+                reactPP_ = ctx.makePipeline(lib_, "react_pool");
+            }
         }
     }
 
@@ -149,7 +157,7 @@ public:
             if (b) b->release();
         for (MTL::ComputePipelineState* p :
              {wfluxXP_, wfluxYP_, rkUpdP_, wfluxXYP_, wfluxYYP_,
-              rkUpdYP_})
+              rkUpdYP_, reactPP_})
             if (p) p->release();
         for (MTL::ComputePipelineState* p :
              {predictorP_, fluxXP_, fluxYP_, updateP_, waveP_})
@@ -480,6 +488,23 @@ private:
             encodePool_(cmd, l, fluxYP_, {yBP_, yTP_, qP_, FyP_}, dt, nf_,
                         nf_ + 1);
             encodePool_(cmd, l, updateP_, {qP_, FxP_, FyP_}, dt, nf_, nf_);
+        }
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+
+    // Strang reaction half-step (constant-volume per-cell source) on a
+    // level: the base via coarse_.encodeReact, the patches via the pool
+    // react kernel. Mirrors AmrML::reactLevel_.
+    void reactLevel_(int l, Real dt) {
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        if (l == 0) {
+            coarse_.encodeReact(cmd, dt);
+        } else if (!lvls_[l - 1].patches.empty()) {
+            Euler2DGpu::Params p = poolParams_(l, dt);
+            p.rA = cfg_.reaction.A; p.rEa = cfg_.reaction.Ea;
+            p.rq = cfg_.reaction.q; p.rTign = cfg_.reaction.Tign;
+            encodePoolP_(cmd, l, reactPP_, {qP_, sP_}, p, nf_, nf_);
         }
         cmd->commit();
         cmd->waitUntilCompleted();
@@ -878,10 +903,13 @@ private:
         const bool hasKids =
             (l + 1 < cfg_.maxLevels) && !lvls_[l].patches.empty();
         if (hasKids) saveOld_(l);
+        // Strang: R(dt/2) . A(dt) . R(dt/2), per level (local source).
+        if (cfg_.react) reactLevel_(l, dt / 2);
         if (cfg_.weno)
             stepLevelWeno_(l, dt, t, thBase, thSpan);
         else
             stepLevel_(l, dt);
+        if (cfg_.react) reactLevel_(l, dt / 2);
         if (hasKids) {
             const int lc = l + 1;
             if (cfg_.reflux) refluxBackOut_(lc, dt);
@@ -1292,6 +1320,7 @@ private:
     MTL::ComputePipelineState *wfluxXYP_ = nullptr, *wfluxYYP_ = nullptr,
                               *rkUpdYP_ = nullptr;
     MTL::Buffer *s0P_ = nullptr, *sFxAP_ = nullptr, *sFyAP_ = nullptr;
+    MTL::ComputePipelineState* reactPP_ = nullptr; // reaction pool source
 };
 
 } // namespace mm

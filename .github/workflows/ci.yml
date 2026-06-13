@@ -31,7 +31,6 @@ jobs:
           ./build/weno_suite
           ./build/convergence
           ./build/reactor
-          ./build/detonation
           ./build/casedef_test
           for c in cases/*.ini; do ./build/run --check "$c"; done
 
@@ -56,6 +55,7 @@ jobs:
           ./build/dmr_gpu 60
           ./build/dmr_amr 32 gpu
           ./build/mlgpu_amr 32
+          ./build/detonation
           ./build/hs_suite
           ./build/blasius
           ./build/run cases/sod.ini

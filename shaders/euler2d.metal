@@ -24,6 +24,7 @@ struct Params {
     float g1, g2; // two-gas gammas (species kernels only)
     int rks;            // WENO/RK3: stage index (0, 1, 2)
     float rka, rkb, rkw; // q = rka*u0 + rkb*(q + dt L); flux weight
+    float rA, rEa, rq, rTign; // single-step reaction (source kernels)
 };
 
 // ---- physics ------------------------------------------------------------
@@ -1071,4 +1072,64 @@ kernel void rk_update_y_pool(device float4* q [[buffer(0)]],
     rkUpdateYBody(q, sc, u0, s0, Fx, Fy, sFx, sFy, P,
                   int(slots[g.z]) * P.stride, int(g.x) + NG,
                   int(g.y) + NG);
+}
+
+// ---- reaction source (v1.5, mirrors physics/Reaction.hpp react()) ---------
+// Per-cell constant-volume Strang half-step: progress lambda rides on
+// sc.x = rho*lambda; internal energy is slaved to progress (e = e0 +
+// q*(lambda-lambda0)), so we integrate lambda alone with an adaptive
+// sub-cycled RK4 and set the energy algebraically. g1 == g2 (single gas).
+
+inline float reactRate(float l, float e0, float lam0,
+                       constant Params& P) {
+    if (l >= 1.0f) return 0.0f;
+    const float T = (P.g1 - 1.0f) * (e0 + P.rq * (l - lam0));
+    if (T <= P.rTign) return 0.0f;
+    return P.rA * (1.0f - l) * exp(-P.rEa / max(T, 1e-30f));
+}
+
+inline void reactBody(device float4* q, device float2* sc,
+                      constant Params& P, int base, int i, int j) {
+    const int id = base + j * P.tx + i;
+    float4 c = q[id];
+    const float rho = max(c.x, RHO_FLOOR);
+    const float ke = 0.5f * (c.y * c.y + c.z * c.z) / rho;
+    const float e0 = (c.w - ke) / rho;
+    const float lam0 = clamp(sc[id].x / rho, 0.0f, 1.0f);
+    float lam = lam0;
+    float t = 0.0f;
+    int guard = 0;
+    while (t < P.dt && ++guard < 100000) {
+        const float rate = reactRate(lam, e0, lam0, P);
+        float h = P.dt - t;
+        if (rate > 0.0f) h = min(h, 0.05f / rate);
+        const float k1 = reactRate(lam, e0, lam0, P);
+        const float k2 = reactRate(lam + 0.5f * h * k1, e0, lam0, P);
+        const float k3 = reactRate(lam + 0.5f * h * k2, e0, lam0, P);
+        const float k4 = reactRate(lam + h * k3, e0, lam0, P);
+        lam = clamp(lam + h / 6.0f * (k1 + 2 * k2 + 2 * k3 + k4), 0.0f,
+                    1.0f);
+        t += h;
+    }
+    c.w = rho * (e0 + P.rq * (lam - lam0)) + ke;
+    q[id] = c;
+    sc[id].x = rho * lam;
+}
+
+kernel void react(device float4* q [[buffer(0)]],
+                  device float2* sc [[buffer(1)]],
+                  constant Params& P [[buffer(2)]],
+                  uint2 g [[thread_position_in_grid]])
+{
+    reactBody(q, sc, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+
+kernel void react_pool(device float4* q [[buffer(0)]],
+                       device float2* sc [[buffer(1)]],
+                       constant Params& P [[buffer(2)]],
+                       device const uint* slots [[buffer(3)]],
+                       uint3 g [[thread_position_in_grid]])
+{
+    reactBody(q, sc, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
+              int(g.y) + NG);
 }

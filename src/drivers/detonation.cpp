@@ -19,7 +19,9 @@
 //     F = c0^2/(g-1) + D^2/2 + q - w1^2 (g+1)/(2(g-1)).
 // (Strong-q limit reproduces D_CJ -> sqrt(2(g^2-1) q), the known result.)
 
+#include "amr/AmrGpuML.hpp"
 #include "amr/AmrML.hpp"
+#include "backend/metal/MetalContext.hpp"
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "physics/Reaction.hpp"
@@ -163,6 +165,58 @@ double runAmr(const Reaction& r, const GasPair& gas, double q, double L,
     return fitSpeed(ts, xs, 0.6 * L, 0.85 * L, n);
 }
 
+// Same detonation on the hybrid GPU AMR (AmrGpuML): the reaction source
+// runs as a Metal kernel per level. Returns the measured CJ speed.
+double runAmrGpu(MetalContext& ctx, const Reaction& r, const GasPair& gas,
+                 double L) {
+    AmrConfig cfg;
+    cfg.maxLevels = 3;
+    cfg.subcycle = false;
+    cfg.react = true;
+    cfg.gamma1 = cfg.gamma2 = GAM;
+    cfg.reaction = r;
+    cfg.tagThreshold = Real(0.10);
+    cfg.regridEvery = 2;
+    const int nb = 512, ny = 8;
+    AmrGpuML amr(ctx, nb, ny, 0, 0, L, Real(ny) * (L / nb), cfg);
+    amr.fillPhysicalGhosts = [](GridRef& g, double) {
+        fillReflectiveLeft(g);
+        fillTransmissiveRight(g);
+        fillPeriodicY(g);
+    };
+    amr.fillPatchPhysical = [](GridRef& g, double, unsigned s) {
+        if (s & SideLeft) fillReflectiveLeft(g);
+        if (s & SideRight) fillTransmissiveRight(g);
+    };
+    amr.init(
+        [&](Real x, Real) {
+            const bool drive = x < Real(0.2);
+            return toConsG({RHO0, 0, 0, drive ? Real(30) : P0},
+                           gas.Gamma(0));
+        },
+        [](Real x, Real) { return x < Real(0.2) ? Real(1) : Real(0); });
+
+    const int jr = NG + ny / 2;
+    const auto frontX = [&]() {
+        const GridRef b = amr.coarseRef();
+        for (int i = NG + b.nx - 1; i >= NG; --i)
+            if (toPrim(b.at(i, jr)).p > Real(1.5) * P0)
+                return double(b.xc(i));
+        return 0.0;
+    };
+    double t = 0;
+    std::vector<double> ts, xs;
+    while (t < 1.5) {
+        const Real dt = std::min(amr.maxStableDtAll(CFL), Real(1.5 - t));
+        amr.step(dt, t);
+        t += dt;
+        ts.push_back(t);
+        xs.push_back(frontX());
+    }
+    int n = 0;
+    return fitSpeed(ts, xs, 0.6 * L, 0.85 * L, n);
+}
+
 } // namespace
 
 int main() {
@@ -227,6 +281,8 @@ int main() {
     // ---- same detonation through the multi-level AMR (refines the
     // reaction zone) -> validate the Strang reaction in AmrML ----
     const double Damr = runAmr(r, gas, q, L, Dcj);
+    MetalContext ctx;
+    const double Dgpu = runAmrGpu(ctx, r, gas, L);
 
     std::printf("CJ detonation: q=%.1f, gamma=%.1f, c0=%.3f\n", q,
                 double(GAM), c0);
@@ -235,11 +291,14 @@ int main() {
                 Dcj, Dcj / c0, std::sqrt(2 * (GAM * GAM - 1) * q));
     std::printf("  D uniform       = %.4f  (%.1f%%, gate 3%%)\n", Dmeas,
                 100 * (Dmeas / Dcj - 1));
-    std::printf("  D on 2-level AMR= %.4f  (%.1f%%, gate 5%%)\n", Damr,
+    std::printf("  D on AMR (CPU)  = %.4f  (%.1f%%, gate 5%%)\n", Damr,
                 100 * (Damr / Dcj - 1));
+    std::printf("  D on AMR (GPU)  = %.4f  (%.1f%%, gate 5%%)\n", Dgpu,
+                100 * (Dgpu / Dcj - 1));
 
     const bool ok = std::fabs(Dmeas / Dcj - 1) < 0.03 &&
-                    std::fabs(Damr / Dcj - 1) < 0.05;
+                    std::fabs(Damr / Dcj - 1) < 0.05 &&
+                    std::fabs(Dgpu / Dcj - 1) < 0.05;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

@@ -6,6 +6,7 @@
 
 #include "backend/metal/MetalContext.hpp"
 #include "core/Grid.hpp"
+#include "physics/Reaction.hpp"
 #include "physics/TwoGas.hpp"
 
 #include <algorithm>
@@ -57,6 +58,7 @@ public:
             if (p) p->release();
         for (MTL::ComputePipelineState* p : {wfluxXY_, wfluxYY_, rkUpdY_})
             if (p) p->release();
+        if (reactP_) reactP_->release();
         for (MTL::ComputePipelineState* p :
              {predictor_, fluxX_, fluxY_, update_, wave_})
             p->release();
@@ -270,6 +272,26 @@ public:
     }
     PhiG* sData() { return static_cast<PhiG*>(s_->contents()); }
     MTL::Buffer* sBuffer() const { return s_; }
+
+    // Single-step reaction source (needs species mode for the scalar
+    // state). encodeReact applies one Strang half-step over dt.
+    void enableReaction(const Reaction& r) {
+        react_ = r;
+        reactP_ = ctx_.makePipeline(lib_, "react");
+    }
+    void encodeReact(MTL::CommandBuffer* cmd, Real dt) const {
+        Params p = params(dt);
+        p.rA = react_.A; p.rEa = react_.Ea;
+        p.rq = react_.q; p.rTign = react_.Tign;
+        MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
+        enc->setComputePipelineState(reactP_);
+        enc->setBuffer(q_, 0, 0);
+        enc->setBuffer(s_, 0, 1);
+        enc->setBytes(&p, sizeof(p), 2);
+        dispatch(enc, nx_, ny_);
+        enc->endEncoding();
+    }
+    const Reaction& reaction() const { return react_; }
     // Species flux scalars (Fpx, Ssx, Fgx, 0) per face, CPU-visible.
     const Cons* sfx() const {
         return static_cast<const Cons*>(sFx_->contents());
@@ -293,6 +315,7 @@ public:
         float g1 = GAMMA, g2 = GAMMA; // two-gas gammas (species only)
         std::int32_t rks = 0;         // WENO/RK3 stage index
         float rka = 0, rkb = 1, rkw = 0; // RK update / flux weights
+        float rA = 0, rEa = 0, rq = 0, rTign = 0; // reaction source
     };
 
 private:
@@ -326,6 +349,8 @@ private:
     Real mu_ = 0, gx_ = 0, gy_ = 0;
     bool species_ = false;
     GasPair gas_;
+    Reaction react_;
+    MTL::ComputePipelineState* reactP_ = nullptr;
     MTL::Library* lib_ = nullptr;
     MTL::ComputePipelineState *predictor_ = nullptr, *fluxX_ = nullptr,
                               *fluxY_ = nullptr, *update_ = nullptr,

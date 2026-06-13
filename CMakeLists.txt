@@ -62,7 +62,7 @@ target_include_directories(analytic_suite PRIVATE src)
 
 # v1.5 reacting flow: 1D Chapman-Jouguet detonation (Strang coupling).
 add_executable(detonation src/drivers/detonation.cpp)
-target_include_directories(detonation PRIVATE src)
+target_link_libraries(detonation PRIVATE mm_metal)
 
 # v1.5 reacting flow: 0D constant-volume reactor (reaction integrator).
 add_executable(reactor src/drivers/reactor.cpp)

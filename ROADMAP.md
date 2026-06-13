@@ -260,8 +260,14 @@ source) et l'EOS à Γ variable.
   `cfg.react` (implique species, γ1=γ2). Gate : détonation CJ sur AMR
   3 niveaux, le raffinement (tagué sur le saut de densité) suit le front
   mobile, D_CJ préservé à **+0.8 %%** (vs +1.3 %% uniforme).
-- [ ] GPU (kernel source par cellule, lock-step) + `[reaction]`
-  déclaratif (A, Ea, q, Tign) dans le système de cas.
+- [x] ~~GPU : réaction sur le GPU (kernel source par cellule)~~ — fait :
+  kernel Metal `react`/`react_pool` (RK4 sous-cyclé adaptatif par
+  thread, énergie asservie à λ), `Euler2DGpu::encodeReact` + réaction
+  par niveau dans AmrGpuML (Strang autour du pas hyperbolique).
+  Gate : détonation CJ sur AMR GPU 3 niveaux = **+0.8 %% (identique au
+  CPU au chiffre près)** — lock-step parfait.
+- [ ] `[reaction]` déclaratif (A, Ea, q, Tign) dans le système de cas
+  → débloque la cellule de détonation 2D pilotable et visualisable.
 - **Validation par étapes** (méthodo no-slip) : réacteur 0D ✓
   (isotherme exact, équilibre adiabatique, raideur) → détonation CJ 1D ✓
   (D_CJ à 1.3 %% uniforme, +0.8 %% sur AMR 3 niveaux) → reste la
