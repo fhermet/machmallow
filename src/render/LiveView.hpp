@@ -24,7 +24,9 @@ public:
     // is available — callers degrade to a normal headless run.
     LiveView(MetalContext& ctx, const AmrGpuML& amr, int pixPerCell,
              const std::string& title, Real lo, Real hi, bool grid)
-        : ctx_(ctx), amr_(amr), lo_(lo), hi_(hi), grid_(grid) {
+        : ctx_(ctx), amr_(amr), lo_(lo), hi_(hi),
+          autoscale_(hi <= lo), grid_(grid) {
+        if (autoscale_) { lo_ = Real(1e30); hi_ = Real(-1e30); }
         const GridRef b = amr.coarseRef();
         layer_ = static_cast<CA::MetalLayer*>(
             lvCreateWindow(b.nx * pixPerCell, b.ny * pixPerCell,
@@ -78,9 +80,29 @@ private:
         std::int32_t ng; // ghost layers (must match core/Grid.hpp NG)
     };
 
+    // Expand-only auto color range: when the case gave no explicit
+    // range, track the running [min, max] of the base density so the
+    // map covers the dynamics as they develop (e.g. a detonation whose
+    // density is uniform at t=0 — a fixed IC-derived range would be
+    // degenerate). Expand-only, so the colors never flicker.
+    void autoRange_() {
+        const GridRef b = amr_.coarseRef();
+        Real mn = Real(1e30), mx = Real(-1e30);
+        for (int j = NG; j < NG + b.ny; ++j)
+            for (int i = NG; i < NG + b.nx; ++i) {
+                const Real r = b.at(i, j).rho;
+                mn = std::min(mn, r);
+                mx = std::max(mx, r);
+            }
+        const Real pad = (mx - mn) * Real(0.03) + Real(1e-6);
+        lo_ = std::min(lo_, mn - pad);
+        hi_ = std::max(hi_, mx + pad);
+    }
+
     void draw_() {
         CA::MetalDrawable* drawable = layer_->nextDrawable();
         if (drawable == nullptr) return;
+        if (autoscale_) autoRange_();
 
         MTL::RenderPassDescriptor* rp =
             MTL::RenderPassDescriptor::alloc()->init();
@@ -129,6 +151,7 @@ private:
     MetalContext& ctx_;
     const AmrGpuML& amr_;
     Real lo_, hi_;
+    bool autoscale_;
     bool grid_;
     CA::MetalLayer* layer_ = nullptr;
     MTL::Library* lib_ = nullptr;

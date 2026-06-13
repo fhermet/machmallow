@@ -113,20 +113,13 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
     std::unique_ptr<LiveView> view;
     if constexpr (requires { amr.renderPoolQ(); }) {
         if (wantLive) {
-            Real lo = Real(cfg.getReal("render.rho_min", 0));
-            Real hi = Real(cfg.getReal("render.rho_max", 0));
-            if (lo == hi) { // auto range from the IC
-                const GridRef c0 = amr.coarseRef();
-                lo = Real(1e30); hi = Real(-1e30);
-                for (int j = NG; j < NG + c0.ny; ++j)
-                    for (int i = NG; i < NG + c0.nx; ++i) {
-                        const Real r = toPrim(c0.at(i, j)).rho;
-                        lo = std::min(lo, r);
-                        hi = std::max(hi, r);
-                    }
-                const Real pad = (hi - lo) * Real(0.05) + Real(1e-6);
-                lo -= pad; hi += pad;
-            }
+            // Explicit [render] rho_min/rho_max, else (0/0) the live
+            // view auto-scales the color range to the running density
+            // extremes — robust when the IC density is uniform (e.g. a
+            // detonation ignited by pressure), where a fixed IC-derived
+            // range would be degenerate.
+            const Real lo = Real(cfg.getReal("render.rho_min", 0));
+            const Real hi = Real(cfg.getReal("render.rho_max", 0));
             view = std::make_unique<LiveView>(
                 /*ctx*/ amr.context(), amr,
                 cfg.getInt("render.scale", 4), "machmallow — espace: pause, q: quitter",
