@@ -16,6 +16,10 @@
 //      not a numerical/advective artifact;
 //   3. S_L ~ sqrt(alpha): doubling mu multiplies the speed by ~sqrt(2)
 //      (Zeldovich scaling; the expansion factor cancels in the ratio).
+//
+// Run MANUALLY (not in CI): a resolved diffusive flame needs a fine
+// grid and a viscous-limited dt (dt ~ dx^2/nu) over a long propagation,
+// ~minutes — like the benchmark study. CI only compiles it.
 
 #include "backend/metal/Euler2DGpu.hpp"
 #include "backend/metal/MetalContext.hpp"

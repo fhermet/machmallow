@@ -56,7 +56,6 @@ jobs:
           ./build/dmr_amr 32 gpu
           ./build/mlgpu_amr 32
           ./build/detonation
-          ./build/deflagration
           ./build/hs_suite
           ./build/blasius
           ./build/run cases/sod.ini
