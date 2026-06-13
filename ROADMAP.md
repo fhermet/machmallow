@@ -223,6 +223,30 @@ portes de validation → GPU.
 - **Sortie** : un cas 3D AMR ~100M cellules effectives sur le M4,
   visualisé en temps réel.
 
+### v1.5 — Écoulements réactifs (combustion) *(labo + pédago)*
+Extension naturelle du multi-espèces (v1.2) : on ajoute un terme source
+de réaction + dégagement de chaleur. Reste strictement 2D (orthogonal à
+la dimension). Modèle volontairement simple — **réaction à une étape
+d'Arrhenius** + variable d'avancement λ + chaleur de réaction q (« Euler
+réactif ») ; PAS de chimie détaillée multi-espèces (hors-périmètre, type
+CHEMKIN). Le terme source réutilise le précédent de la gravité (split
+source) et l'EOS à Γ variable.
+- [ ] Intégrateur de réaction raide : splitting de Strang + ODE par
+  cellule (RK sous-cyclé ou implicite LOCAL — pas l'implicite global en
+  espace, qui reste non-objectif). C'est le cœur du travail et le risque
+  principal (raideur exponentielle d'Arrhenius).
+- [ ] Couplage chaleur ↔ énergie + transport de λ (sur le transport
+  d'espèce existant).
+- [ ] GPU (kernel source par cellule) + AMR (raffiner la fine zone de
+  réaction — cas d'usage idéal) + `[reaction]` déclaratif (A, Ea, q).
+- **Validation par étapes** (méthodo no-slip) : réacteur 0D (délai
+  d'allumage / équilibre exacts) → **détonation Chapman-Jouguet 1D**
+  (vitesse D_CJ exacte, structure ZND) → cellule de détonation 2D.
+- **Sortie** : détonation CJ à la vitesse théorique, structure ZND
+  résolue, cellule de détonation 2D raffinée par AMR.
+- Effort : cœur CPU + gate CJ ~1-2 sessions ; intégration GPU/AMR
+  complète ≈ taille du jalon multi-espèces.
+
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 
 Mode stationnaire (local time stepping — donnerait tout leur sens aux
