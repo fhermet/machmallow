@@ -266,14 +266,22 @@ source) et l'EOS à Γ variable.
   par niveau dans AmrGpuML (Strang autour du pas hyperbolique).
   Gate : détonation CJ sur AMR GPU 3 niveaux = **+0.8 %% (identique au
   CPU au chiffre près)** — lock-step parfait.
-- [ ] `[reaction]` déclaratif (A, Ea, q, Tign) dans le système de cas
-  → débloque la cellule de détonation 2D pilotable et visualisable.
+- [x] ~~`[reaction]` déclaratif + cellule de détonation 2D~~ — fait :
+  section `[reaction]` (A, Ea, q, Tign, gamma) dans CaseDef ; la
+  progression λ réutilise le scalaire d'espèce (`gas = 2` = zone
+  allumée, λ=1). `cases/detonation.ini` : détonation 2D en canal (tube
+  fermé, perturbation transverse, raffinée par AMR) qui tourne en live
+  via `run`. La physique CJ est verrouillée par le driver `detonation`
+  (0.8 %% sur AMR CPU et GPU).
 - **Validation par étapes** (méthodo no-slip) : réacteur 0D ✓
   (isotherme exact, équilibre adiabatique, raideur) → détonation CJ 1D ✓
   (D_CJ à 1.3 %% uniforme, +0.8 %% sur AMR 3 niveaux) → reste la
   cellule de détonation 2D.
-- **Sortie** : détonation CJ à la vitesse théorique, structure ZND
-  résolue, cellule de détonation 2D raffinée par AMR.
+- **Sortie v1.5 : ATTEINTE** — détonation de Chapman-Jouguet à la
+  vitesse théorique (uniforme +1.3 %%, AMR CPU/GPU +0.8 %% en
+  lock-step), cellule de détonation 2D pilotée par fichier de cas et
+  raffinée par AMR, en live. Reste optionnel : chimie multi-étapes
+  (hors-périmètre), structure cellulaire quantitative.
 - Effort : cœur CPU + gate CJ ~1-2 sessions ; intégration GPU/AMR
   complète ≈ taille du jalon multi-espèces.
 

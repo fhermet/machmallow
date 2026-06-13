@@ -27,6 +27,7 @@
 // top boundary) come for free from the same description as the IC.
 
 #include "core/Boundary.hpp"
+#include "physics/Reaction.hpp"
 #include "physics/TwoGas.hpp"
 #include "core/Config.hpp"
 #include "core/Grid.hpp"
@@ -77,6 +78,23 @@ public:
             if (c.gas_.gamma1 <= 1 || c.gas_.gamma2 <= 1)
                 throw std::runtime_error(
                     "[species] gammas must be > 1");
+        }
+
+        // reacting flow: a [reaction] section (single-step Arrhenius)
+        // makes the progress variable lambda ride on the species scalar
+        // (single gas, gamma1 = gamma2); a state with `gas = 2` is the
+        // burnt/ignited region (lambda = 1).
+        if (cfg.has("reaction.q")) {
+            c.species_ = true;
+            c.react_ = true;
+            const Real g = Real(cfg.getReal("reaction.gamma", 1.4));
+            c.gas_ = GasPair{g, g};
+            c.reaction_.A = Real(cfg.getReal("reaction.A", 0));
+            c.reaction_.Ea = Real(cfg.getReal("reaction.Ea", 0));
+            c.reaction_.q = Real(cfg.getReal("reaction.q", 0));
+            c.reaction_.Tign = Real(cfg.getReal("reaction.Tign", 0));
+            if (g <= 1) throw std::runtime_error(
+                "[reaction] gamma must be > 1");
         }
 
         // named states: plain ones first, then derived (Rankine-Hugoniot
@@ -175,6 +193,8 @@ public:
     }
     bool species() const { return species_; }
     const GasPair& gases() const { return gas_; }
+    bool reacts() const { return react_; }
+    const Reaction& reaction() const { return reaction_; }
 
     template <class G>
     void fillGhosts(G& g, double t) const {
@@ -616,7 +636,9 @@ private:
     }
 
     bool species_ = false;
+    bool react_ = false;
     GasPair gas_;
+    Reaction reaction_;
     Real defY_ = 0;
     std::map<std::string, NamedState> states_;
     Prim def_{};

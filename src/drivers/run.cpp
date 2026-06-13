@@ -385,6 +385,10 @@ int main(int argc, char** argv) {
                     "two-gas cases are inviscid for now ([species] with "
                     "mu > 0)");
         }
+        if (cd.reacts()) { // single-step reaction (Strang-split source)
+            acfg.react = true;
+            acfg.reaction = cd.reaction();
+        }
         const std::string scheme = cfg.getString("scheme", "muscl");
         if (scheme == "weno5") {
             acfg.weno = true;
