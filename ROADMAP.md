@@ -287,8 +287,11 @@ source) et l'EOS à Γ variable.
   Leçon : T_brûlé = 1+(γ-1)q doit dépasser Tign sinon la flamme meurt ;
   le √(α) de Zeldovich est fragile (plancher de diffusion numérique à
   mu=0, quench à fort mu en marge mince) — gaté en « conduction-driven »
-  plutôt qu'en scaling strict. Reste : branche visqueuse des kernels
-  species GPU (déflagration CPU-only pour l'instant).
+  plutôt qu'en scaling strict.
+- [x] ~~Branche visqueuse des kernels species GPU~~ — fait : flux de
+  Stokes+Fourier dans `flux_x_y`/`flux_y_y` (+ pool), `q` lié aux
+  kernels. La déflagration tourne sur GPU (lock-step CPU à 1 %%) ;
+  `cases/deflagration.ini` passe en backend hybride + live.
 - **Sortie v1.5 : ATTEINTE** — détonation de Chapman-Jouguet à la
   vitesse théorique (uniforme +1.3 %%, AMR CPU/GPU +0.8 %% en
   lock-step), cellule de détonation 2D pilotée par fichier de cas et

@@ -519,36 +519,74 @@ inline void predictorYBody(device const float4* q, device const float2* sc,
 }
 
 inline void fluxXYBody(device const float4* xL, device const float4* xR,
-                       device const float4* fX, device float4* Fx,
-                       device float4* sFx, constant Params& P, int base,
-                       int i, int j) {
+                       device const float4* fX, device const float4* q,
+                       device float4* Fx, device float4* sFx,
+                       constant Params& P, int base, int i, int j) {
     const int id = base + j * P.tx + i;
     const int idp = id + 1;
     const float GL = fX[id].w, GR = fX[idp].z;
     float ss = 0.0f;
-    const float4 F = hllcFluxXG(toPrimG(xR[id], GL), 1.0f + 1.0f / GL,
-                                toPrimG(xL[idp], GR), 1.0f + 1.0f / GR,
-                                ss);
+    float4 F = hllcFluxXG(toPrimG(xR[id], GL), 1.0f + 1.0f / GL,
+                          toPrimG(xL[idp], GR), 1.0f + 1.0f / GR, ss);
+    if (P.mu > 0.0f) { // viscous flux (deflagration); g1==g2 -> toPrim
+        const float4 w00 = toPrim(q[id]);
+        const float4 w10 = toPrim(q[id + 1]);
+        const float4 w0p = toPrim(q[id + P.tx]);
+        const float4 w0m = toPrim(q[id - P.tx]);
+        const float4 w1p = toPrim(q[id + P.tx + 1]);
+        const float4 w1m = toPrim(q[id - P.tx + 1]);
+        const float ux = (w10.y - w00.y) / P.dx;
+        const float vx = (w10.z - w00.z) / P.dx;
+        const float Tx = (w10.w / w10.x - w00.w / w00.x) / P.dx;
+        const float uy = ((w0p.y + w1p.y) - (w0m.y + w1m.y)) / (4 * P.dy);
+        const float vy = ((w0p.z + w1p.z) - (w0m.z + w1m.z)) / (4 * P.dy);
+        const float txx = P.mu * ((4.0f / 3.0f) * ux - (2.0f / 3.0f) * vy);
+        const float txy = P.mu * (uy + vx);
+        const float ub = 0.5f * (w00.y + w10.y);
+        const float vb = 0.5f * (w00.z + w10.z);
+        F.y -= txx; F.z -= txy;
+        F.w -= ub * txx + vb * txy + P.kT * Tx;
+    }
     Fx[id] = F;
     sFx[id] = float4(F.x * (F.x > 0.0f ? fX[id].y : fX[idp].x), ss,
                      ss * (ss > 0.0f ? GL : GR), 0.0f);
 }
 
 inline void fluxYYBody(device const float4* yB, device const float4* yT,
-                       device const float4* fY, device float4* Fy,
-                       device float4* sFy, constant Params& P, int base,
-                       int i, int j) {
+                       device const float4* fY, device const float4* q,
+                       device float4* Fy, device float4* sFy,
+                       constant Params& P, int base, int i, int j) {
     const int id = base + j * P.tx + i;
     const int idp = id + P.tx;
     const float GB = fY[id].w, GT = fY[idp].z;
     const float4 L = toPrimG(yT[id], GB);
     const float4 R = toPrimG(yB[idp], GT);
     float ss = 0.0f;
-    const float4 F = hllcFluxXG(float4(L.x, L.z, L.y, L.w),
-                                1.0f + 1.0f / GB,
-                                float4(R.x, R.z, R.y, R.w),
-                                1.0f + 1.0f / GT, ss);
-    Fy[id] = float4(F.x, F.z, F.y, F.w);
+    const float4 fr = hllcFluxXG(float4(L.x, L.z, L.y, L.w),
+                                 1.0f + 1.0f / GB,
+                                 float4(R.x, R.z, R.y, R.w),
+                                 1.0f + 1.0f / GT, ss);
+    float4 F = float4(fr.x, fr.z, fr.y, fr.w);
+    if (P.mu > 0.0f) { // viscous flux (deflagration)
+        const float4 w00 = toPrim(q[id]);
+        const float4 w01 = toPrim(q[id + P.tx]);
+        const float4 wp0 = toPrim(q[id + 1]);
+        const float4 wm0 = toPrim(q[id - 1]);
+        const float4 wp1 = toPrim(q[id + P.tx + 1]);
+        const float4 wm1 = toPrim(q[id + P.tx - 1]);
+        const float uy = (w01.y - w00.y) / P.dy;
+        const float vy = (w01.z - w00.z) / P.dy;
+        const float Ty = (w01.w / w01.x - w00.w / w00.x) / P.dy;
+        const float ux = ((wp0.y + wp1.y) - (wm0.y + wm1.y)) / (4 * P.dx);
+        const float vx = ((wp0.z + wp1.z) - (wm0.z + wm1.z)) / (4 * P.dx);
+        const float txy = P.mu * (uy + vx);
+        const float tyy = P.mu * ((4.0f / 3.0f) * vy - (2.0f / 3.0f) * ux);
+        const float ub = 0.5f * (w00.y + w01.y);
+        const float vb = 0.5f * (w00.z + w01.z);
+        F.y -= txy; F.z -= tyy;
+        F.w -= ub * txy + vb * tyy + P.kT * Ty;
+    }
+    Fy[id] = F;
     sFy[id] = float4(F.x * (F.x > 0.0f ? fY[id].y : fY[idp].x), ss,
                      ss * (ss > 0.0f ? GB : GT), 0.0f);
 }
@@ -615,24 +653,26 @@ kernel void predictor_y(device const float4* q [[buffer(0)]],
 kernel void flux_x_y(device const float4* xL [[buffer(0)]],
                      device const float4* xR [[buffer(1)]],
                      device const float4* fX [[buffer(2)]],
-                     device float4* Fx [[buffer(3)]],
-                     device float4* sFx [[buffer(4)]],
-                     constant Params& P [[buffer(5)]],
+                     device const float4* q [[buffer(3)]],
+                     device float4* Fx [[buffer(4)]],
+                     device float4* sFx [[buffer(5)]],
+                     constant Params& P [[buffer(6)]],
                      uint2 g [[thread_position_in_grid]])
 {
-    fluxXYBody(xL, xR, fX, Fx, sFx, P, 0, int(g.x) + NG - 1,
+    fluxXYBody(xL, xR, fX, q, Fx, sFx, P, 0, int(g.x) + NG - 1,
                int(g.y) + NG);
 }
 
 kernel void flux_y_y(device const float4* yB [[buffer(0)]],
                      device const float4* yT [[buffer(1)]],
                      device const float4* fY [[buffer(2)]],
-                     device float4* Fy [[buffer(3)]],
-                     device float4* sFy [[buffer(4)]],
-                     constant Params& P [[buffer(5)]],
+                     device const float4* q [[buffer(3)]],
+                     device float4* Fy [[buffer(4)]],
+                     device float4* sFy [[buffer(5)]],
+                     constant Params& P [[buffer(6)]],
                      uint2 g [[thread_position_in_grid]])
 {
-    fluxYYBody(yB, yT, fY, Fy, sFy, P, 0, int(g.x) + NG,
+    fluxYYBody(yB, yT, fY, q, Fy, sFy, P, 0, int(g.x) + NG,
                int(g.y) + NG - 1);
 }
 
@@ -679,26 +719,28 @@ kernel void predictor_y_pool(device const float4* q [[buffer(0)]],
 kernel void flux_x_y_pool(device const float4* xL [[buffer(0)]],
                           device const float4* xR [[buffer(1)]],
                           device const float4* fX [[buffer(2)]],
-                          device float4* Fx [[buffer(3)]],
-                          device float4* sFx [[buffer(4)]],
-                          constant Params& P [[buffer(5)]],
-                          device const uint* slots [[buffer(6)]],
+                          device const float4* q [[buffer(3)]],
+                          device float4* Fx [[buffer(4)]],
+                          device float4* sFx [[buffer(5)]],
+                          constant Params& P [[buffer(6)]],
+                          device const uint* slots [[buffer(7)]],
                           uint3 g [[thread_position_in_grid]])
 {
-    fluxXYBody(xL, xR, fX, Fx, sFx, P, int(slots[g.z]) * P.stride,
+    fluxXYBody(xL, xR, fX, q, Fx, sFx, P, int(slots[g.z]) * P.stride,
                int(g.x) + NG - 1, int(g.y) + NG);
 }
 
 kernel void flux_y_y_pool(device const float4* yB [[buffer(0)]],
                           device const float4* yT [[buffer(1)]],
                           device const float4* fY [[buffer(2)]],
-                          device float4* Fy [[buffer(3)]],
-                          device float4* sFy [[buffer(4)]],
-                          constant Params& P [[buffer(5)]],
-                          device const uint* slots [[buffer(6)]],
+                          device const float4* q [[buffer(3)]],
+                          device float4* Fy [[buffer(4)]],
+                          device float4* sFy [[buffer(5)]],
+                          constant Params& P [[buffer(6)]],
+                          device const uint* slots [[buffer(7)]],
                           uint3 g [[thread_position_in_grid]])
 {
-    fluxYYBody(yB, yT, fY, Fy, sFy, P, int(slots[g.z]) * P.stride,
+    fluxYYBody(yB, yT, fY, q, Fy, sFy, P, int(slots[g.z]) * P.stride,
                int(g.x) + NG, int(g.y) + NG - 1);
 }
 

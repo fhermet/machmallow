@@ -473,9 +473,11 @@ private:
             encodePool_(cmd, l, predictorYP_,
                         {qP_, sP_, xLP_, xRP_, yBP_, yTP_, fXP_, fYP_},
                         dt, pTot_ - 2, pTot_ - 2);
-            encodePool_(cmd, l, fluxXYP_, {xLP_, xRP_, fXP_, FxP_, sFxP_},
+            encodePool_(cmd, l, fluxXYP_,
+                        {xLP_, xRP_, fXP_, qP_, FxP_, sFxP_},
                         dt, nf_ + 1, nf_);
-            encodePool_(cmd, l, fluxYYP_, {yBP_, yTP_, fYP_, FyP_, sFyP_},
+            encodePool_(cmd, l, fluxYYP_,
+                        {yBP_, yTP_, fYP_, qP_, FyP_, sFyP_},
                         dt, nf_, nf_ + 1);
             encodePool_(cmd, l, updateYP_,
                         {qP_, sP_, FxP_, FyP_, sFxP_, sFyP_}, dt, nf_,

@@ -62,7 +62,7 @@ target_include_directories(analytic_suite PRIVATE src)
 
 # v1.5 reacting flow: laminar deflagration (viscous reacting path).
 add_executable(deflagration src/drivers/deflagration.cpp)
-target_include_directories(deflagration PRIVATE src)
+target_link_libraries(deflagration PRIVATE mm_metal)
 
 # v1.5 reacting flow: 1D Chapman-Jouguet detonation (Strang coupling).
 add_executable(detonation src/drivers/detonation.cpp)

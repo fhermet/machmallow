@@ -141,9 +141,9 @@ public:
             encode(cmd, predictorY_,
                    {q_, s_, xL_, xR_, yB_, yT_, fXb_, fYb_}, p, tx_ - 2,
                    ty_ - 2);
-            encode(cmd, fluxXY_, {xL_, xR_, fXb_, Fx_, sFx_}, p, nx_ + 1,
+            encode(cmd, fluxXY_, {xL_, xR_, fXb_, q_, Fx_, sFx_}, p, nx_ + 1,
                    ny_);
-            encode(cmd, fluxYY_, {yB_, yT_, fYb_, Fy_, sFy_}, p, nx_,
+            encode(cmd, fluxYY_, {yB_, yT_, fYb_, q_, Fy_, sFy_}, p, nx_,
                    ny_ + 1);
             encode(cmd, updateY_, {q_, s_, Fx_, Fy_, sFx_, sFy_}, p, nx_,
                    ny_);
@@ -292,6 +292,12 @@ public:
         enc->endEncoding();
     }
     const Reaction& reaction() const { return react_; }
+    void react(Real dt) { // one reaction half-step (own command buffer)
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeReact(cmd, dt);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
     // Species flux scalars (Fpx, Ssx, Fgx, 0) per face, CPU-visible.
     const Cons* sfx() const {
         return static_cast<const Cons*>(sFx_->contents());

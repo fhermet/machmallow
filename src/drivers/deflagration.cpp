@@ -17,6 +17,8 @@
 //   3. S_L ~ sqrt(alpha): doubling mu multiplies the speed by ~sqrt(2)
 //      (Zeldovich scaling; the expansion factor cancels in the ratio).
 
+#include "backend/metal/Euler2DGpu.hpp"
+#include "backend/metal/MetalContext.hpp"
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "physics/Reaction.hpp"
@@ -137,6 +139,73 @@ double flameSpeed(Real mu, const Reaction& r, double& machMax) {
     return n >= 2 ? (n * sxy - sx * sy) / (n * sxx - sx * sx) : 0;
 }
 
+// Same flame on the GPU (Euler2DGpu species + reaction + viscosity),
+// Strang-split; returns the lab front speed. Validates the GPU viscous
+// species/reaction kernels against the CPU.
+double flameSpeedGpu(MetalContext& ctx, Real mu, const Reaction& r) {
+    const GasPair gas{GAM, GAM};
+    const int nx = 800, ny = 4;
+    const double L = 2.0;
+    Euler2DGpu gpu(ctx, nx, ny, Real(L / nx), Real(L / nx));
+    gpu.enableSpecies(gas);
+    gpu.enableReaction(r);
+    gpu.setViscosity(mu);
+    GridRef g = gpu.ref(0, 0);
+    auto* sc = gpu.sData();
+    const Real pb = P0 + (GAM - 1) * r.q;
+    for (int j = 0; j < g.toty(); ++j)
+        for (int i = 0; i < g.totx(); ++i) {
+            const bool burnt = g.xc(i) < Real(0.15);
+            g.at(i, j) = toConsG({RHO0, 0, 0, burnt ? pb : P0},
+                                 gas.Gamma(0));
+            sc[g.idx(i, j)] = {float(burnt ? g.at(i, j).rho : 0),
+                               float(1 / (GAM - 1))};
+        }
+    const auto bc = [&]() {
+        fillTransmissiveLeft(g);
+        fillTransmissiveRight(g);
+        fillPeriodicY(g);
+        for (int j = 0; j < g.toty(); ++j) // scalar ghosts (phi, G)
+            for (int k = 0; k < NG; ++k) {
+                sc[g.idx(k, j)] = sc[g.idx(NG, j)];
+                sc[g.idx(NG + nx + k, j)] = sc[g.idx(NG + nx - 1, j)];
+            }
+        for (int i = 0; i < g.totx(); ++i)
+            for (int k = 0; k < NG; ++k) {
+                sc[g.idx(i, k)] = sc[g.idx(i, NG + ny - NG + k)];
+                sc[g.idx(i, NG + ny + k)] = sc[g.idx(i, NG + k)];
+            }
+    };
+    const int jr = NG + ny / 2;
+    const auto front = [&]() {
+        for (int i = NG + nx - 1; i >= NG; --i)
+            if (sc[g.idx(i, jr)].phi /
+                    std::max(g.at(i, jr).rho, RHO_FLOOR) >= Real(0.5))
+                return double(g.xc(i));
+        return 0.0;
+    };
+    double t = 0;
+    std::vector<double> ts, xs;
+    while (t < 2.0) {
+        const Real dt = std::min(gpu.maxStableDt(CFL), Real(2.0 - t));
+        bc(); gpu.react(dt / 2);
+        bc(); gpu.step(dt);
+        gpu.react(dt / 2);
+        t += dt;
+        ts.push_back(t);
+        xs.push_back(front());
+    }
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    int n = 0;
+    for (std::size_t k = 0; k < ts.size(); ++k)
+        if (xs[k] > 0.30 && xs[k] < 0.70) {
+            sx += ts[k]; sy += xs[k];
+            sxx += ts[k] * ts[k]; sxy += ts[k] * xs[k];
+            ++n;
+        }
+    return n >= 2 ? (n * sxy - sx * sy) / (n * sxx - sx * sx) : 0;
+}
+
 } // namespace
 
 int main() {
@@ -160,11 +229,19 @@ int main() {
                 std::sqrt(2.0));
     std::printf("  conduction speedup S(mu)/S(0) = %.2f\n", Sv / Si);
 
+    // GPU viscous species/reaction: same flame must lock-step the CPU.
+    MetalContext ctx;
+    const double Sg = flameSpeedGpu(ctx, Real(0.02), r);
+    std::printf("  GPU mu=0.02: S=%.4f (CPU/GPU diff %.1f%%)\n", Sg,
+                100 * (Sg / Sv - 1));
+
     // Robust + honest: a subsonic flame that conduction clearly drives
-    // (well above the mu=0 numerical-diffusion floor). A clean sqrt(mu)
-    // law would need the numerical floor killed (finer grid) — noted.
+    // (well above the mu=0 numerical-diffusion floor); GPU matches CPU.
+    // A clean sqrt(mu) law would need the numerical floor killed (finer
+    // grid) — noted.
     const bool ok = Sv > 0.05 && machV < 0.5 && // propagates, subsonic
-                    Sv > Real(1.4) * Si;        // conduction-driven
+                    Sv > Real(1.4) * Si &&      // conduction-driven
+                    std::fabs(Sg / Sv - 1) < 0.02; // GPU lock-steps CPU
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
