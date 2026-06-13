@@ -12,6 +12,7 @@
 #include "core/Grid.hpp"
 #include "numerics/Limiter.hpp"
 #include "physics/TwoGas.hpp"
+#include "solver/Muscl2D.hpp" // addViscousFluxes (shared viscous flux)
 
 #include <algorithm>
 #include <cmath>
@@ -35,8 +36,8 @@ struct ScratchY {
 };
 
 inline Real maxStableDtY(const Grid& g, const std::vector<Real>& Gm,
-                         Real cfl) {
-    Real sx = 0, sy = 0;
+                         Real cfl, Real mu = 0) {
+    Real sx = 0, sy = 0, rhoMin = Real(1e30);
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i) {
             const std::size_t id = g.idx(i, j);
@@ -44,8 +45,17 @@ inline Real maxStableDtY(const Grid& g, const std::vector<Real>& Gm,
             const Real c = soundSpeedG(w, 1 + 1 / Gm[id]);
             sx = std::max(sx, std::fabs(w.u) + c);
             sy = std::max(sy, std::fabs(w.v) + c);
+            if (mu > 0) rhoMin = std::min(rhoMin, w.rho);
         }
-    return cfl * std::min(g.dx / sx, g.dy / sy);
+    Real dt = cfl * std::min(g.dx / sx, g.dy / sy);
+    if (mu > 0) {
+        const Real nuEff = (mu / rhoMin) *
+                           std::max(Real(4.0 / 3.0), GAMMA / PRANDTL);
+        dt = std::min(dt, cfl * Real(0.5) /
+                              (nuEff * (1 / (g.dx * g.dx) +
+                                        1 / (g.dy * g.dy))));
+    }
+    return dt;
 }
 
 // Pressure closes on the ADVECTED Gamma field (quasi-conservative
@@ -55,9 +65,12 @@ inline Real maxStableDtY(const Grid& g, const std::vector<Real>& Gm,
 // built from face p and face Gamma, so a uniform-(p, u) interface has
 // exactly uniform face states and no pressure oscillation can be
 // generated. phi = rho*Y remains the conserved species mass.
+// mu > 0 adds the central-difference Stokes + Fourier viscous flux to
+// the convective face fluxes (shared single-gas operator) — needed for
+// deflagrations, where the flame propagates by heat conduction.
 inline void step2DY(Grid& g, std::vector<Real>& phi,
                     std::vector<Real>& Gm, Real dt, ScratchY& s,
-                    const GasPair& gas) {
+                    const GasPair& gas, Real mu = 0) {
     const int tx = g.totx(), ty = g.toty();
     s.resize(g.q.size());
 
@@ -197,6 +210,10 @@ inline void step2DY(Grid& g, std::vector<Real>& phi,
             s.Ssy[id] = ss;
             s.Fgy[id] = ss * (ss > 0 ? GB : GT);
         }
+
+    // Viscous flux (Stokes + Fourier) on the conserved faces — drives
+    // the deflagration's heat conduction; species/Gamma fluxes unchanged.
+    if (mu > 0) addViscousFluxes(g, s.Fx, s.Fy, mu);
 
     // Conservative update (Cons and species together).
     const Real lx = dt / g.dx, ly = dt / g.dy;

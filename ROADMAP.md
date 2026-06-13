@@ -277,6 +277,18 @@ source) et l'EOS à Γ variable.
   (isotherme exact, équilibre adiabatique, raideur) → détonation CJ 1D ✓
   (D_CJ à 1.3 %% uniforme, +0.8 %% sur AMR 3 niveaux) → reste la
   cellule de détonation 2D.
+- [x] ~~Déflagration (chemin réactif visqueux)~~ — fait : `step2DY`
+  porte le flux de Stokes+Fourier (mu > 0, opérateur partagé) + dt
+  visqueux + `species + mu` autorisé. La flamme se propage par
+  CONDUCTION (driver `deflagration` + `cases/deflagration.ini`, CPU) :
+  subsonique (Mach 0.17), 3× plus rapide qu'avec la seule diffusion
+  numérique (mu=0). q petit pour que la compression seule ne puisse pas
+  allumer (T_brûlé > Tign de peu) → c'est la conduction qui mène.
+  Leçon : T_brûlé = 1+(γ-1)q doit dépasser Tign sinon la flamme meurt ;
+  le √(α) de Zeldovich est fragile (plancher de diffusion numérique à
+  mu=0, quench à fort mu en marge mince) — gaté en « conduction-driven »
+  plutôt qu'en scaling strict. Reste : branche visqueuse des kernels
+  species GPU (déflagration CPU-only pour l'instant).
 - **Sortie v1.5 : ATTEINTE** — détonation de Chapman-Jouguet à la
   vitesse théorique (uniforme +1.3 %%, AMR CPU/GPU +0.8 %% en
   lock-step), cellule de détonation 2D pilotée par fichier de cas et

@@ -373,10 +373,6 @@ int main(int argc, char** argv) {
             acfg.species = true;
             acfg.gamma1 = cd.gases().gamma1;
             acfg.gamma2 = cd.gases().gamma2;
-            if (acfg.mu > 0)
-                throw std::runtime_error(
-                    "two-gas cases are inviscid for now ([species] with "
-                    "mu > 0)");
         }
         if (cd.reacts()) { // single-step reaction (Strang-split source)
             acfg.react = true;

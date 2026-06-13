@@ -140,12 +140,12 @@ public:
     }
 
     Real maxStableDtAll(Real cfl) const {
-        Real dt = cfg_.species ? maxStableDtY(base, baseGm_, cfl)
+        Real dt = cfg_.species ? maxStableDtY(base, baseGm_, cfl, cfg_.mu)
                                : maxStableDt(base, cfl, cfg_.mu);
         for (std::size_t k = 0; k < lvls_.size(); ++k)
             for (const Patch& p : lvls_[k].patches) {
                 Real dtl = cfg_.species
-                    ? maxStableDtY(p.grid, p.Gmf, cfl)
+                    ? maxStableDtY(p.grid, p.Gmf, cfl, cfg_.mu)
                     : maxStableDt(p.grid, cfl, cfg_.mu);
                 if (cfg_.subcycle) dtl *= Real(1 << (k + 1));
                 dt = std::min(dt, dtl);
@@ -663,14 +663,15 @@ private:
     void stepLevel_(int l, Real dt) {
         if (l == 0) {
             if (cfg_.species)
-                step2DY(base, basePhi_, baseGm_, dt, scratchYB_, gas_);
+                step2DY(base, basePhi_, baseGm_, dt, scratchYB_, gas_,
+                        cfg_.mu);
             else
                 step2D(base, dt, scratchB_, cfg_.mu, cfg_.gx, cfg_.gy);
             return;
         }
         for (Patch& p : lvls_[l - 1].patches) {
             if (cfg_.species) {
-                step2DY(p.grid, p.phi, p.Gmf, dt, scratchY_, gas_);
+                step2DY(p.grid, p.phi, p.Gmf, dt, scratchY_, gas_, cfg_.mu);
                 p.Fx = scratchY_.Fx;
                 p.Fy = scratchY_.Fy;
                 p.Fpx = scratchY_.Fpx;
