@@ -388,10 +388,6 @@ int main(int argc, char** argv) {
         const std::string scheme = cfg.getString("scheme", "muscl");
         if (scheme == "weno5") {
             acfg.weno = true;
-            if (acfg.species)
-                throw std::runtime_error(
-                    "scheme = weno5 is single-gas for now (no "
-                    "[species])");
         } else if (scheme != "muscl") {
             throw std::runtime_error("unknown scheme: " + scheme +
                                      " (expected muscl | weno5)");

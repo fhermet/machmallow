@@ -898,3 +898,177 @@ kernel void rk_update_pool(device float4* q [[buffer(0)]],
     rkUpdateBody(q, u0, Fx, Fy, P, int(slots[g.z]) * P.stride,
                  int(g.x) + NG, int(g.y) + NG);
 }
+
+// ---- two-gas WENO5 kernels (mirrors Weno2D.hpp wenoFluxesY) ----------------
+//
+// Reconstruct (rho,u,v,p) + Y + Gamma at each face, close with per-side
+// gamma HLLC; species mass flux = HLLC mass flux upwinded by Y; Gamma
+// rides quasi-conservatively on the contact speed. The flux kernel
+// outputs the instantaneous conserved flux F and packed scalar flux
+// sF = (Fp, Ss, Fg, 0), and accumulates the RK-weighted conserved flux
+// (FA) and species mass flux (sFA, in .x) for the CPU refluxing.
+
+inline void wenoFluxYBody(device const float4* q, device const float2* sc,
+                          device float4* F, device float4* FA,
+                          device float4* sF, device float4* sFA,
+                          constant Params& P, int base, int i, int j,
+                          int str, bool xDir) {
+    const int id = base + j * P.tx + i;
+    const float Gmin = min(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+    const float Gmax = max(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+    float4 w[6];
+    float Yc[6], Gc[6];
+    for (int k = 0; k < 6; ++k) {
+        const int c = id + (k - 2) * str;
+        Gc[k] = sc[c].y;
+        w[k] = toPrimG(q[c], Gc[k]);
+        Yc[k] = clamp(sc[c].x / max(q[c].x, RHO_FLOOR), 0.0f, 1.0f);
+    }
+    float4 L, R;
+    for (int m = 0; m < 4; ++m) {
+        L[m] = weno5rec(w[0][m], w[1][m], w[2][m], w[3][m], w[4][m]);
+        R[m] = weno5rec(w[5][m], w[4][m], w[3][m], w[2][m], w[1][m]);
+    }
+    L.x = max(L.x, RHO_FLOOR); L.w = max(L.w, P_FLOOR);
+    R.x = max(R.x, RHO_FLOOR); R.w = max(R.w, P_FLOOR);
+    const float YL = clamp(weno5rec(Yc[0], Yc[1], Yc[2], Yc[3], Yc[4]),
+                           0.0f, 1.0f);
+    const float YR = clamp(weno5rec(Yc[5], Yc[4], Yc[3], Yc[2], Yc[1]),
+                           0.0f, 1.0f);
+    const float GL = clamp(weno5rec(Gc[0], Gc[1], Gc[2], Gc[3], Gc[4]),
+                           Gmin, Gmax);
+    const float GR = clamp(weno5rec(Gc[5], Gc[4], Gc[3], Gc[2], Gc[1]),
+                           Gmin, Gmax);
+    float ss = 0.0f;
+    float4 f;
+    if (xDir) {
+        f = hllcFluxXG(L, 1.0f + 1.0f / GL, R, 1.0f + 1.0f / GR, ss);
+    } else {
+        const float4 Lr = float4(L.x, L.z, L.y, L.w);
+        const float4 Rr = float4(R.x, R.z, R.y, R.w);
+        const float4 fr =
+            hllcFluxXG(Lr, 1.0f + 1.0f / GL, Rr, 1.0f + 1.0f / GR, ss);
+        f = float4(fr.x, fr.z, fr.y, fr.w);
+    }
+    F[id] = f;
+    const float Fp = f.x * (f.x > 0.0f ? YL : YR);
+    const float Fg = ss * (ss > 0.0f ? GL : GR);
+    sF[id] = float4(Fp, ss, Fg, 0.0f);
+    FA[id] = (P.rks == 0 ? float4(0.0f) : FA[id]) + P.rkw * f;
+    sFA[id] = (P.rks == 0 ? float4(0.0f) : sFA[id]) +
+              P.rkw * float4(Fp, 0.0f, 0.0f, 0.0f);
+}
+
+inline void rkUpdateYBody(device float4* q, device float2* sc,
+                          device float4* u0, device float2* s0,
+                          device const float4* Fx, device const float4* Fy,
+                          device const float4* sFx,
+                          device const float4* sFy, constant Params& P,
+                          int base, int i, int j) {
+    const int id = base + j * P.tx + i;
+    const int iw = id - 1, js = id - P.tx;
+    const float lx = P.dt / P.dx, ly = P.dt / P.dy;
+    const float Gmin = min(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+    const float Gmax = max(1.0f / (P.g1 - 1.0f), 1.0f / (P.g2 - 1.0f));
+    if (P.rks == 0) { u0[id] = q[id]; s0[id] = sc[id]; }
+    const float4 adv = q[id] + lx * (Fx[iw] - Fx[id]) +
+                       ly * (Fy[js] - Fy[id]);
+    q[id] = P.rka * u0[id] + P.rkb * adv;
+    const float2 sv = sc[id];
+    const float phiAdv = sv.x + lx * (sFx[iw].x - sFx[id].x) +
+                         ly * (sFy[js].x - sFy[id].x);
+    const float GmAdv =
+        sv.y - lx * (sFx[id].z - sFx[iw].z -
+                     sv.y * (sFx[id].y - sFx[iw].y)) -
+        ly * (sFy[id].z - sFy[js].z - sv.y * (sFy[id].y - sFy[js].y));
+    sc[id] = float2(P.rka * s0[id].x + P.rkb * phiAdv,
+                    clamp(P.rka * s0[id].y + P.rkb * GmAdv, Gmin, Gmax));
+}
+
+kernel void weno_flux_x_y(device const float4* q [[buffer(0)]],
+                          device const float2* sc [[buffer(1)]],
+                          device float4* Fx [[buffer(2)]],
+                          device float4* FxA [[buffer(3)]],
+                          device float4* sFx [[buffer(4)]],
+                          device float4* sFxA [[buffer(5)]],
+                          constant Params& P [[buffer(6)]],
+                          uint2 g [[thread_position_in_grid]])
+{
+    wenoFluxYBody(q, sc, Fx, FxA, sFx, sFxA, P, 0, int(g.x) + NG - 1,
+                  int(g.y) + NG, 1, true);
+}
+
+kernel void weno_flux_y_y(device const float4* q [[buffer(0)]],
+                          device const float2* sc [[buffer(1)]],
+                          device float4* Fy [[buffer(2)]],
+                          device float4* FyA [[buffer(3)]],
+                          device float4* sFy [[buffer(4)]],
+                          device float4* sFyA [[buffer(5)]],
+                          constant Params& P [[buffer(6)]],
+                          uint2 g [[thread_position_in_grid]])
+{
+    wenoFluxYBody(q, sc, Fy, FyA, sFy, sFyA, P, 0, int(g.x) + NG,
+                  int(g.y) + NG - 1, P.tx, false);
+}
+
+kernel void rk_update_y(device float4* q [[buffer(0)]],
+                        device float2* sc [[buffer(1)]],
+                        device float4* u0 [[buffer(2)]],
+                        device float2* s0 [[buffer(3)]],
+                        device const float4* Fx [[buffer(4)]],
+                        device const float4* Fy [[buffer(5)]],
+                        device const float4* sFx [[buffer(6)]],
+                        device const float4* sFy [[buffer(7)]],
+                        constant Params& P [[buffer(8)]],
+                        uint2 g [[thread_position_in_grid]])
+{
+    rkUpdateYBody(q, sc, u0, s0, Fx, Fy, sFx, sFy, P, 0, int(g.x) + NG,
+                  int(g.y) + NG);
+}
+
+kernel void weno_flux_x_y_pool(device const float4* q [[buffer(0)]],
+                               device const float2* sc [[buffer(1)]],
+                               device float4* Fx [[buffer(2)]],
+                               device float4* FxA [[buffer(3)]],
+                               device float4* sFx [[buffer(4)]],
+                               device float4* sFxA [[buffer(5)]],
+                               constant Params& P [[buffer(6)]],
+                               device const uint* slots [[buffer(7)]],
+                               uint3 g [[thread_position_in_grid]])
+{
+    wenoFluxYBody(q, sc, Fx, FxA, sFx, sFxA, P,
+                  int(slots[g.z]) * P.stride, int(g.x) + NG - 1,
+                  int(g.y) + NG, 1, true);
+}
+
+kernel void weno_flux_y_y_pool(device const float4* q [[buffer(0)]],
+                               device const float2* sc [[buffer(1)]],
+                               device float4* Fy [[buffer(2)]],
+                               device float4* FyA [[buffer(3)]],
+                               device float4* sFy [[buffer(4)]],
+                               device float4* sFyA [[buffer(5)]],
+                               constant Params& P [[buffer(6)]],
+                               device const uint* slots [[buffer(7)]],
+                               uint3 g [[thread_position_in_grid]])
+{
+    wenoFluxYBody(q, sc, Fy, FyA, sFy, sFyA, P,
+                  int(slots[g.z]) * P.stride, int(g.x) + NG,
+                  int(g.y) + NG - 1, P.tx, false);
+}
+
+kernel void rk_update_y_pool(device float4* q [[buffer(0)]],
+                             device float2* sc [[buffer(1)]],
+                             device float4* u0 [[buffer(2)]],
+                             device float2* s0 [[buffer(3)]],
+                             device const float4* Fx [[buffer(4)]],
+                             device const float4* Fy [[buffer(5)]],
+                             device const float4* sFx [[buffer(6)]],
+                             device const float4* sFy [[buffer(7)]],
+                             constant Params& P [[buffer(8)]],
+                             device const uint* slots [[buffer(9)]],
+                             uint3 g [[thread_position_in_grid]])
+{
+    rkUpdateYBody(q, sc, u0, s0, Fx, Fy, sFx, sFy, P,
+                  int(slots[g.z]) * P.stride, int(g.x) + NG,
+                  int(g.y) + NG);
+}

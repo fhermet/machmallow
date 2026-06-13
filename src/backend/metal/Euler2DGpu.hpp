@@ -51,9 +51,11 @@ public:
             b->release();
         for (MTL::Buffer* b : {s_, fXb_, fYb_, sFx_, sFy_})
             if (b) b->release();
-        for (MTL::Buffer* b : {u0_, FxA_, FyA_})
+        for (MTL::Buffer* b : {u0_, FxA_, FyA_, s0_, sFxA_, sFyA_})
             if (b) b->release();
         for (MTL::ComputePipelineState* p : {wfluxX_, wfluxY_, rkUpd_})
+            if (p) p->release();
+        for (MTL::ComputePipelineState* p : {wfluxXY_, wfluxYY_, rkUpdY_})
             if (p) p->release();
         for (MTL::ComputePipelineState* p :
              {predictor_, fluxX_, fluxY_, update_, wave_})
@@ -195,6 +197,57 @@ public:
         return static_cast<const Cons*>(FyA_->contents());
     }
 
+    // WENO5 + SSP-RK3 two-gas mode: combines the species scalar state
+    // (phi, Gamma) with the per-stage WENO machinery. Allocates the RK
+    // starts (u0, s0) and both the conserved and species flux sums.
+    void enableWenoSpecies(const GasPair& gas) {
+        gas_ = gas;
+        species_ = true;
+        wenoSpecies_ = true;
+        wfluxXY_ = ctx_.makePipeline(lib_, "weno_flux_x_y");
+        wfluxYY_ = ctx_.makePipeline(lib_, "weno_flux_y_y");
+        rkUpdY_ = ctx_.makePipeline(lib_, "rk_update_y");
+        // the wave kernel is scheme-independent (reads q + sc only)
+        waveY_ = ctx_.makePipeline(lib_, "wave_y");
+        const std::size_t n = std::size_t(tx_) * ty_;
+        const auto mk4 = [&] {
+            return ctx_.device()->newBuffer(
+                n * sizeof(Cons), MTL::ResourceStorageModeShared);
+        };
+        s_ = ctx_.device()->newBuffer(n * sizeof(PhiG),
+                                      MTL::ResourceStorageModeShared);
+        s0_ = ctx_.device()->newBuffer(n * sizeof(PhiG),
+                                       MTL::ResourceStorageModeShared);
+        u0_ = mk4(); FxA_ = mk4(); FyA_ = mk4();
+        sFx_ = mk4(); sFy_ = mk4(); sFxA_ = mk4(); sFyA_ = mk4();
+    }
+    void encodeWenoStageY(MTL::CommandBuffer* cmd, Real dt,
+                          int stage) const {
+        static constexpr float A[3] = {0, 0.75f, float(1.0 / 3.0)};
+        static constexpr float B[3] = {1, 0.25f, float(2.0 / 3.0)};
+        static constexpr float W[3] = {float(1.0 / 6.0),
+                                       float(1.0 / 6.0),
+                                       float(2.0 / 3.0)};
+        Params p = params(dt);
+        p.rks = stage;
+        p.rka = A[stage];
+        p.rkb = B[stage];
+        p.rkw = W[stage];
+        encode(cmd, wfluxXY_, {q_, s_, Fx_, FxA_, sFx_, sFxA_}, p,
+               nx_ + 1, ny_);
+        encode(cmd, wfluxYY_, {q_, s_, Fy_, FyA_, sFy_, sFyA_}, p, nx_,
+               ny_ + 1);
+        encode(cmd, rkUpdY_, {q_, s_, u0_, s0_, Fx_, Fy_, sFx_, sFy_}, p,
+               nx_, ny_);
+    }
+    // RK-weighted species mass flux sum (.rho), refluxed in WENO mode.
+    const Cons* sfxA() const {
+        return static_cast<const Cons*>(sFxA_->contents());
+    }
+    const Cons* sfyA() const {
+        return static_cast<const Cons*>(sFyA_->contents());
+    }
+
     // Two-gas mode: allocates the scalar state (phi, Gamma) and face /
     // flux buffers and switches encodeStep/encodeWave to the species
     // kernels (which have neither viscosity nor gravity, like the CPU).
@@ -285,10 +338,13 @@ private:
                 *Fy_ = nullptr, *smax_ = nullptr;
     MTL::Buffer *s_ = nullptr, *fXb_ = nullptr, *fYb_ = nullptr,
                 *sFx_ = nullptr, *sFy_ = nullptr;
-    bool weno_ = false;
+    bool weno_ = false, wenoSpecies_ = false;
     MTL::ComputePipelineState *wfluxX_ = nullptr, *wfluxY_ = nullptr,
                               *rkUpd_ = nullptr;
+    MTL::ComputePipelineState *wfluxXY_ = nullptr, *wfluxYY_ = nullptr,
+                              *rkUpdY_ = nullptr;
     MTL::Buffer *u0_ = nullptr, *FxA_ = nullptr, *FyA_ = nullptr;
+    MTL::Buffer *s0_ = nullptr, *sFxA_ = nullptr, *sFyA_ = nullptr;
 };
 
 static_assert(sizeof(Cons) == 4 * sizeof(float),

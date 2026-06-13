@@ -97,20 +97,34 @@ public:
         updateP_ = ctx.makePipeline(lib_, "update_pool");
         waveP_ = ctx.makePipeline(lib_, "wave_pool");
 
-        assert(!(cfg.weno && cfg.species) && "weno is single-gas");
-        if (cfg_.weno) {
+        const auto mkS = [&] {
+            return ctx.device()->newBuffer(
+                std::size_t(capacity_) * stride_ * sizeof(PhiG),
+                MTL::ResourceStorageModeShared);
+        };
+        if (cfg_.weno && cfg_.species) {
+            // WENO5 + RK3 two-gas: scalar state + per-stage RK starts +
+            // both conserved and species flux sums (for refluxing)
+            gas_ = GasPair{cfg_.gamma1, cfg_.gamma2};
+            coarse_.enableWenoSpecies(gas_);
+            sP_ = mkS(); s0P_ = mkS();
+            u0P_ = mk(); FxAP_ = mk(); FyAP_ = mk();
+            sFxP_ = mk(); sFyP_ = mk(); sFxAP_ = mk(); sFyAP_ = mk();
+            wfluxXYP_ = ctx.makePipeline(lib_, "weno_flux_x_y_pool");
+            wfluxYYP_ = ctx.makePipeline(lib_, "weno_flux_y_y_pool");
+            rkUpdYP_ = ctx.makePipeline(lib_, "rk_update_y_pool");
+            // wave kernel reused as-is (scheme-independent)
+            waveYP_ = ctx.makePipeline(lib_, "wave_y_pool");
+        } else if (cfg_.weno) {
             coarse_.enableWeno();
             u0P_ = mk(); FxAP_ = mk(); FyAP_ = mk();
             wfluxXP_ = ctx.makePipeline(lib_, "weno_flux_x_pool");
             wfluxYP_ = ctx.makePipeline(lib_, "weno_flux_y_pool");
             rkUpdP_ = ctx.makePipeline(lib_, "rk_update_pool");
-        }
-        if (cfg_.species) {
+        } else if (cfg_.species) {
             gas_ = GasPair{cfg_.gamma1, cfg_.gamma2};
             coarse_.enableSpecies(gas_);
-            sP_ = ctx.device()->newBuffer(
-                std::size_t(capacity_) * stride_ * sizeof(PhiG),
-                MTL::ResourceStorageModeShared);
+            sP_ = mkS();
             fXP_ = mk(); fYP_ = mk(); sFxP_ = mk(); sFyP_ = mk();
             predictorYP_ = ctx.makePipeline(lib_, "predictor_y_pool");
             fluxXYP_ = ctx.makePipeline(lib_, "flux_x_y_pool");
@@ -130,10 +144,12 @@ public:
             b->release();
         for (MTL::Buffer* b : {sP_, fXP_, fYP_, sFxP_, sFyP_})
             if (b) b->release();
-        for (MTL::Buffer* b : {u0P_, FxAP_, FyAP_})
+        for (MTL::Buffer* b :
+             {u0P_, FxAP_, FyAP_, s0P_, sFxAP_, sFyAP_})
             if (b) b->release();
         for (MTL::ComputePipelineState* p :
-             {wfluxXP_, wfluxYP_, rkUpdP_})
+             {wfluxXP_, wfluxYP_, rkUpdP_, wfluxXYP_, wfluxYYP_,
+              rkUpdYP_})
             if (p) p->release();
         for (MTL::ComputePipelineState* p :
              {predictorP_, fluxXP_, fluxYP_, updateP_, waveP_})
@@ -479,13 +495,16 @@ private:
                    (cfg_.weno ? FyAP_ : FyP_)->contents()) +
                std::size_t(p.slot) * stride_;
     }
-    // packed (Fpx, Ssx, Fgx, 0) — only .rho (= Fp) is refluxed
+    // species mass flux for refluxing (.rho = Fp): WENO refluxes the
+    // RK-weighted accumulated flux, MUSCL the one-step packed flux
     const Cons* sfxOf_(const Patch& p) const {
-        return static_cast<const Cons*>(sFxP_->contents()) +
+        return static_cast<const Cons*>(
+                   (cfg_.weno ? sFxAP_ : sFxP_)->contents()) +
                std::size_t(p.slot) * stride_;
     }
     const Cons* sfyOf_(const Patch& p) const {
-        return static_cast<const Cons*>(sFyP_->contents()) +
+        return static_cast<const Cons*>(
+                   (cfg_.weno ? sFyAP_ : sFyP_)->contents()) +
                std::size_t(p.slot) * stride_;
     }
 
@@ -801,11 +820,17 @@ private:
     void stepLevelWeno_(int l, Real dt, double t, Real thBase,
                         Real thSpan) {
         static constexpr Real C[3] = {0, 1, Real(0.5)};
+        static constexpr float A[3] = {0, 0.75f, float(1.0 / 3.0)};
+        static constexpr float B[3] = {1, 0.25f, float(2.0 / 3.0)};
+        static constexpr float W[3] = {float(1.0 / 6.0),
+                                       float(1.0 / 6.0),
+                                       float(2.0 / 3.0)};
         for (int s = 0; s < 3; ++s) {
             if (s > 0) {
                 if (l == 0) {
                     GridRef b = coarseRef();
                     fillPhysicalGhosts(b, t + double(C[s]) * dt);
+                    if (cfg_.species) baseScalarGhosts_();
                 } else {
                     fillLevelGhosts_(l, t + double(C[s]) * dt,
                                      thBase + C[s] * thSpan);
@@ -813,26 +838,35 @@ private:
             }
             MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
             if (l == 0) {
-                coarse_.encodeWenoStage(cmd, dt, s);
+                if (cfg_.species)
+                    coarse_.encodeWenoStageY(cmd, dt, s);
+                else
+                    coarse_.encodeWenoStage(cmd, dt, s);
             } else {
                 Euler2DGpu::Params p = poolParams_(l, dt);
-                static constexpr float A[3] = {0, 0.75f,
-                                               float(1.0 / 3.0)};
-                static constexpr float B[3] = {1, 0.25f,
-                                               float(2.0 / 3.0)};
-                static constexpr float W[3] = {float(1.0 / 6.0),
-                                               float(1.0 / 6.0),
-                                               float(2.0 / 3.0)};
                 p.rks = s;
                 p.rka = A[s];
                 p.rkb = B[s];
                 p.rkw = W[s];
-                encodePoolP_(cmd, l, wfluxXP_, {qP_, FxP_, FxAP_}, p,
-                             nf_ + 1, nf_);
-                encodePoolP_(cmd, l, wfluxYP_, {qP_, FyP_, FyAP_}, p,
-                             nf_, nf_ + 1);
-                encodePoolP_(cmd, l, rkUpdP_, {qP_, u0P_, FxP_, FyP_},
-                             p, nf_, nf_);
+                if (cfg_.species) {
+                    encodePoolP_(cmd, l, wfluxXYP_,
+                                 {qP_, sP_, FxP_, FxAP_, sFxP_, sFxAP_},
+                                 p, nf_ + 1, nf_);
+                    encodePoolP_(cmd, l, wfluxYYP_,
+                                 {qP_, sP_, FyP_, FyAP_, sFyP_, sFyAP_},
+                                 p, nf_, nf_ + 1);
+                    encodePoolP_(cmd, l, rkUpdYP_,
+                                 {qP_, sP_, u0P_, s0P_, FxP_, FyP_, sFxP_,
+                                  sFyP_},
+                                 p, nf_, nf_);
+                } else {
+                    encodePoolP_(cmd, l, wfluxXP_, {qP_, FxP_, FxAP_}, p,
+                                 nf_ + 1, nf_);
+                    encodePoolP_(cmd, l, wfluxYP_, {qP_, FyP_, FyAP_}, p,
+                                 nf_, nf_ + 1);
+                    encodePoolP_(cmd, l, rkUpdP_, {qP_, u0P_, FxP_, FyP_},
+                                 p, nf_, nf_);
+                }
             }
             cmd->commit();
             cmd->waitUntilCompleted();
@@ -890,8 +924,8 @@ private:
                           b.totx(), NG + cg, NG + cgj};
             if (cfg_.species) {
                 pc.sc = baseS();
-                pc.sFx = coarse_.sfx();
-                pc.sFy = coarse_.sfy();
+                pc.sFx = cfg_.weno ? coarse_.sfxA() : coarse_.sfx();
+                pc.sFy = cfg_.weno ? coarse_.sfyA() : coarse_.sfy();
             }
             return pc;
         }
@@ -1254,6 +1288,10 @@ private:
     MTL::ComputePipelineState *wfluxXP_ = nullptr, *wfluxYP_ = nullptr,
                               *rkUpdP_ = nullptr;
     MTL::Buffer *u0P_ = nullptr, *FxAP_ = nullptr, *FyAP_ = nullptr;
+    // WENO5 two-gas pool: scalar RK start + accumulated species flux
+    MTL::ComputePipelineState *wfluxXYP_ = nullptr, *wfluxYYP_ = nullptr,
+                              *rkUpdYP_ = nullptr;
+    MTL::Buffer *s0P_ = nullptr, *sFxAP_ = nullptr, *sFyAP_ = nullptr;
 };
 
 } // namespace mm

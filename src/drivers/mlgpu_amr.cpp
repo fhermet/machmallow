@@ -411,6 +411,120 @@ bool gate5_wenoViscousGpu(MetalContext& ctx) {
            cpu.patchCount(1) == gpu.patchCount(1);
 }
 
+// Two-gas WENO5 on the GPU: Sod (gamma 1.4 | 1.6) on a 3-level
+// subcycled hierarchy, GPU (AmrGpuML) in full lock-step with the CPU
+// AmrML two-gas WENO path. Exercises the Metal WENO species flux/update
+// kernels, the scalar slot pool, and the RK-weighted species refluxing.
+bool gate6_wenoSpeciesGpu(MetalContext& ctx) {
+    const GasPair gas{Real(1.4), Real(1.6)};
+    const exact::State L{1, 0, 1, 1.4};
+    const exact::State R{0.125, 0, 0.1, 1.6};
+    const double tEnd = 0.2;
+
+    AmrConfig cfg;
+    cfg.maxLevels = 3;
+    cfg.subcycle = true;
+    cfg.weno = true;
+    cfg.species = true;
+    cfg.gamma1 = Real(1.4);
+    cfg.gamma2 = Real(1.6);
+
+    AmrML cpu(64, 16, 0, 0, 1, Real(0.25), cfg);
+    AmrGpuML gpu(ctx, 64, 16, 0, 0, 1, Real(0.25), cfg);
+    const auto wire = [](auto& amr) {
+        amr.fillPhysicalGhosts = [](auto& g, double) {
+            fillTransmissiveLeft(g);
+            fillTransmissiveRight(g);
+            fillTransmissiveBottom(g);
+            fillTransmissiveTop(g);
+        };
+        amr.fillPatchPhysical = [](auto& g, double, unsigned sides) {
+            if (sides & SideLeft) fillTransmissiveLeft(g);
+            if (sides & SideRight) fillTransmissiveRight(g);
+            if (sides & SideBottom) fillTransmissiveBottom(g);
+            if (sides & SideTop) fillTransmissiveTop(g);
+        };
+    };
+    wire(cpu);
+    wire(gpu);
+    const auto ic = [&](Real x, Real) {
+        const bool right = x >= Real(0.5);
+        const exact::State& st = right ? R : L;
+        return toConsG({Real(st.rho), Real(st.u), 0, Real(st.p)},
+                       gas.Gamma(right ? Real(1) : Real(0)));
+    };
+    const auto icY = [](Real x, Real) {
+        return x >= Real(0.5) ? Real(1) : Real(0);
+    };
+    cpu.init(ic, icY);
+    gpu.init(ic, icY);
+
+    // exercise the GPU dt reduction too (its own species wave kernels);
+    // it must agree with the CPU, then drive the lock-step with one dt
+    const double m0 = gpu.totalSpeciesMass();
+    double t = 0, drift = 0, dtRel = 0;
+    while (t < tEnd * (1 - 1e-9)) {
+        const Real dtC = cpu.maxStableDtAll(CFL);
+        const Real dtG = gpu.maxStableDtAll(CFL);
+        dtRel = std::max(dtRel, std::fabs(double(dtC - dtG)) /
+                                    double(dtC));
+        const Real dt = std::min(dtC, Real(tEnd - t));
+        cpu.step(dt, t);
+        gpu.step(dt, t);
+        t += dt;
+        drift = std::max(drift,
+                         std::fabs(gpu.totalSpeciesMass() - m0) /
+                             std::max(m0, 1e-30));
+    }
+
+    const GridRef g = gpu.coarseRef();
+    const int bC = gpu.fineCells() / 2;
+    double maxRel = 0, err = 0;
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 64; ++i) {
+            if (gpu.covered(1, i / bC, j / bC)) continue;
+            const Real* pa = &cpu.base.at(NG + i, NG + j).rho;
+            const Real* pb = &g.at(NG + i, NG + j).rho;
+            for (int k = 0; k < NVARS; ++k)
+                maxRel = std::max(maxRel,
+                                  std::fabs(double(pa[k]) - pb[k]) /
+                                      (std::fabs(double(pa[k])) + 1e-3));
+            err += std::fabs(
+                       double(pb[0]) -
+                       exact::sample(L, R,
+                                     (double(g.xc(NG + i)) - 0.5) /
+                                         tEnd).rho) *
+                   g.dx * g.dy;
+        }
+    for (int l = 1; l < 3; ++l)
+        for (const auto& p : gpu.level(l).patches) {
+            const GridRef pg = gpu.patchRef(l, p);
+            for (int j = NG; j < NG + gpu.fineCells(); ++j)
+                for (int i = NG; i < NG + gpu.fineCells(); ++i) {
+                    const int gi = 2 * p.ci0 + (i - NG);
+                    const int gj = 2 * p.cj0 + (j - NG);
+                    if (l < 2 && gpu.covered(l + 1, gi / bC, gj / bC))
+                        continue;
+                    err += std::fabs(
+                               double(pg.at(i, j).rho) -
+                               exact::sample(L, R,
+                                             (double(pg.xc(i)) - 0.5) /
+                                                 tEnd).rho) *
+                           pg.dx * pg.dy;
+                }
+        }
+    err /= 0.25;
+    std::printf("gate 6 — two-gas WENO5 Sod on 3-level AMR (GPU): L1 = "
+                "%.4e (gate 6e-3), species mass drift %.3e (gate 1e-4), "
+                "CPU/GPU max rel diff %.3e (gate 1e-2), dt agree %.3e, "
+                "patches L1 %zu|%zu L2 %zu|%zu\n",
+                err, drift, maxRel, dtRel, cpu.patchCount(1),
+                gpu.patchCount(1), cpu.patchCount(2), gpu.patchCount(2));
+    return err < 6e-3 && drift < 1e-4 && maxRel < 1e-2 && dtRel < 1e-3 &&
+           cpu.patchCount(1) == gpu.patchCount(1) &&
+           cpu.patchCount(2) == gpu.patchCount(2);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -420,7 +534,7 @@ int main(int argc, char** argv) {
 
     if (!gate1_lockstep(ctx) || !gate2_periodic(ctx) ||
         !gate3_speciesGpu(ctx) || !gate4_wenoGpu(ctx) ||
-        !gate5_wenoViscousGpu(ctx)) {
+        !gate5_wenoViscousGpu(ctx) || !gate6_wenoSpeciesGpu(ctx)) {
         std::fprintf(stderr, "FAIL\n");
         return EXIT_FAILURE;
     }
