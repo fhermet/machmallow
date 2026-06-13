@@ -14,6 +14,7 @@
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "numerics/ExactRiemann.hpp"
+#include "physics/TwoGas.hpp"
 #include "solver/Muscl2D.hpp"
 #include "solver/Weno2D.hpp"
 
@@ -255,6 +256,157 @@ bool gate6_viscousShear() {
     return ord >= 1.8 && w128 < 2 * m128;
 }
 
+// Two-gas WENO5 on a uniform grid: Sod with gamma 1.4 | 1.6 across the
+// interface, vs the generalized (per-side gamma) exact Riemann solution.
+// Validates the species reconstruction + per-side HLLC + quasi-
+// conservative Gamma transport before the AMR plumbing.
+bool gate7_twoGasUniform() {
+    const GasPair gas{Real(1.4), Real(1.6)};
+    const exact::State L{1, 0, 1, 1.4};
+    const exact::State R{0.125, 0, 0.1, 1.6};
+    const double tEnd = 0.2;
+    const int N = 400;
+
+    Grid g(N, 4, 0, 0, 1, Real(4.0) / N);
+    std::vector<Real> phi(g.q.size()), Gm(g.q.size());
+    for (int j = 0; j < g.toty(); ++j)
+        for (int i = 0; i < g.totx(); ++i) {
+            const bool right = g.xc(i) >= Real(0.5);
+            const Real Y = right ? 1 : 0;
+            const exact::State& st = right ? R : L;
+            const std::size_t id = g.idx(i, j);
+            g.q[id] = toConsG({Real(st.rho), Real(st.u), 0, Real(st.p)},
+                              gas.Gamma(Y));
+            phi[id] = g.q[id].rho * Y;
+            Gm[id] = gas.Gamma(Y);
+        }
+    const auto fill = [&](Grid& gg) {
+        fillTransmissiveLeft(gg);
+        fillTransmissiveRight(gg);
+        fillPeriodicY(gg);
+        // scalar ghosts: transmissive in x, periodic in y
+        for (auto* f : {&phi, &Gm})
+            for (int j = 0; j < gg.toty(); ++j)
+                for (int k = 0; k < NG; ++k) {
+                    (*f)[gg.idx(k, j)] = (*f)[gg.idx(NG, j)];
+                    (*f)[gg.idx(NG + gg.nx + k, j)] =
+                        (*f)[gg.idx(NG + gg.nx - 1, j)];
+                }
+        // y is invariant here, so transmissive == periodic for scalars
+        for (auto* f : {&phi, &Gm})
+            for (int i = 0; i < gg.totx(); ++i)
+                for (int k = 0; k < NG; ++k) {
+                    (*f)[gg.idx(i, k)] = (*f)[gg.idx(i, NG)];
+                    (*f)[gg.idx(i, NG + gg.ny + k)] =
+                        (*f)[gg.idx(i, NG + gg.ny - 1)];
+                }
+    };
+    ScratchWY s;
+    double t = 0;
+    while (t < tEnd * (1 - 1e-12)) {
+        const Real dt =
+            std::min(maxStableDtY(g, Gm, CFL), Real(tEnd - t));
+        stepWeno2DY(g, phi, Gm, dt, s, gas, fill);
+        t += dt;
+    }
+    double err = 0, rmin = 1e30, rmax = -1e30;
+    for (int i = NG; i < NG + N; ++i) {
+        const double r = double(g.at(i, NG + 1).rho);
+        err += std::fabs(
+            r - exact::sample(L, R, (double(g.xc(i)) - 0.5) / tEnd).rho);
+        rmin = std::min(rmin, r);
+        rmax = std::max(rmax, r);
+    }
+    err /= N;
+    const bool bounded = rmax < 1.0 + 1e-3 && rmin > 0.125 - 1e-3;
+    std::printf("gate 7 — two-gas Sod (uniform WENO5): L1 = %.4e (gate "
+                "4e-3), rho in [%.4f, %.4f] (gate: bounded)\n",
+                err, rmin, rmax);
+    return err < 4e-3 && bounded;
+}
+
+// Two-gas WENO5 through the multi-level AMR: Sod (gamma 1.4 | 1.6) on a
+// 3-level subcycled hierarchy vs the generalized exact solution, with
+// species-mass conservation across the refluxed coarse-fine interfaces.
+bool gate8_twoGasAmr() {
+    const GasPair gas{Real(1.4), Real(1.6)};
+    const exact::State L{1, 0, 1, 1.4};
+    const exact::State R{0.125, 0, 0.1, 1.6};
+    const double tEnd = 0.2;
+    AmrConfig cfg;
+    cfg.maxLevels = 3;
+    cfg.subcycle = true;
+    cfg.weno = true;
+    cfg.species = true;
+    cfg.gamma1 = Real(1.4);
+    cfg.gamma2 = Real(1.6);
+    AmrML amr(64, 16, 0, 0, 1, Real(0.25), cfg);
+    amr.fillPhysicalGhosts = [](Grid& g, double) {
+        fillTransmissiveLeft(g);
+        fillTransmissiveRight(g);
+        fillTransmissiveBottom(g);
+        fillTransmissiveTop(g);
+    };
+    amr.fillPatchPhysical = [](Grid& g, double, unsigned sides) {
+        if (sides & SideLeft) fillTransmissiveLeft(g);
+        if (sides & SideRight) fillTransmissiveRight(g);
+        if (sides & SideBottom) fillTransmissiveBottom(g);
+        if (sides & SideTop) fillTransmissiveTop(g);
+    };
+    amr.init(
+        [&](Real x, Real) {
+            const bool right = x >= Real(0.5);
+            const exact::State& st = right ? R : L;
+            return toConsG({Real(st.rho), Real(st.u), 0, Real(st.p)},
+                           gas.Gamma(right ? Real(1) : Real(0)));
+        },
+        [](Real x, Real) { return x >= Real(0.5) ? Real(1) : Real(0); });
+
+    const double m0 = amr.totalSpeciesMass();
+    double t = 0, drift = 0;
+    while (t < tEnd * (1 - 1e-9)) {
+        const Real dt =
+            std::min(amr.maxStableDtAll(CFL), Real(tEnd - t));
+        amr.step(dt, t);
+        t += dt;
+        drift = std::max(drift, std::fabs(amr.totalSpeciesMass() - m0) /
+                                    std::max(m0, 1e-30));
+    }
+    double err = 0;
+    const int bC = amr.fineCells() / 2;
+    for (int j = 0; j < 16; ++j)
+        for (int i = 0; i < 64; ++i)
+            if (!amr.covered(1, i / bC, j / bC))
+                err += std::fabs(
+                           double(amr.base.at(NG + i, NG + j).rho) -
+                           exact::sample(L, R,
+                                         (double(amr.base.xc(NG + i)) -
+                                          0.5) / tEnd).rho) *
+                       amr.base.dx * amr.base.dy;
+    for (int l = 1; l < 3; ++l)
+        for (const auto& p : amr.level(l).patches)
+            for (int j = NG; j < NG + amr.fineCells(); ++j)
+                for (int i = NG; i < NG + amr.fineCells(); ++i) {
+                    const int gi = 2 * p.ci0 + (i - NG);
+                    const int gj = 2 * p.cj0 + (j - NG);
+                    if (l < 2 && amr.covered(l + 1, gi / bC, gj / bC))
+                        continue;
+                    err += std::fabs(
+                               double(p.grid.at(i, j).rho) -
+                               exact::sample(
+                                   L, R,
+                                   (double(p.grid.xc(i)) - 0.5) / tEnd)
+                                   .rho) *
+                           p.grid.dx * p.grid.dy;
+                }
+    err /= 0.25;
+    std::printf("gate 8 — two-gas WENO5 Sod on 3-level AMR: L1 = %.4e "
+                "(gate 5e-3), species mass drift = %.3e (gate 1e-4), "
+                "patches L1 %zu L2 %zu\n",
+                err, drift, amr.patchCount(1), amr.patchCount(2));
+    return err < 5e-3 && drift < 1e-4;
+}
+
 // The strongest stage-ghost test there is: a fully refined,
 // non-subcycled 2-level hierarchy on a doubly periodic domain must
 // reproduce the uniform fine grid BIT FOR BIT — every patch ghost is a
@@ -402,6 +554,8 @@ int main() {
     ok = gate4_allRefinedBitExact() && ok;
     ok = gate5_sodAmr() && ok;
     ok = gate6_viscousShear() && ok;
+    ok = gate7_twoGasUniform() && ok;
+    ok = gate8_twoGasAmr() && ok;
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

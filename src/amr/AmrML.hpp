@@ -48,6 +48,7 @@ public:
         std::vector<Cons> rk0;    // RK step start state (WENO mode)
         // two-gas fields (allocated only when cfg.species)
         std::vector<Real> phi, Gmf, oldPhi, oldGm, Fpx, Fpy;
+        std::vector<Real> rkPhi0, rkGm0; // RK start (WENO two-gas)
     };
 
     struct Level { // level l >= 1; stored at lvls_[l-1]
@@ -66,7 +67,6 @@ public:
         : base(nx, ny, x0, y0, lx, ly), cfg_(cfg), nf_(2 * cfg.blockC) {
         assert(nx % cfg.blockC == 0 && ny % cfg.blockC == 0);
         assert(cfg.maxLevels >= 1);
-        assert(!(cfg.weno && cfg.species) && "weno is single-gas for now");
         gas_ = GasPair{cfg.gamma1, cfg.gamma2};
         if (cfg_.species) {
             basePhi_.assign(base.q.size(), 0);
@@ -701,18 +701,84 @@ private:
                 }
         };
 
+        // two-gas variant: advance q, phi (conservative) and Gamma
+        // (quasi-conservative) per stage; accumulate the RK-weighted
+        // conserved and species fluxes for refluxing
+        const Real Gmin = std::min(gas_.Gamma(0), gas_.Gamma(1));
+        const Real Gmax = std::max(gas_.Gamma(0), gas_.Gamma(1));
+        const auto stageGridY =
+            [&](Grid& g, std::vector<Real>& phi, std::vector<Real>& Gm,
+                std::vector<Cons>& u0, std::vector<Real>& phi0,
+                std::vector<Real>& Gm0, std::vector<Cons>& Fxa,
+                std::vector<Cons>& Fya, std::vector<Real>& Fpxa,
+                std::vector<Real>& Fpya, const St& st, bool first) {
+                if (first) {
+                    u0 = g.q;
+                    phi0 = phi;
+                    Gm0 = Gm;
+                    Fxa.assign(g.q.size(), Cons{});
+                    Fya.assign(g.q.size(), Cons{});
+                    Fpxa.assign(g.q.size(), Real(0));
+                    Fpya.assign(g.q.size(), Real(0));
+                }
+                wenoFluxesY(g, phi, Gm, scratchWY_, gas_);
+                const ScratchWY& w = scratchWY_;
+                const Real lx = dt / g.dx, ly = dt / g.dy;
+                for (int j = NG - 1; j < NG + g.ny; ++j)
+                    for (int i = NG - 1; i < NG + g.nx; ++i) {
+                        const std::size_t id = g.idx(i, j);
+                        Fxa[id] += st.w * w.Fx[id];
+                        Fya[id] += st.w * w.Fy[id];
+                        Fpxa[id] += st.w * w.Fpx[id];
+                        Fpya[id] += st.w * w.Fpy[id];
+                    }
+                for (int j = NG; j < NG + g.ny; ++j)
+                    for (int i = NG; i < NG + g.nx; ++i) {
+                        const std::size_t id = g.idx(i, j);
+                        const std::size_t iw = g.idx(i - 1, j);
+                        const std::size_t js = g.idx(i, j - 1);
+                        const Cons adv = g.q[id] +
+                                         lx * (w.Fx[iw] - w.Fx[id]) +
+                                         ly * (w.Fy[js] - w.Fy[id]);
+                        g.q[id] = st.a * u0[id] + st.b * adv;
+                        const Real phiAdv =
+                            phi[id] + lx * (w.Fpx[iw] - w.Fpx[id]) +
+                            ly * (w.Fpy[js] - w.Fpy[id]);
+                        phi[id] = st.a * phi0[id] + st.b * phiAdv;
+                        const Real GmAdv =
+                            Gm[id] -
+                            lx * (w.Fgx[id] - w.Fgx[iw] -
+                                  Gm[id] * (w.Ssx[id] - w.Ssx[iw])) -
+                            ly * (w.Fgy[id] - w.Fgy[js] -
+                                  Gm[id] * (w.Ssy[id] - w.Ssy[js]));
+                        Gm[id] = std::clamp(
+                            st.a * Gm0[id] + st.b * GmAdv, Gmin, Gmax);
+                    }
+            };
+
         for (int s = 0; s < 3; ++s) {
             const St& st = ST[s];
             // stage 1 reuses the ghosts the caller just filled
             if (s > 0) {
                 if (l == 0) {
                     fillPhysicalGhosts(base, t + double(st.c) * dt);
+                    if (cfg_.species) baseScalarGhosts_();
                 } else {
                     fillLevelGhosts_(l, t + double(st.c) * dt,
                                      thBase + st.c * thSpan);
                 }
             }
-            if (l == 0) {
+            if (cfg_.species) {
+                if (l == 0)
+                    stageGridY(base, basePhi_, baseGm_, rkB0_, rkPhiB0_,
+                               rkGmB0_, wFxB_, wFyB_, wFpxB_, wFpyB_, st,
+                               s == 0);
+                else
+                    for (Patch& p : lvls_[l - 1].patches)
+                        stageGridY(p.grid, p.phi, p.Gmf, p.rk0, p.rkPhi0,
+                                   p.rkGm0, p.Fx, p.Fy, p.Fpx, p.Fpy, st,
+                                   s == 0);
+            } else if (l == 0) {
                 stageGrid(base, rkB0_, wFxB_, wFyB_, st, s == 0);
             } else {
                 for (Patch& p : lvls_[l - 1].patches)
@@ -777,8 +843,10 @@ private:
             if (cfg_.species) {
                 pc.phi = &basePhi_;
                 pc.Gm = &baseGm_;
-                pc.Fpx = &scratchYB_.Fpx;
-                pc.Fpy = &scratchYB_.Fpy;
+                // WENO accumulates the base species flux into wFpxB_/
+                // wFpyB_; MUSCL leaves it in the scratch
+                pc.Fpx = cfg_.weno ? &wFpxB_ : &scratchYB_.Fpx;
+                pc.Fpy = cfg_.weno ? &wFpyB_ : &scratchYB_.Fpy;
             }
             return pc;
         }
@@ -1100,8 +1168,11 @@ private:
     std::vector<Level> lvls_;
     Scratch2D scratchB_, scratch_;
     ScratchY scratchYB_, scratchY_; // two-gas variants
-    ScratchW scratchW_;             // WENO mode
+    ScratchW scratchW_;             // WENO mode (single-gas)
+    ScratchWY scratchWY_;           // WENO mode (two-gas)
     std::vector<Cons> rkB0_, wFxB_, wFyB_; // base RK start + flux sums
+    std::vector<Real> rkPhiB0_, rkGmB0_;   // base RK start (two-gas)
+    std::vector<Real> wFpxB_, wFpyB_;      // base species flux sums
     std::vector<Cons> baseOld_;
     std::vector<Real> basePhi_, baseGm_, baseOldPhi_, baseOldGm_;
     GasPair gas_;
