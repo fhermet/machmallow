@@ -93,4 +93,46 @@ inline void fillReflectiveTop(G& g) {
         }
 }
 
+// No-slip wall: mirror the state but flip BOTH momentum components, so
+// the reconstructed wall velocity is zero (the viscous shear at the
+// wall comes from the resulting one-sided gradient). Density and energy
+// are mirrored evenly -> zero normal temperature gradient -> adiabatic
+// wall. Only meaningful in viscous (mu > 0) runs.
+template <class G>
+inline void fillNoSlipLeft(G& g) {
+    for (int j = 0; j < g.toty(); ++j)
+        for (int k = 0; k < NG; ++k) {
+            Cons c = g.at(NG + k, j);
+            c.mx = -c.mx; c.my = -c.my;
+            g.at(NG - 1 - k, j) = c;
+        }
+}
+template <class G>
+inline void fillNoSlipRight(G& g) {
+    for (int j = 0; j < g.toty(); ++j)
+        for (int k = 0; k < NG; ++k) {
+            Cons c = g.at(NG + g.nx - 1 - k, j);
+            c.mx = -c.mx; c.my = -c.my;
+            g.at(NG + g.nx + k, j) = c;
+        }
+}
+template <class G>
+inline void fillNoSlipBottom(G& g) {
+    for (int i = 0; i < g.totx(); ++i)
+        for (int k = 0; k < NG; ++k) {
+            Cons c = g.at(i, NG + k);
+            c.mx = -c.mx; c.my = -c.my;
+            g.at(i, NG - 1 - k) = c;
+        }
+}
+template <class G>
+inline void fillNoSlipTop(G& g) {
+    for (int i = 0; i < g.totx(); ++i)
+        for (int k = 0; k < NG; ++k) {
+            Cons c = g.at(i, NG + g.ny - 1 - k);
+            c.mx = -c.mx; c.my = -c.my;
+            g.at(i, NG + g.ny + k) = c;
+        }
+}
+
 } // namespace mm

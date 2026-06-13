@@ -33,6 +33,17 @@ Riemann exact, acoustique (ordre TVD 4/3), vortex isentropique (2.35),
 Sedov (0.490), couche erf visqueuse, chute libre, conservation au
 plancher fp32, lock-steps CPU/GPU partout. Détails : git log.
 
+Ajout hors-jalon — **murs no-slip** : BC déclarative `noslip` (miroir
+avec les deux composantes de quantité de mouvement inversées, paroi
+adiabatique), validée par la **couche limite de Blasius** sur plaque
+plane (driver `blasius` + `cases/blasius.ini`) : profil RMS 1.4 %,
+δ99 −2 %, Cf +7 % vs théorie à Re_x ≈ 2700. Leçon : un Blasius propre
+en compressible exige un flot libre épinglé en haut (ZPG) et un domaine
+haut (~14 δ99) — un haut transmissif laisse le déplacement de la couche
+accélérer le flot (Ue +16 %) et amincir la BL ; il faut aussi être à
+Re_x assez élevé (δ ≪ x) pour le régime asymptotique. Un vrai
+non-réfléchissant caractéristique reste en backlog.
+
 ## Jalons
 
 ### Fil rouge « outil industriel » *(transverse, un peu à chaque jalon)*
@@ -215,7 +226,7 @@ portes de validation → GPU.
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 
 Mode stationnaire (local time stepping — donnerait tout leur sens aux
-résidus du journal) ; no-slip + Blasius/Couette ; tagging de Richardson ;
+résidus du journal) ; tagging de Richardson ;
 checkpoint multi-niveaux ; perf (pipelining GPU, ghost fill GPU, syncs
 multi-niveaux) ; sondes ponctuelles ; régions ellipse/polygone ; Riemann
 2D 4-quadrants ; ratio de raffinement 4 ; sources additionnelles

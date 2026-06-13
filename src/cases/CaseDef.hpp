@@ -18,7 +18,8 @@
 //                        | u|v|rho|p erf x0 width amp
 //   [bc]       x|y = periodic
 //              left|right|bottom|top =
-//                  transmissive | reflective | analytic | inflow X
+//                  transmissive | reflective | noslip | analytic |
+//                  inflow X   (noslip = viscous wall, needs mu > 0)
 //                  [if x|y < val else <spec>]
 //
 // The key idea: `analytic` ghosts re-evaluate the (time-dependent)
@@ -215,7 +216,7 @@ public:
     }
 
 private:
-    enum class Bc { Transmissive, Reflective, Analytic, Inflow };
+    enum class Bc { Transmissive, Reflective, NoSlip, Analytic, Inflow };
     struct Spec {
         Bc type = Bc::Transmissive;
         Prim inflow{};
@@ -493,6 +494,7 @@ private:
         const std::string& t = toks[i];
         if (t == "transmissive") s.type = Bc::Transmissive;
         else if (t == "reflective") s.type = Bc::Reflective;
+        else if (t == "noslip") s.type = Bc::NoSlip;
         else if (t == "analytic") s.type = Bc::Analytic;
         else if (t == "inflow") {
             s.type = Bc::Inflow;
@@ -585,6 +587,15 @@ private:
                         w.p = std::max(w.p + w.rho * gn * dpos, P_FLOOR);
                         c = toCons(w);
                     }
+                    g.at(i, j) = c;
+                    break;
+                }
+                case Bc::NoSlip: {
+                    // viscous wall: mirror but flip BOTH momentum
+                    // components -> zero wall velocity (adiabatic).
+                    Cons c = g.at(mi, mj);
+                    c.mx = -c.mx;
+                    c.my = -c.my;
                     g.at(i, j) = c;
                     break;
                 }

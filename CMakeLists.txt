@@ -60,6 +60,10 @@ target_link_libraries(shear PRIVATE mm_metal)
 add_executable(analytic_suite src/drivers/analytic_suite.cpp)
 target_include_directories(analytic_suite PRIVATE src)
 
+# No-slip wall validation: Blasius flat-plate boundary layer (GPU).
+add_executable(blasius src/drivers/blasius.cpp)
+target_link_libraries(blasius PRIVATE mm_metal)
+
 # GPU/hybrid vs pure-CPU throughput benchmark (study, run manually).
 add_executable(benchmark src/drivers/benchmark.cpp)
 target_link_libraries(benchmark PRIVATE mm_metal)
