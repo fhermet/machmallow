@@ -60,6 +60,10 @@ target_link_libraries(shear PRIVATE mm_metal)
 add_executable(analytic_suite src/drivers/analytic_suite.cpp)
 target_include_directories(analytic_suite PRIVATE src)
 
+# Convergence study: observed L1 order of both schemes (smooth + Sod).
+add_executable(convergence src/drivers/convergence.cpp)
+target_include_directories(convergence PRIVATE src)
+
 # WENO5 + SSP-RK3 scheme validation (uniform grid, CPU).
 add_executable(weno_suite src/drivers/weno_suite.cpp)
 target_include_directories(weno_suite PRIVATE src)

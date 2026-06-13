@@ -38,8 +38,9 @@ plancher fp32, lock-steps CPU/GPU partout. Détails : git log.
 ### Fil rouge « outil industriel » *(transverse, un peu à chaque jalon)*
 - [ ] Guide utilisateur (poser un cas en 10 minutes, lire le journal,
   exploiter les sorties) — distinct de la doc du code.
-- [ ] Post-traitement fourni : script de tracé (champs + journal CSV)
-  prêt à l'emploi, sans dépendre de ParaView pour le quotidien.
+- [~] Post-traitement fourni : amorcé — `tools/plot_convergence.py`
+  (courbes log-log d'ordre depuis un CSV) ; reste le tracé des champs
+  et du journal. Sans dépendre de ParaView pour le quotidien.
 - [ ] Messages d'erreur systématiquement actionnables (fichier:ligne,
   correction suggérée) ; sondes ponctuelles ; checkpoint multi-niveaux
   (reprendre n'importe quel calcul).
