@@ -117,10 +117,17 @@ private:
         enc->setRenderPipelineState(pso_);
 
         const GridRef b = amr_.coarseRef();
+        // The fragment shader binds 3 refinement-level tables (slots1..3),
+        // so it can sample at most 4 total levels. A deeper hierarchy
+        // still computes in full; the view samples the finest level it can
+        // display — beyond level 3 the cells are sub-pixel at any sane
+        // window size, so nothing visible is lost. Passing the true (>4)
+        // depth would make the shader index slots3 with level-4+ extents
+        // (out of bounds) and corrupt the image.
         const RUniforms u{b.nx,
                           b.ny,
                           amr_.renderBlockC(),
-                          amr_.numLevels(),
+                          std::min(amr_.numLevels(), 4),
                           amr_.renderPTot(),
                           amr_.renderStride(),
                           float(lo_),

@@ -21,6 +21,8 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -76,7 +78,33 @@ public:
                 static_cast<std::uint32_t*>(L.slotTable->contents());
             std::fill(tbl, tbl + std::size_t(L.nbx) * L.nby, ~0u);
         }
-        capacity_ = int(std::min<std::size_t>(totalBlocks, 8192));
+        // Per-patch footprint of the slot pool: 7 conserved buffers
+        // (q, xL, xR, yB, yT, Fx, Fy) plus the scheme/species extras
+        // allocated below (kept in sync with the mk()/mkS() calls).
+        const bool effSpecies = cfg_.species || cfg_.react;
+        const int consBufs = 7 + (cfg_.weno && effSpecies ? 7
+                                  : effSpecies            ? 4
+                                  : cfg_.weno             ? 3
+                                                          : 0);
+        const int phiBufs = cfg_.weno && effSpecies ? 2 : effSpecies ? 1 : 0;
+        bytesPerSlot_ = std::size_t(stride_) *
+                        (consBufs * sizeof(Cons) + phiBufs * sizeof(PhiG));
+
+        // Capacity: an explicit amr.max_patches wins; otherwise size the
+        // pool to ~1/8 of the device working set (never below the legacy
+        // 8192 floor), then clamp to what the whole domain could ever need
+        // (totalBlocks) so shallow cases allocate exactly what they use.
+        std::size_t cap;
+        if (cfg_.maxPatches > 0) {
+            cap = std::size_t(cfg_.maxPatches);
+        } else {
+            const double dev =
+                double(ctx.device()->recommendedMaxWorkingSetSize());
+            const std::size_t budget =
+                dev > 0 ? std::size_t(dev * 0.125) : (std::size_t(1) << 30);
+            cap = std::max<std::size_t>(8192, budget / bytesPerSlot_);
+        }
+        capacity_ = int(std::min<std::size_t>(totalBlocks, cap));
 
         const std::size_t bytes =
             std::size_t(capacity_) * stride_ * sizeof(Cons);
@@ -745,8 +773,25 @@ private:
             }
     }
 
+    // The slot pool ran dry: the refined region needs more patches than
+    // the pool holds. A clear, actionable error beats the old assert
+    // (compiled out under -DNDEBUG -> undefined behaviour in Release).
+    std::runtime_error poolExhausted_() const {
+        const double kb = double(bytesPerSlot_) / 1024.0;
+        const std::size_t bigger = std::size_t(capacity_) * 2;
+        return std::runtime_error(
+            "AMR GPU slot pool exhausted: all " + std::to_string(capacity_) +
+            " patches in use at levels=" + std::to_string(cfg_.maxLevels) +
+            " (" + std::to_string(int(kb)) + " KB/patch, " +
+            std::to_string(std::size_t(capacity_ * kb / 1024)) +
+            " MB pool). Refine less (raise amr.tag_threshold), lower "
+            "amr.levels, or set amr.max_patches = " + std::to_string(bigger) +
+            " (~" + std::to_string(std::size_t(bigger * kb / 1024)) +
+            " MB) if memory allows.");
+    }
+
     Patch makePatch_(int l, int bi, int bj) {
-        assert(!freeSlots_.empty());
+        if (freeSlots_.empty()) throw poolExhausted_();
         const int slot = freeSlots_.back();
         freeSlots_.pop_back();
         Patch p{bi, bj, bi * cfg_.blockC, bj * cfg_.blockC, slot, {}, {}};
@@ -1296,6 +1341,7 @@ private:
     Real x0_, y0_;
     Euler2DGpu coarse_;
     int nf_, pTot_ = 0, stride_ = 0, capacity_ = 0;
+    std::size_t bytesPerSlot_ = 0; // slot-pool footprint per patch
     std::vector<Level> lvls_;
     std::vector<int> freeSlots_;
     std::vector<Cons> baseOld_;

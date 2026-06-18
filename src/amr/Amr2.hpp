@@ -32,6 +32,8 @@ struct AmrConfig {
     Real tagThreshold = Real(0.03); // relative density gradient
     Real tagVelocity = 0;       // velocity jump / sound speed (0 = off)
     int regridEvery = 4;
+    int maxPatches = 0;         // GPU slot-pool capacity (0 = auto from
+                                // device memory; AmrGpuML only)
     bool reflux = true;         // off only to demonstrate the leak
     bool subcycle = false;      // coarse at dt, fine at 2 x dt/2
     Real mu = 0;                // dynamic viscosity (0 = inviscid Euler)

@@ -50,12 +50,23 @@ non-réfléchissant caractéristique reste en backlog.
 - [ ] Guide utilisateur (poser un cas en 10 minutes, lire le journal,
   exploiter les sorties) — distinct de la doc du code.
 - [~] Post-traitement fourni : amorcé — `tools/plot_convergence.py`
-  (courbes d'ordre) et `tools/plot_benchmark.py` (apport GPU vs taille,
-  depuis le driver `benchmark`) ; reste le tracé des champs et du
-  journal. Sans dépendre de ParaView pour le quotidien.
-- [ ] Messages d'erreur systématiquement actionnables (fichier:ligne,
-  correction suggérée) ; sondes ponctuelles ; checkpoint multi-niveaux
-  (reprendre n'importe quel calcul).
+  (courbes d'ordre), `tools/plot_benchmark.py` (apport GPU vs taille), et
+  `tools/schlieren_video.py` : tracé des champs en **schlieren numérique**
+  (|∇ρ|) depuis les `.vthb`, composé du niveau AMR le plus fin sans
+  ParaView (compositing numpy bilinéaire cellule→point, ~1 s/frame, anti-
+  escalier), palettes fond noir/blanc, caméra de suivi auto (DMR),
+  surcouche pédagogique annotée (style LaTeX) et export MP4 via ffmpeg.
+  Sortie frame-par-pas côté solveur via `[output] every = K`. Reste : le
+  tracé du journal. Sans dépendre de ParaView pour le quotidien.
+- [~] Messages d'erreur systématiquement actionnables (fichier:ligne,
+  correction suggérée) — amorcé : saturation du pool de slots GPU
+  (AmrGpuML) désormais signalée par une erreur claire (nombre de patchs,
+  KB/patch, MB du pool, et les leviers : `amr.levels`, `tag_threshold`,
+  `amr.max_patches`) au lieu d'un abort par `assert` désactivé en
+  `-DNDEBUG`. Cap du pool configurable (`amr.max_patches`) et par défaut
+  dimensionné sur la mémoire du device (~1/8 du working set). Reste :
+  généraliser ce style à toutes les portes. Sondes ponctuelles ;
+  checkpoint multi-niveaux (reprendre n'importe quel calcul).
 
 ### v1.1 — Voir et mesurer *(démo + labo)*
 Le projet gagne ses yeux et son instrumentation scientifique.

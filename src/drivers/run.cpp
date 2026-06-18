@@ -56,6 +56,7 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
     const Real cfl = Real(cfg.getReal("cfl", 0.4));
     const double tEnd = cfg.getReal("t_end", 0.2);
     const int frames = cfg.getInt("output.frames", 4);
+    const int every = cfg.getInt("output.every", 0); // >0: 1 frame / K pas
     const int maxSteps = cfg.getInt("output.max_steps", 0); // 0 = all
     const std::string prefix =
         cfg.getString("output.prefix", "out/run");
@@ -171,13 +172,20 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
                 break;
             }
         }
-        if (frames > 0 &&
-            (t >= nextFrame - 1e-12 || t >= tEnd * (1 - 1e-9))) {
+        // Frame output: `output.every = K` (1 image tous les K pas de base,
+        // pour une cadence par iteration) a priorite ; sinon `output.frames`
+        // (N images espacees dans le temps). Le pas final est toujours ecrit.
+        const bool atEnd = t >= tEnd * (1 - 1e-9) ||
+                           (maxSteps > 0 && steps >= maxSteps);
+        const bool wantFrame =
+            every > 0 ? (steps % every == 0 || atEnd)
+                      : (frames > 0 && (t >= nextFrame - 1e-12 || atEnd));
+        if (wantFrame) {
             char name[256];
             std::snprintf(name, sizeof(name), "%s_%04d", prefix.c_str(),
                           ++frame);
             writeFrame(name, amr);
-            nextFrame += tEnd / frames;
+            if (every <= 0) nextFrame += tEnd / frames;
         }
     }
     const double wall =
@@ -228,6 +236,7 @@ AmrConfig amrConfigFrom(const Config& cfg) {
     a.tagThreshold = Real(cfg.getReal("amr.tag_threshold", 0.08));
     a.tagVelocity = Real(cfg.getReal("amr.tag_velocity", 0));
     a.regridEvery = cfg.getInt("amr.regrid_every", 4);
+    a.maxPatches = cfg.getInt("amr.max_patches", 0); // 0 = auto (hybrid)
     a.subcycle = cfg.getBool("amr.subcycle", false);
     a.mu = Real(cfg.getReal("mu", 0));
     if (!cfg.getBool("amr.enabled", true))
@@ -337,8 +346,11 @@ int list() {
         "  [physics]  gravity = gx gy (source splittée ; murs\n"
         "             reflective hydrostatiques)\n"
         "  [amr]      enabled levels block tag_threshold tag_velocity\n"
-        "             regrid_every subcycle\n"
+        "             regrid_every subcycle max_patches (cap du pool\n"
+        "             GPU ; 0 = auto selon la memoire du device)\n"
         "  [output]   frames prefix checkpoint max_steps\n"
+        "             every (1 frame tous les K pas ; prioritaire sur\n"
+        "             frames, ex. every = 1 = chaque iteration)\n"
         "  [render]   live scale every grid rho_min rho_max (vue\n"
         "             temps reel Metal, backend hybrid ; espace = pause,\n"
         "             q = quitter)\n"
@@ -415,6 +427,7 @@ int main(int argc, char** argv) {
             cfg.getString("output.prefix", "");
             cfg.getString("output.checkpoint", "");
             cfg.getInt("output.max_steps", 0);
+            cfg.getInt("output.every", 0);
             cfg.getString("restart", "");
             cfg.getInt("diagnostics.every", 0);
             cfg.getString("diagnostics.file", "");
