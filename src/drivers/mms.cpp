@@ -21,6 +21,7 @@
 #include "core/Grid.hpp"
 #include "physics/Euler.hpp"
 #include "solver/Muscl2D.hpp"
+#include "solver/Weno2D.hpp"
 
 #include <array>
 #include <cmath>
@@ -128,10 +129,14 @@ Cons source(double x, double y, double mu) {
 // relaxer. L'etat stationnaire discret s'ecarte de la solution exacte de
 // la troncature du schema -> erreur L1 = O(h^p). (Mesure robuste en
 // float : pas de soustraction divisee par un petit dt.)
-double orderStudy(double mu, double tEnd) {
+double orderStudy(double mu, double tEnd, bool weno) {
     const int Ns[] = {16, 32, 64, 128};
     std::vector<double> errs;
-    std::printf("  mu = %.3g :\n", mu);
+    std::printf("  %s, mu = %.3g :\n", weno ? "WENO5" : "MUSCL", mu);
+    const auto periodic = [](Grid& gg) {
+        fillPeriodicX(gg);
+        fillPeriodicY(gg);
+    };
     for (int N : Ns) {
         Grid g(N, N, 0, 0, 1, 1);
         std::vector<Cons> S(g.q.size());
@@ -145,13 +150,17 @@ double orderStudy(double mu, double tEnd) {
                 S[id] = source(g.xc(i), g.yc(j), mu);
             }
         Scratch2D s;
+        ScratchW sw;
         double t = 0;
         while (t < tEnd * (1 - 1e-12)) {
             const Real dt = std::min(maxStableDt(g, CFL, Real(mu)),
                                      Real(tEnd - t));
-            fillPeriodicX(g);
-            fillPeriodicY(g);
-            step2D(g, dt, s, Real(mu));
+            if (weno) {
+                stepWeno2D(g, dt, sw, periodic, Real(mu));
+            } else {
+                periodic(g);
+                step2D(g, dt, s, Real(mu));
+            }
             for (int j = NG; j < NG + N; ++j) // injecter le source
                 for (int i = NG; i < NG + N; ++i) {
                     const std::size_t id = g.idx(i, j);
@@ -193,20 +202,27 @@ int main() {
     std::printf("solution manufacturee lisse periodique stationnaire,\n"
                 "source = div(F_Euler) - div(F_visqueux) [FD ordre 4]\n\n");
     // Visqueux : c'est ce que la MMS verifie (aucune autre porte ne couvre
-    // l'ordre de l'operateur Navier-Stokes). Gate ~2.
-    const double ordVisc = orderStudy(0.01, 0.5);
-    // Inviscide : informatif. En stationnaire la viscosite NUMERIQUE du
-    // limiteur TVD (1er ordre aux extrema lisses) fixe l'erreur -> ordre
-    // ~1 sur une solution sinusoidale "courbe partout" ; l'ordre EULER de
-    // conception (~2) est verifie ailleurs par `convergence` (onde
-    // d'entropie / vortex isentropique, extrema isoles).
-    const double ordEuler = orderStudy(0.0, 0.5);
+    // l'ordre de l'operateur Navier-Stokes). Le flux visqueux est central
+    // 2e ordre, commun aux deux schemas -> les deux doivent donner ~2.
+    std::printf("== Operateur visqueux (gate ~2) ==\n");
+    const double vMuscl = orderStudy(0.01, 0.5, false);
+    const double vWeno = orderStudy(0.01, 0.5, true);
+    // Inviscide stationnaire : informatif. Sans viscosite physique,
+    // l'erreur de l'etat stationnaire est fixee par la viscosite NUMERIQUE
+    // du schema (dissipation des flux de face), 1er ordre pour les deux
+    // schemas sur cette solution -> ~1. Ce n'est PAS l'ordre transitoire de
+    // conception (MUSCL ~2, WENO5 ~4-5), lui verifie par `convergence`
+    // (advection d'une solution exacte : onde d'entropie, vortex).
+    std::printf("== Inviscide stationnaire (informatif, != ordre transitoire) ==\n");
+    const double eMuscl = orderStudy(0.0, 0.5, false);
+    const double eWeno = orderStudy(0.0, 0.5, true);
 
-    const bool ok = ordVisc > 1.8;
-    std::printf("\n%s — operateur visqueux : ordre %.2f (attendu ~2 ; gate "
-                "1.8)\n", ok ? "PASS" : "FAIL", ordVisc);
-    std::printf("  [info] inviscide stationnaire : ordre %.2f (borne par la "
-                "viscosite numerique du limiteur ; cf. convergence)\n",
-                ordEuler);
+    const bool ok = vMuscl > 1.8 && vWeno > 1.8;
+    std::printf("\n%s — operateur visqueux Navier-Stokes : MUSCL %.2f, "
+                "WENO5 %.2f (attendu ~2 ; gate 1.8)\n",
+                ok ? "PASS" : "FAIL", vMuscl, vWeno);
+    std::printf("  [info] inviscide stationnaire (visco. numerique) : "
+                "MUSCL %.2f, WENO5 %.2f ; ordre de conception via "
+                "`convergence`\n", eMuscl, eWeno);
     return ok ? 0 : 1;
 }

@@ -80,13 +80,16 @@ non-réfléchissant caractéristique reste en backlog.
   - [x] driver `mms.cpp` + source manufacturé (FD ordre 4, double)
   - [x] mesure par erreur de solution stationnaire (robuste fp32 —
     la mesure par troncature `(U−U0)/dt` était bruitée par fp32)
-  - [x] **opérateur visqueux (mu=0.01) : ordre 2.10** (gate >1.8, PASS) —
-    vérifie Navier-Stokes complet à l'ordre de conception 2
-  - [x] inviscide stationnaire (mu=0) : ordre ~1.08, *informatif* — en
-    régime stationnaire la **viscosité numérique du limiteur TVD** (1er
-    ordre aux extrema lisses) fixe l'erreur sur une solution « courbe
-    partout » ; l'ordre Euler de conception reste vérifié par
-    `convergence` (extrema isolés). Non gaté.
+  - [x] **opérateur visqueux (mu=0.01), les DEUX schémas : MUSCL 2.10,
+    WENO5 1.97** (gate >1.8, PASS) — vérifie Navier-Stokes complet à
+    l'ordre 2 ; le flux visqueux central (commun aux deux schémas)
+    plafonne l'ordre à 2, comme attendu.
+  - [x] inviscide stationnaire (mu=0) *informatif* : ~1 pour les deux
+    schémas (MUSCL 1.08, WENO5 1.01). Sans viscosité physique, l'erreur
+    de l'état stationnaire est fixée par la **viscosité numérique** des
+    flux de face (1er ordre ici) — ce n'est PAS l'ordre transitoire de
+    conception (MUSCL ~2, WENO5 ~4-5), lui vérifié par `convergence`
+    (advection d'une solution exacte). Non gaté.
   - [x] driver `mms` ajouté à la suite CPU de la CI
 
 ### v1.1 — Voir et mesurer *(démo + labo)*
