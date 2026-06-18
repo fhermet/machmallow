@@ -67,6 +67,27 @@ non-réfléchissant caractéristique reste en backlog.
   dimensionné sur la mémoire du device (~1/8 du working set). Reste :
   généraliser ce style à toutes les portes. Sondes ponctuelles ;
   checkpoint multi-niveaux (reprendre n'importe quel calcul).
+- [x] ~~**Vérification par solutions manufacturées (MMS)**~~ — fait.
+  L'étude de convergence (`convergence`) couvrait l'ordre EULER lisse
+  (onde d'entropie, vortex isentropique) ; aucune porte ne vérifiait
+  l'ordre de l'opérateur VISQUEUX. La MMS comble ça : solution
+  manufacturée lisse périodique stationnaire (ρ, u, v, p sinusoïdaux),
+  terme source S = div(F_Euler) − div(F_visqueux) calculé **en double**
+  par différences finies d'ordre 4 (h=1e-3) sur les champs analytiques
+  (« exact » à ~1e-12 devant le schéma testé), injecté dans le pas
+  mono-grille `step2D(mu)`. On laisse relaxer vers l'état stationnaire et
+  on mesure l'ordre de l'erreur L1 (densité) vs h sur N=16→128.
+  - [x] driver `mms.cpp` + source manufacturé (FD ordre 4, double)
+  - [x] mesure par erreur de solution stationnaire (robuste fp32 —
+    la mesure par troncature `(U−U0)/dt` était bruitée par fp32)
+  - [x] **opérateur visqueux (mu=0.01) : ordre 2.10** (gate >1.8, PASS) —
+    vérifie Navier-Stokes complet à l'ordre de conception 2
+  - [x] inviscide stationnaire (mu=0) : ordre ~1.08, *informatif* — en
+    régime stationnaire la **viscosité numérique du limiteur TVD** (1er
+    ordre aux extrema lisses) fixe l'erreur sur une solution « courbe
+    partout » ; l'ordre Euler de conception reste vérifié par
+    `convergence` (extrema isolés). Non gaté.
+  - [x] driver `mms` ajouté à la suite CPU de la CI
 
 ### v1.1 — Voir et mesurer *(démo + labo)*
 Le projet gagne ses yeux et son instrumentation scientifique.
