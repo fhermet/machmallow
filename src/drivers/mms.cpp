@@ -114,12 +114,18 @@ Vec4 totalFy(double x, double y, double mu) {
 }
 
 // terme source manufacture : S = d/dx F_x + d/dy F_y (par composante)
-Cons source(double x, double y, double mu) {
+Cons source(double x, double y, double mu, double gx, double gy) {
     Vec4 S{};
     for (int c = 0; c < 4; ++c) {
         const double dFx = d4([&](double s) { return totalFx(x + s, y, mu)[c]; });
         const double dFy = d4([&](double s) { return totalFy(x, y + s, mu)[c]; });
         S[c] = dFx + dFy;
+    }
+    if (gx != 0 || gy != 0) { // le solveur applique la gravite : on la retire
+        const Pm w = mfg(x, y);
+        S[1] -= w.rho * gx;
+        S[2] -= w.rho * gy;
+        S[3] -= w.rho * (w.u * gx + w.v * gy);
     }
     return {Real(S[0]), Real(S[1]), Real(S[2]), Real(S[3])};
 }
@@ -129,10 +135,12 @@ Cons source(double x, double y, double mu) {
 // relaxer. L'etat stationnaire discret s'ecarte de la solution exacte de
 // la troncature du schema -> erreur L1 = O(h^p). (Mesure robuste en
 // float : pas de soustraction divisee par un petit dt.)
-double orderStudy(double mu, double tEnd, bool weno) {
+double orderStudy(double mu, double tEnd, bool weno,
+                  double gx = 0, double gy = 0) {
     const int Ns[] = {16, 32, 64, 128};
     std::vector<double> errs;
-    std::printf("  %s, mu = %.3g :\n", weno ? "WENO5" : "MUSCL", mu);
+    std::printf("  %s, mu = %.3g%s :\n", weno ? "WENO5" : "MUSCL", mu,
+                (gx != 0 || gy != 0) ? ", gravite" : "");
     const auto periodic = [](Grid& gg) {
         fillPeriodicX(gg);
         fillPeriodicY(gg);
@@ -147,7 +155,7 @@ double orderStudy(double mu, double tEnd, bool weno) {
                                   Real(mfg(g.xc(i), g.yc(j)).u),
                                   Real(mfg(g.xc(i), g.yc(j)).v),
                                   Real(mfg(g.xc(i), g.yc(j)).p)});
-                S[id] = source(g.xc(i), g.yc(j), mu);
+                S[id] = source(g.xc(i), g.yc(j), mu, gx, gy);
             }
         Scratch2D s;
         ScratchW sw;
@@ -159,7 +167,7 @@ double orderStudy(double mu, double tEnd, bool weno) {
                 stepWeno2D(g, dt, sw, periodic, Real(mu));
             } else {
                 periodic(g);
-                step2D(g, dt, s, Real(mu));
+                step2D(g, dt, s, Real(mu), Real(gx), Real(gy));
             }
             for (int j = NG; j < NG + N; ++j) // injecter le source
                 for (int i = NG; i < NG + N; ++i) {
@@ -207,6 +215,13 @@ int main() {
     std::printf("== Operateur visqueux (gate ~2) ==\n");
     const double vMuscl = orderStudy(0.01, 0.5, false);
     const double vWeno = orderStudy(0.01, 0.5, true);
+    // Source de gravite (split, MUSCL) : la densite n'a pas de source de
+    // gravite -> son ordre 2 confirme que le couplage gravite (quantite de
+    // mouvement / energie -> vitesse / pression -> densite par les flux)
+    // est CONSISTANT. Un bug de signe ou de terme de travail casserait
+    // l'etat stationnaire et l'ordre.
+    std::printf("== Operateur visqueux + source de gravite (gate ~2) ==\n");
+    const double vGrav = orderStudy(0.01, 0.5, false, 1.0, -0.5);
     // Inviscide stationnaire : informatif. Sans viscosite physique,
     // l'erreur de l'etat stationnaire est fixee par la viscosite NUMERIQUE
     // du schema (dissipation des flux de face), 1er ordre pour les deux
@@ -217,10 +232,10 @@ int main() {
     const double eMuscl = orderStudy(0.0, 0.5, false);
     const double eWeno = orderStudy(0.0, 0.5, true);
 
-    const bool ok = vMuscl > 1.8 && vWeno > 1.8;
-    std::printf("\n%s — operateur visqueux Navier-Stokes : MUSCL %.2f, "
-                "WENO5 %.2f (attendu ~2 ; gate 1.8)\n",
-                ok ? "PASS" : "FAIL", vMuscl, vWeno);
+    const bool ok = vMuscl > 1.8 && vWeno > 1.8 && vGrav > 1.8;
+    std::printf("\n%s — operateur Navier-Stokes ordre 2 : visqueux MUSCL "
+                "%.2f, WENO5 %.2f ; visqueux+gravite %.2f (gate 1.8)\n",
+                ok ? "PASS" : "FAIL", vMuscl, vWeno, vGrav);
     std::printf("  [info] inviscide stationnaire (visco. numerique) : "
                 "MUSCL %.2f, WENO5 %.2f ; ordre de conception via "
                 "`convergence`\n", eMuscl, eWeno);

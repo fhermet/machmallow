@@ -84,13 +84,23 @@ non-réfléchissant caractéristique reste en backlog.
     WENO5 1.97** (gate >1.8, PASS) — vérifie Navier-Stokes complet à
     l'ordre 2 ; le flux visqueux central (commun aux deux schémas)
     plafonne l'ordre à 2, comme attendu.
+  - [x] **source de gravité** (split, MUSCL) : ordre 2.10 (PASS). La
+    densité n'ayant pas de source de gravité, son ordre 2 confirme que le
+    couplage gravité (qté de mouvement/énergie → vitesse/pression →
+    densité via les flux) est consistant (un bug de signe ou de terme de
+    travail casserait l'état stationnaire et l'ordre).
   - [x] inviscide stationnaire (mu=0) *informatif* : ~1 pour les deux
     schémas (MUSCL 1.08, WENO5 1.01). Sans viscosité physique, l'erreur
     de l'état stationnaire est fixée par la **viscosité numérique** des
     flux de face (1er ordre ici) — ce n'est PAS l'ordre transitoire de
     conception (MUSCL ~2, WENO5 ~4-5), lui vérifié par `convergence`
     (advection d'une solution exacte). Non gaté.
-  - [x] driver `mms` ajouté à la suite CPU de la CI
+  - [x] **source de réaction** : pas de MMS — déjà vérifié plus
+    rigoureusement par `reactor` (fonction `react()` vs solutions
+    analytiques exactes : isotherme err 8e-8, équilibre adiabatique) et le
+    couplage Strang réaction↔hydro par `detonation` (CJ à 0.8 %).
+  - [x] driver `mms` ajouté à la suite CPU de la CI (Euler+visqueux ×2
+    schémas + gravité)
 
 ### v1.1 — Voir et mesurer *(démo + labo)*
 Le projet gagne ses yeux et son instrumentation scientifique.
