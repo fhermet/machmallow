@@ -68,6 +68,9 @@ harnais de validation.
   HLLC, MUSCL/WENO5, AMR Berger-Colella).
 - [`docs/DEVELOPER.md`](docs/DEVELOPER.md) — guide développeur :
   contribuer, discipline de validation, conventions.
+- [`docs/VALIDATION.md`](docs/VALIDATION.md) — études de vérification &
+  validation : ordre, conservation, lock-step, vs solutions exactes &
+  expériences (résultats chiffrés).
 
 ## Feuille de route
 
