@@ -56,6 +56,19 @@ déclaratif avec les anciens presets C++ est verrouillée par
 cellule pour cellule). Les exécutables `sod1d`…`mlgpu_amr` restent les
 harnais de validation.
 
+## Documentation
+
+- [`docs/GUIDE.md`](docs/GUIDE.md) — guide utilisateur : poser un cas en
+  10 min, lire le journal, exploiter les sorties.
+- [`docs/CASE_FORMAT.md`](docs/CASE_FORMAT.md) — référence exhaustive du
+  format de cas `.ini`.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architecture du code
+  (couches, AMR, hybride CPU/GPU ; schémas Mermaid).
+- [`docs/NUMERICS.md`](docs/NUMERICS.md) — méthodes numériques (équations,
+  HLLC, MUSCL/WENO5, AMR Berger-Colella).
+- [`docs/DEVELOPER.md`](docs/DEVELOPER.md) — guide développeur :
+  contribuer, discipline de validation, conventions.
+
 ## Feuille de route
 
 - [x] Phase 0 — socle : CMake, metal-cpp, benchmark saxpy
