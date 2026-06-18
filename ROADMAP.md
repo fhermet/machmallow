@@ -47,8 +47,10 @@ non-réfléchissant caractéristique reste en backlog.
 ## Jalons
 
 ### Fil rouge « outil industriel » *(transverse, un peu à chaque jalon)*
-- [ ] Guide utilisateur (poser un cas en 10 minutes, lire le journal,
-  exploiter les sorties) — distinct de la doc du code.
+- [x] ~~Guide utilisateur (poser un cas en 10 minutes, lire le journal,
+  exploiter les sorties)~~ — fait : `docs/GUIDE.md` (tutoriel pas-à-pas,
+  exemple choc/bulle validé par `--check`). Doc d'architecture du code
+  séparée dans `docs/ARCHITECTURE.md` (schémas Mermaid).
 - [~] Post-traitement fourni : amorcé — `tools/plot_convergence.py`
   (courbes d'ordre), `tools/plot_benchmark.py` (apport GPU vs taille), et
   `tools/schlieren_video.py` : tracé des champs en **schlieren numérique**
