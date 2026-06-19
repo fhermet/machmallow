@@ -48,7 +48,7 @@ template <class IC> void initGrid(auto& g, IC ic) {
 } // namespace
 
 // One lock-step comparison; returns true on PASS.
-bool compare(MetalContext& ctx, bool subcycle) {
+bool compare(MetalContext& ctx, bool subcycle, Real mu) {
     const int nx = 96, ny = 64, nsteps = 40;
     const Real lx = Real(1.5), ly = Real(1.0);
 
@@ -58,6 +58,7 @@ bool compare(MetalContext& ctx, bool subcycle) {
     a.tagThreshold = Real(0.08);
     a.regridEvery = 2;
     a.subcycle = subcycle;
+    a.mu = mu;
 
     // uniform Mach 2 free-stream (rho=1.4, p=1 -> c=1, u=2)
     const auto ic = [](Real, Real) {
@@ -103,9 +104,13 @@ bool compare(MetalContext& ctx, bool subcycle) {
         }
 
     const bool ok = maxRel < 1e-2 && !patchMismatch;
-    std::printf("  %-10s patches CPU=%zu GPU=%zu | écart rel max %.3e  %s\n",
-                subcycle ? "subcyclé" : "single", cpu.patches.size(),
-                gpu.patches.size(), maxRel, ok ? "PASS" : "FAIL");
+    char tag[32];
+    std::snprintf(tag, sizeof(tag), "%s%s",
+                  subcycle ? "subcyclé" : "single",
+                  mu > 0 ? " +visqueux" : "");
+    std::printf("  %-18s patches CPU=%zu GPU=%zu | écart rel max %.3e  %s\n",
+                tag, cpu.patches.size(), gpu.patches.size(), maxRel,
+                ok ? "PASS" : "FAIL");
     return ok;
 }
 
@@ -119,7 +124,8 @@ int main() {
         return 0;
     }
     std::printf("Lock-step immergé CPU/GPU (cylindre Mach 2, 96x64, 40 pas)\n");
-    const bool ok = compare(*ctx, false) & compare(*ctx, true);
+    const bool ok = compare(*ctx, false, 0) & compare(*ctx, true, 0) &
+                    compare(*ctx, false, Real(2e-3)); // paroi no-slip
     delete ctx;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;

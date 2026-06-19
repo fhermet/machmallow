@@ -150,7 +150,8 @@ deux composantes de vitesse inversées, ρ/p conservés → adiabatique), si
 bien que le cisaillement de paroi annule la vitesse tangentielle (le flux
 convectif glissant fournit la pression). Validé par la couche limite de
 Blasius sur une plaque immergée (gate `immersed_noslip`, profil RMS 0.7 %,
-Cf 3 %).
+Cf 3 %), et porté sur GPU (mêmes ghosts no-slip dans les kernels Metal ;
+lock-step CPU↔GPU visqueux vérifié, `immersed_gpu`).
 
 Le flux de paroi (convectif) n'est *pas* le HLLC de l'état miroir : pour un écoulement
 **normal supersonique** (un > c), l'estimation de vitesse d'onde PVRS de

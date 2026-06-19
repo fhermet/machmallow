@@ -417,10 +417,6 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(
                     "solides immergés : scheme = muscl mono-gaz requis "
                     "(bi-gaz / WENO à venir)");
-            if (acfg.mu > 0 && backend != "cpu")
-                throw std::runtime_error(
-                    "solides immergés visqueux (mu > 0) : backend = cpu "
-                    "requis (paroi no-slip GPU à venir)");
             if (acfg.maxLevels != 2)
                 std::printf("note: solides immergés — AMR limité à 2 "
                             "niveaux (multi-niveaux à venir)\n");

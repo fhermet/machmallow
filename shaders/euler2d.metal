@@ -146,6 +146,11 @@ inline float4 wallFluxY(float4 W, float un) {
     return float4(0.0f, 0.0f, wallPressure(W, un), 0.0f);
 }
 
+// No-slip ghost of a fluid primitive (flip both velocities, keep rho/p →
+// adiabatic). Used by the viscous flux at fluid/solid faces (mirrors the
+// CPU NS() in addViscousFluxes).
+inline float4 nsGhost(float4 w) { return float4(w.x, -w.y, -w.z, w.w); }
+
 // ---- kernel bodies --------------------------------------------------------
 
 inline void predictorBody(device const float4* q, device float4* xL,
@@ -208,12 +213,21 @@ inline void fluxXBody(device const float4* xL, device const float4* xR,
     else F = hllcFluxX(toPrim(xR[id]), toPrim(xL[id + 1]));
     if (P.mu > 0.0f) {
         // Central viscous flux from t^n cell values (mirrors the CPU).
-        const float4 w00 = toPrim(q[id]);
-        const float4 w10 = toPrim(q[id + 1]);
-        const float4 w0p = toPrim(q[id + P.tx]);
-        const float4 w0m = toPrim(q[id - P.tx]);
-        const float4 w1p = toPrim(q[id + P.tx + 1]);
-        const float4 w1m = toPrim(q[id - P.tx + 1]);
+        // A solid neighbour becomes a no-slip ghost (mirror of the face's
+        // fluid cell) so the wall is adhérente — same rule as the CPU.
+        const float4 f00 = toPrim(q[id]);
+        const float4 f10 = toPrim(q[id + 1]);
+        const float4 refF = sl ? f10 : f00;
+        const float4 w00 = sl ? nsGhost(f10) : f00;
+        const float4 w10 = sr ? nsGhost(f00) : f10;
+        const float4 w0p =
+            solid[id + P.tx] ? nsGhost(refF) : toPrim(q[id + P.tx]);
+        const float4 w0m =
+            solid[id - P.tx] ? nsGhost(refF) : toPrim(q[id - P.tx]);
+        const float4 w1p =
+            solid[id + P.tx + 1] ? nsGhost(refF) : toPrim(q[id + P.tx + 1]);
+        const float4 w1m =
+            solid[id - P.tx + 1] ? nsGhost(refF) : toPrim(q[id - P.tx + 1]);
         const float ux = (w10.y - w00.y) / P.dx;
         const float vx = (w10.z - w00.z) / P.dx;
         const float Tx = (w10.w / w10.x - w00.w / w00.x) / P.dx;
@@ -242,12 +256,17 @@ inline void fluxYBody(device const float4* yB, device const float4* yT,
     else if (sb) { const float4 w = toPrim(yB[id + P.tx]); F = wallFluxY(w, -w.z); }
     else F = hllcFluxY(toPrim(yT[id]), toPrim(yB[id + P.tx]));
     if (P.mu > 0.0f) {
-        const float4 w00 = toPrim(q[id]);
-        const float4 w01 = toPrim(q[id + P.tx]);
-        const float4 wp0 = toPrim(q[id + 1]);
-        const float4 wm0 = toPrim(q[id - 1]);
-        const float4 wp1 = toPrim(q[id + P.tx + 1]);
-        const float4 wm1 = toPrim(q[id + P.tx - 1]);
+        const float4 f00 = toPrim(q[id]);
+        const float4 f01 = toPrim(q[id + P.tx]);
+        const float4 refF = sb ? f01 : f00;
+        const float4 w00 = sb ? nsGhost(f01) : f00;
+        const float4 w01 = st ? nsGhost(f00) : f01;
+        const float4 wp0 = solid[id + 1] ? nsGhost(refF) : toPrim(q[id + 1]);
+        const float4 wm0 = solid[id - 1] ? nsGhost(refF) : toPrim(q[id - 1]);
+        const float4 wp1 =
+            solid[id + P.tx + 1] ? nsGhost(refF) : toPrim(q[id + P.tx + 1]);
+        const float4 wm1 =
+            solid[id + P.tx - 1] ? nsGhost(refF) : toPrim(q[id + P.tx - 1]);
         const float uy = (w01.y - w00.y) / P.dy;
         const float vy = (w01.z - w00.z) / P.dy;
         const float Ty = (w01.w / w01.x - w00.w / w00.x) / P.dy;

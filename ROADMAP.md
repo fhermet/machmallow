@@ -426,9 +426,10 @@ posée :
   adiabatique) ; le cisaillement de paroi rend le mur adhérent (le flux
   convectif fournit la pression). Gate `immersed_noslip` : couche limite de
   Blasius sur une **plaque immergée** → profil **RMS 0.7 %** vs f', Cf
-  **3 %** vs 0.664/√Re_x. CPU (mu>0 + solide → backend cpu ; no-slip GPU
-  à venir).
-- [ ] cut-cells (supprimer l'escalier) ; multi-niveaux solide ; no-slip GPU.
+  **3 %** vs 0.664/√Re_x. **Porté sur GPU** (flux visqueux masque-aware dans
+  les kernels Metal) : lock-step CPU↔GPU visqueux vérifié (`immersed_gpu`,
+  écart 4e-4) — `mu > 0` + solide tourne en `hybrid`.
+- [ ] cut-cells (supprimer l'escalier) ; multi-niveaux solide.
 
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 
