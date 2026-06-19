@@ -66,7 +66,7 @@ Chaque chemin GPU est comparé à sa référence CPU. Écart relatif max ~1e-4
 | Sod bi-gaz WENO5 AMR | `mlgpu_amr` g6 | 3.97e-4 | 1e-2 |
 | Gravité | `casedef_test` g6 | 3.30e-4 | 1e-3 |
 | Détonation CJ (vitesse) | `detonation` | **identique** (4.7168 = 4.7168) | — |
-| **Corps immergé** (cylindre Mach 2, 2 niv.) | `immersed_gpu` | AmrGpu vs Amr2 : single + subcyclé + **no-slip visqueux** | 5.9e-4 / 1.1e-3 / 4.2e-4 (gate 1e-2) |
+| **Corps immergé** (cylindre Mach 2) | `immersed_gpu` | GPU vs CPU : 2 niv. single + subcyclé + **no-slip** ; **3 niv.** (AmrGpuML vs AmrML) | 5.9e-4 / 1.1e-3 / 4.2e-4 / **7.5e-4** (gate 1e-2) |
 
 ### 1.4 Équivalence du système déclaratif
 

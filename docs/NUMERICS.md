@@ -178,7 +178,8 @@ escalier constant au contact d'un solide. **Multi-niveaux** (`AmrML`,
 profondeur arbitraire) : même chaîne à chaque niveau, via une requête
 géométrique `solidAt(position)` (le parent d'un niveau fin est un patch, pas
 la base) — validé à 3 niveaux (`immersed_amr`). Tout est no-op sans
-`[solid]` (les gates AMR non-solides sont inchangés). Le **GPU** (`AmrGpu` hybride)
+`[solid]` (les gates AMR non-solides sont inchangés), sur GPU aussi
+(`AmrGpuML`, masque par slot du pool ; lock-step à 3 niveaux vérifié). Le **GPU** (`AmrGpu` hybride)
 reproduit exactement cette chaîne : masque dans les kernels Metal (dont
 `wallPressure` porté en MSL), masque par slot du pool, lock-step CPU↔GPU
 vérifié (`immersed_gpu`, écart ~1e-3). Reste à supprimer l'escalier par des

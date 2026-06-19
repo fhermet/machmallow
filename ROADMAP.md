@@ -436,9 +436,12 @@ posée :
   géométrique `solidAt(position)` (le parent d'un niveau peut être un patch,
   pas la base). Gate `immersed_amr` étendu : réflexion de choc à **3
   niveaux** → paroi 15.03 vs 15.0 exact (0.21 %, 16 patches). No-op sans
-  `[solid]` (ml_amr / species / weno intacts). GPU multi-niveaux solide
-  (`AmrGpuML`) : à venir.
-- [ ] cut-cells (supprimer l'escalier) ; GPU multi-niveaux solide.
+  `[solid]` (ml_amr / species / weno intacts). **Porté sur GPU**
+  (`AmrGpuML`, masque par slot du pool + masque base, requêtes géométriques
+  pour la plomberie) : lock-step CPU↔GPU à **3 niveaux** vérifié
+  (`immersed_gpu`, écart 7.5e-4). Les solides tournent désormais en `hybrid`
+  à profondeur arbitraire.
+- [ ] cut-cells (supprimer l'escalier) — le seul item restant du facet.
 
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 

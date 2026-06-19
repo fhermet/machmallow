@@ -417,10 +417,6 @@ int main(int argc, char** argv) {
                 throw std::runtime_error(
                     "solides immergés : scheme = muscl mono-gaz requis "
                     "(bi-gaz / WENO à venir)");
-            if (backend != "cpu" && acfg.maxLevels > 2)
-                throw std::runtime_error(
-                    "solides immergés : AMR > 2 niveaux sur GPU à venir — "
-                    "backend = cpu (ou amr.levels = 2)");
         }
 
         std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "
@@ -517,6 +513,10 @@ int main(int argc, char** argv) {
                                               unsigned s) {
                     cd.fillGhostSides(g, t, s);
                 };
+                if (cd.hasSolids())
+                    amr.solidAt = [&cd](Real x, Real y) {
+                        return cd.solidAt(x, y);
+                    };
                 rc = runCase(amr, cd, cfg);
             }
         } else {

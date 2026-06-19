@@ -7,6 +7,8 @@
 
 #include "amr/Amr2.hpp"
 #include "amr/AmrGpu.hpp"
+#include "amr/AmrGpuML.hpp"
+#include "amr/AmrML.hpp"
 #include "backend/metal/MetalContext.hpp"
 #include "core/Boundary.hpp"
 #include "physics/Euler.hpp"
@@ -114,6 +116,62 @@ bool compare(MetalContext& ctx, bool subcycle, Real mu) {
     return ok;
 }
 
+// Multi-level lock-step: AmrML (CPU) vs AmrGpuML (GPU), `levels` deep.
+bool compareML(MetalContext& ctx, int levels) {
+    const int nx = 96, ny = 64, nsteps = 30;
+    const Real lx = Real(1.5), ly = Real(1.0);
+
+    AmrConfig a;
+    a.blockC = 8;
+    a.maxLevels = levels;
+    a.tagThreshold = Real(0.08);
+    a.regridEvery = 2;
+    a.subcycle = true;
+
+    const auto ic = [](Real, Real) {
+        return toCons(Prim{Real(1.4), Real(2), 0, Real(1)});
+    };
+
+    AmrML cpu(nx, ny, 0, 0, lx, ly, a);
+    cpu.fillPhysicalGhosts = [](Grid& g, double) { fillTrans(g); };
+    cpu.fillPatchPhysical = [](Grid& g, double, unsigned s) {
+        fillPatchTrans(g, s);
+    };
+    cpu.solidAt = solidCircle;
+    cpu.init(ic);
+
+    AmrGpuML gpu(ctx, nx, ny, 0, 0, lx, ly, a);
+    gpu.fillPhysicalGhosts = [](GridRef& g, double) { fillTrans(g); };
+    gpu.fillPatchPhysical = [](GridRef& g, double, unsigned s) {
+        fillPatchTrans(g, s);
+    };
+    gpu.solidAt = solidCircle;
+    gpu.init(ic);
+
+    double t = 0, maxRel = 0;
+    for (int s = 0; s < nsteps; ++s) {
+        Real dt = cpu.maxStableDtAll(CFL);
+        if (s < 10) dt *= Real(0.3);
+        cpu.step(dt, t);
+        gpu.step(dt, t);
+        t += dt;
+    }
+    const GridRef gc = gpu.coarseRef();
+    for (int j = NG; j < NG + ny; ++j)
+        for (int i = NG; i < NG + nx; ++i) {
+            const Real* pa = &cpu.base.at(i, j).rho;
+            const Real* pb = &gc.at(i, j).rho;
+            for (int k = 0; k < 4; ++k)
+                maxRel = std::max(maxRel,
+                                  std::fabs(double(pa[k]) - pb[k]) /
+                                      (std::fabs(double(pa[k])) + 1e-3));
+        }
+    const bool ok = maxRel < 1e-2;
+    std::printf("  ML %d niveaux       | écart rel max %.3e  %s\n", levels,
+                maxRel, ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 int main() {
     MetalContext* ctx = nullptr;
     try {
@@ -125,7 +183,8 @@ int main() {
     }
     std::printf("Lock-step immergé CPU/GPU (cylindre Mach 2, 96x64, 40 pas)\n");
     const bool ok = compare(*ctx, false, 0) & compare(*ctx, true, 0) &
-                    compare(*ctx, false, Real(2e-3)); // paroi no-slip
+                    compare(*ctx, false, Real(2e-3)) & // paroi no-slip
+                    compareML(*ctx, 3);                // multi-niveaux (AmrML)
     delete ctx;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;

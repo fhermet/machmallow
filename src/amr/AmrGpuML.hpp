@@ -51,6 +51,11 @@ public:
     std::function<void(GridRef&, double)> fillPhysicalGhosts;
     std::function<void(GridRef&, double, unsigned)> fillPatchPhysical;
 
+    // Optional immersed-solid mask: 1 where (x, y) is solid. Threaded
+    // through every level (base + pooled patches), the GPU multi-level
+    // mirror of AmrML / AmrGpu.
+    std::function<std::uint8_t(Real, Real)> solidAt;
+
     AmrGpuML(MetalContext& ctx, int nx, int ny, Real x0, Real y0, Real lx,
              Real ly, AmrConfig cfg)
         : ctx_(ctx), cfg_(cfg), x0_(x0), y0_(y0),
@@ -117,12 +122,12 @@ public:
         FxP_ = mk(); FyP_ = mk();
         smaxP_ = ctx.device()->newBuffer(3 * sizeof(std::uint32_t),
                                          MTL::ResourceStorageModeShared);
-        // The inviscid pool kernels take a solid mask; this multi-level
-        // class has no immersed-solid support yet, so bind an always-zero
-        // mask (1 byte/cell) — a no-op the kernels read as all-fluid.
-        zmaskP_ = ctx.device()->newBuffer(
+        // Pooled immersed-solid mask (1 byte/cell, one slot per patch),
+        // bound to the inviscid pool kernels. Zero by default (all-fluid);
+        // populated per slot from solidAt when [solid] is present.
+        smaskP_ = ctx.device()->newBuffer(
             std::size_t(capacity_) * stride_, MTL::ResourceStorageModeShared);
-        std::memset(zmaskP_->contents(), 0,
+        std::memset(smaskP_->contents(), 0,
                     std::size_t(capacity_) * stride_);
         for (int s = capacity_ - 1; s >= 0; --s) freeSlots_.push_back(s);
 
@@ -184,7 +189,7 @@ public:
             L.slotTable->release();
         }
         for (MTL::Buffer* b :
-             {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_, smaxP_, zmaskP_})
+             {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_, smaxP_, smaskP_})
             b->release();
         for (MTL::Buffer* b : {sP_, fXP_, fYP_, sFxP_, sFyP_})
             if (b) b->release();
@@ -246,6 +251,7 @@ public:
         for (int j = NG; j < NG + b.ny; ++j)
             for (int i = NG; i < NG + b.nx; ++i)
                 b.at(i, j) = ic(b.xc(i), b.yc(j));
+        buildCoarseSolid_();
         fillPhysicalGhosts(b, 0);
         for (int pass = 1; pass < cfg_.maxLevels; ++pass) {
             regrid();
@@ -436,6 +442,48 @@ public:
     void regrid() { regridFrom_(1); }
 
 private:
+    // ---- immersed-solid mask helpers (geometric queries; mirror AmrML) ---
+    bool solCell_(const GridRef& g, int i, int j) const {
+        return solidAt && solidAt(g.xc(i), g.yc(j)) != 0;
+    }
+    bool solAtGlobal_(int lp, int cg, int cgj) const { // global cell @ lp
+        if (!solidAt) return false;
+        const GridRef b = coarseRef();
+        const Real dx = b.dx / Real(1 << lp), dy = b.dy / Real(1 << lp);
+        return solidAt(x0_ + (cg + Real(0.5)) * dx,
+                       y0_ + (cgj + Real(0.5)) * dy) != 0;
+    }
+    bool solBound_(const GridRef& g, int i, int j, int ip, int im, int jp,
+                   int jm) const {
+        return solidAt && cfg_.tagThreshold < Real(1e29) &&
+               !solCell_(g, NG + i, NG + j) &&
+               (solCell_(g, NG + ip, NG + j) || solCell_(g, NG + im, NG + j) ||
+                solCell_(g, NG + i, NG + jp) || solCell_(g, NG + i, NG + jm));
+    }
+    std::uint8_t* psolidML_(const Patch& p) const { // slot's mask buffer
+        return static_cast<std::uint8_t*>(smaskP_->contents()) +
+               std::size_t(p.slot) * stride_;
+    }
+    void buildCoarseSolid_() { // fill the base (coarse_) GPU mask buffer
+        const GridRef b = coarseRef();
+        auto* m = coarse_.solidData();
+        const int tx = b.totx(), ty = b.toty();
+        std::memset(m, 0, std::size_t(tx) * ty);
+        if (!solidAt) return;
+        for (int j = 0; j < ty; ++j)
+            for (int i = 0; i < tx; ++i)
+                m[std::size_t(j) * tx + i] = solidAt(b.xc(i), b.yc(j));
+    }
+    void buildPatchSolid_(int l, const Patch& p) const { // fill slot mask
+        auto* m = psolidML_(p);
+        std::memset(m, 0, std::size_t(stride_));
+        if (!solidAt) return;
+        const GridRef g = patchRef(l, p);
+        for (int j = 0; j < g.toty(); ++j)
+            for (int i = 0; i < g.totx(); ++i)
+                m[std::size_t(j) * pTot_ + i] = solidAt(g.xc(i), g.yc(j));
+    }
+
     // ---- geometry --------------------------------------------------------
     int nxAt_(int l) const { return coarseRef().nx << l; }
     int nyAt_(int l) const { return coarseRef().ny << l; }
@@ -520,13 +568,13 @@ private:
                         nf_);
         } else {
             encodePool_(cmd, l, predictorP_,
-                        {qP_, xLP_, xRP_, yBP_, yTP_, zmaskP_},
+                        {qP_, xLP_, xRP_, yBP_, yTP_, smaskP_},
                         dt, pTot_ - 2, pTot_ - 2);
-            encodePool_(cmd, l, fluxXP_, {xLP_, xRP_, qP_, FxP_, zmaskP_},
+            encodePool_(cmd, l, fluxXP_, {xLP_, xRP_, qP_, FxP_, smaskP_},
                         dt, nf_ + 1, nf_);
-            encodePool_(cmd, l, fluxYP_, {yBP_, yTP_, qP_, FyP_, zmaskP_},
+            encodePool_(cmd, l, fluxYP_, {yBP_, yTP_, qP_, FyP_, smaskP_},
                         dt, nf_, nf_ + 1);
-            encodePool_(cmd, l, updateP_, {qP_, FxP_, FyP_, zmaskP_}, dt,
+            encodePool_(cmd, l, updateP_, {qP_, FxP_, FyP_, smaskP_}, dt,
                         nf_, nf_);
         }
         cmd->commit();
@@ -623,7 +671,8 @@ private:
                           im = std::max(i - 1, 0);
                 const int jp = std::min(j + 1, b.ny - 1),
                           jm = std::max(j - 1, 0);
-                if (tagCell_(at, i, j, ip, im, jp, jm))
+                if (tagCell_(at, i, j, ip, im, jp, jm) ||
+                    solBound_(b, i, j, ip, im, jp, jm))
                     markDilated_(want, lv, b.nx, b.ny, i, j);
             }
     }
@@ -638,7 +687,8 @@ private:
             };
             for (int j = 0; j < nf_; ++j)
                 for (int i = 0; i < nf_; ++i)
-                    if (tagCell_(at, i, j, i + 1, i - 1, j + 1, j - 1))
+                    if (tagCell_(at, i, j, i + 1, i - 1, j + 1, j - 1) ||
+                        solBound_(g, i, j, i + 1, i - 1, j + 1, j - 1))
                         markDilated_(want, kid, nx, ny, 2 * p.ci0 + i,
                                      2 * p.cj0 + j);
         }
@@ -679,12 +729,20 @@ private:
     Cons prolong_(int l, const Patch* home, int cg, int cgj, int ox,
                   int oy, Real theta) const {
         const Cons q0 = parentVal_(l, home, cg, cgj, theta);
+        // Near a solid, drop to piecewise-constant in that direction
+        // (a frozen solid parent must not feed the slope; mirrors AmrML).
+        const bool sX = solAtGlobal_(l - 1, cg - 1, cgj) ||
+                        solAtGlobal_(l - 1, cg + 1, cgj);
+        const bool sY = solAtGlobal_(l - 1, cg, cgj - 1) ||
+                        solAtGlobal_(l - 1, cg, cgj + 1);
         const Cons dqx =
-            limitedSlope(parentVal_(l, home, cg - 1, cgj, theta), q0,
-                         parentVal_(l, home, cg + 1, cgj, theta));
+            sX ? Cons{0, 0, 0, 0}
+               : limitedSlope(parentVal_(l, home, cg - 1, cgj, theta), q0,
+                              parentVal_(l, home, cg + 1, cgj, theta));
         const Cons dqy =
-            limitedSlope(parentVal_(l, home, cg, cgj - 1, theta), q0,
-                         parentVal_(l, home, cg, cgj + 1, theta));
+            sY ? Cons{0, 0, 0, 0}
+               : limitedSlope(parentVal_(l, home, cg, cgj - 1, theta), q0,
+                              parentVal_(l, home, cg, cgj + 1, theta));
         const Real sx = ox ? Real(0.25) : Real(-0.25);
         const Real sy = oy ? Real(0.25) : Real(-0.25);
         return q0 + sx * dqx + sy * dqy;
@@ -820,6 +878,7 @@ private:
                         sprolong_(l, home, gfi / 2, gfj / 2, gfi & 1,
                                   gfj & 1, Real(-1));
             }
+        buildPatchSolid_(l, p);
         return p;
     }
 
@@ -1081,6 +1140,7 @@ private:
                 for (int r = 0; r < bC; ++r) {
                     const int cg = (dir < 2) ? n.cg : n.cg + r;
                     const int cgj = (dir < 2) ? n.cgj + r : n.cgj;
+                    if (solAtGlobal_(lc - 1, cg, cgj)) continue; // solid
                     ParentCell pc = parentCell_(lc - 1, cg, cgj);
                     const GridRef b = coarseRef();
                     const Real dxp = b.dx / Real(1 << (lc - 1));
@@ -1131,6 +1191,7 @@ private:
                 for (int r = 0; r < bC; ++r) {
                     const int cg = (dir < 2) ? n.cg : n.cg + r;
                     const int cgj = (dir < 2) ? n.cgj + r : n.cgj;
+                    if (solAtGlobal_(lc - 1, cg, cgj)) continue; // solid
                     ParentCell pc = parentCell_(lc - 1, cg, cgj);
                     const GridRef b = coarseRef();
                     const Real dxp = b.dx / Real(1 << (lc - 1));
@@ -1193,17 +1254,32 @@ private:
         for (const Patch& p : lvls_[l - 1].patches) {
             const GridRef g = patchRef(l, p);
             const PhiG* ps = cfg_.species ? sOf(p) : nullptr;
+            const std::uint8_t* sm = solidAt ? psolidML_(p) : nullptr;
             for (int b = 0; b < bC; ++b)
                 for (int a = 0; a < bC; ++a) {
                     const int fi = NG + 2 * a, fj = NG + 2 * b;
-                    const Cons sum = g.at(fi, fj) + g.at(fi + 1, fj) +
-                                     g.at(fi, fj + 1) +
-                                     g.at(fi + 1, fj + 1);
+                    // solid parent stays frozen; else average fluid children
+                    if (solAtGlobal_(l - 1, p.ci0 + a, p.cj0 + b)) continue;
                     ParentCell pc =
                         parentCell_(l - 1, p.ci0 + a, p.cj0 + b);
                     const std::size_t pid =
                         std::size_t(pc.lj) * pc.totx + pc.li;
-                    pc.cells[pid] = Real(0.25) * sum;
+                    if (sm) {
+                        Cons s{0, 0, 0, 0};
+                        int n = 0;
+                        for (int dj = 0; dj < 2; ++dj)
+                            for (int di = 0; di < 2; ++di) {
+                                if (sm[g.idx(fi + di, fj + dj)]) continue;
+                                s += g.at(fi + di, fj + dj);
+                                ++n;
+                            }
+                        if (n > 0) pc.cells[pid] = (Real(1) / n) * s;
+                    } else {
+                        pc.cells[pid] =
+                            Real(0.25) * (g.at(fi, fj) + g.at(fi + 1, fj) +
+                                          g.at(fi, fj + 1) +
+                                          g.at(fi + 1, fj + 1));
+                    }
                     if (ps) {
                         const auto id = [&](int x, int y) {
                             return g.idx(x, y);
@@ -1365,7 +1441,7 @@ private:
                               *waveP_ = nullptr;
     MTL::Buffer *qP_ = nullptr, *xLP_ = nullptr, *xRP_ = nullptr,
                 *yBP_ = nullptr, *yTP_ = nullptr, *FxP_ = nullptr,
-                *FyP_ = nullptr, *smaxP_ = nullptr, *zmaskP_ = nullptr;
+                *FyP_ = nullptr, *smaxP_ = nullptr, *smaskP_ = nullptr;
     MTL::Buffer *sP_ = nullptr, *fXP_ = nullptr, *fYP_ = nullptr,
                 *sFxP_ = nullptr, *sFyP_ = nullptr;
     MTL::ComputePipelineState *predictorYP_ = nullptr,
