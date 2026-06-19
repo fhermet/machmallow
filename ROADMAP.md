@@ -416,8 +416,13 @@ posée :
   (réflexion sur paroi haute, type entrée d'air). Reste l'arc détaché du
   cylindre vs corrélation de Billig (qualitatif pour l'instant).
 - [ ] multi-niveaux solide (`AmrML`/`AmrGpuML`, profondeur > 2).
-- [ ] no-slip visqueux (flux visqueux masque-aware) ; efforts (traînée par
-  intégration de pression de paroi) ; cut-cells (supprimer l'escalier).
+- [x] **efforts (traînée / portance par ∫ pression de paroi)** —
+  `wallForce` (`solver/Forces.hpp`) intègre p·n sur les faces fluide/solide.
+  Validé dans `immersed_wedge` : C_p de paroi du dièdre **2.447 vs 2.468
+  exact (0.8 %, choc oblique)** et **portance d'un cylindre symétrique = 0**
+  (|F_y/F_x| < 1e-3). Frottement visqueux non inclus (traînée de pression).
+- [ ] no-slip visqueux (flux visqueux masque-aware) + frottement de paroi.
+- [ ] cut-cells (supprimer l'escalier) ; multi-niveaux solide.
 
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 

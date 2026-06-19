@@ -105,6 +105,8 @@ presets C++ :
 | Paroi immergée **déclarative** (`[solid]`) | `immersed_case` | idem via `cases/shock_wall.ini` (parsing → `solidAt` → masque) | 14.95 (**0.33 %**, gate 5 %) |
 | Paroi immergée **+ AMR** (2 niv., bord + choc raffinés) | `immersed_amr` | p paroi vs exact + cohérence vs grille de base ; single-rate ET subcyclé | 14.98 / 15.00 (**0.14 / 0.03 %**) ; vs base 0.19 % |
 | **Choc oblique sur dièdre** immergé (M=2.5, θ=15°) | `immersed_wedge` | angle de choc β vs relation exacte **θ-β-M** | 38.3° vs 36.9° (**1.4°**, biais d'escalier, gate 2°) |
+| Pression de paroi du dièdre (intégrande de traînée) | `immersed_wedge` | C_p paroi vs choc oblique exact p₂ | 2.447 vs 2.468 (**0.8 %**) |
+| **Portance** d'un cylindre symétrique (∫p) | `immersed_wedge` | F_y vs 0 (symétrie exacte) | \|F_y/F_x\| = **0.000** (gate 0.03) |
 
 ### 2.2 Contre l'expérience
 

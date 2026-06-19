@@ -11,6 +11,7 @@
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "physics/Euler.hpp"
+#include "solver/Forces.hpp"
 #include "solver/Muscl2D.hpp"
 
 #include <cmath>
@@ -46,6 +47,36 @@ double obliqueBetaWeak(double thetaRad, double M) {
         else hi = mid;
     }
     return 0.5 * (lo + hi);
+}
+
+// Symmetric body (cylinder in axial flow) → lift must vanish exactly.
+// Validates the y-face bookkeeping / sign of wallForce.
+WallForce cylinderForce() {
+    const int nx = 160, ny = 128;
+    const double Lx = 1.25, cx = 0.45, cy = 0.5, rad = 0.15;
+    Grid g(nx, ny, 0, 0, Lx, Real(ny) * (Lx / nx));
+    std::vector<std::uint8_t> solid(g.q.size(), 0);
+    for (int j = 0; j < g.toty(); ++j)
+        for (int i = 0; i < g.totx(); ++i) {
+            const double dx = double(g.xc(i)) - cx, dy = double(g.yc(j)) - cy;
+            solid[g.idx(i, j)] = dx * dx + dy * dy < rad * rad ? 1 : 0;
+        }
+    const Cons fs = toCons(Prim{Real(1.4), Real(2), 0, Real(1)}); // Mach 2
+    for (std::size_t k = 0; k < g.q.size(); ++k) g.q[k] = fs;
+    Scratch2D s;
+    double t = 0;
+    const double tEnd = 0.9;
+    while (t < tEnd * (1 - 1e-12)) {
+        Real dt = std::min(maxStableDt(g, Real(0.4), 0), Real(tEnd - t));
+        for (int j = 0; j < g.toty(); ++j)
+            for (int i = 0; i < NG; ++i) g.at(i, j) = fs;
+        fillTransmissiveRight(g);
+        fillTransmissiveBottom(g);
+        fillTransmissiveTop(g);
+        step2D(g, dt, s, 0, 0, 0, solid.data());
+        t += dt;
+    }
+    return wallForce(g, solid.data());
 }
 
 } // namespace
@@ -119,16 +150,52 @@ int main() {
     }
     const double m = (n * sxy - sx * sy) / (n * syy - sy * sy);
     const double betaMeas = std::atan(1.0 / m) / DEG;
-    const double betaExact = obliqueBetaWeak(theta, M) / DEG;
-    const double err = std::fabs(betaMeas - betaExact);
+    const double betaR = obliqueBetaWeak(theta, M);
+    const double betaExact = betaR / DEG;
+    const double errBeta = std::fabs(betaMeas - betaExact);
+
+    // Pression de paroi exacte derrière le choc oblique (Rankine-Hugoniot
+    // sur la composante normale M1n = M sin β) — la rampe est à p2.
+    const double M1n = M * std::sin(betaR);
+    const double p2 = p0 * (1.0 + 2.0 * double(GAMMA) / (double(GAMMA) + 1.0) *
+                                      (M1n * M1n - 1.0));
+
+    // Pression de paroi moyenne (intégrande de la traînée) sur une fenêtre
+    // propre de la rampe (loin de la pointe et de la réflexion en haut).
+    double psum = 0;
+    int np = 0;
+    const auto solAt = [&](int i, int j) { return solid[g.idx(i, j)] != 0; };
+    for (int j = NG; j < NG + ny; ++j)
+        for (int i = NG; i < NG + nx; ++i) {
+            const double x = double(g.xc(i));
+            if (solAt(i, j) || x < x0 + 0.3 || x > x0 + 0.9) continue;
+            if (solAt(i, j - 1) || solAt(i + 1, j)) { // au contact de la rampe
+                psum += double(toPrim(g.at(i, j)).p);
+                ++np;
+            }
+        }
+    const double pWall = np ? psum / np : 0;
+    const double errP = std::fabs(pWall - p2) / p2;
+
+    const WallForce F = wallForce(g, solid.data());
 
     std::printf("Choc oblique sur dièdre immergé (M=%.1f, theta=%.0f deg)\n",
                 M, thetaDeg);
-    std::printf("  beta mesuré = %.2f deg | exact (theta-beta-M) = %.2f deg"
-                " | écart %.2f deg (gate 2 deg)\n",
-                betaMeas, betaExact, err);
+    std::printf("  beta : mesuré %.2f deg vs %.2f exact (theta-beta-M) | "
+                "écart %.2f deg (gate 2)\n", betaMeas, betaExact, errBeta);
+    std::printf("  pression de paroi : %.3f vs %.3f exact (choc oblique) | "
+                "écart %.1f%% (gate 6%%)\n", pWall, p2, 100 * errP);
+    std::printf("  force de paroi (∫p) : traînée Fx=%.4f, portance Fy=%.4f\n",
+                F.fx, F.fy);
 
-    const bool ok = err < 2.0;
+    // Cylindre symétrique : portance nulle (vérifie le signe / bilan ∫p).
+    const WallForce C = cylinderForce();
+    const double liftRatio = std::fabs(C.fy) / std::fabs(C.fx);
+    std::printf("  symétrie (cylindre Mach 2) : Fx=%.3f Fy=%.3f -> "
+                "|Fy/Fx|=%.3f (gate 0.03)\n", C.fx, C.fy, liftRatio);
+
+    const bool ok = errBeta < 2.0 && errP < 0.06 && liftRatio < 0.03 &&
+                    C.fx > 0;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }
