@@ -278,6 +278,19 @@ def colorize(rho, scale, style, gamma, k, floor, sigma, cmap):
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
+def mask_circle(rgb, bounds, cx, cy, r):
+    """Peint un disque (corps immergé) en BLANC sur l'image (le solveur y
+    fige le free-stream, donc le champ ne marque pas le corps)."""
+    x0, x1, y0, y1 = bounds
+    H, W = rgb.shape[:2]
+    xs = x0 + (np.arange(W) + 0.5) / W * (x1 - x0)
+    ys = y0 + (np.arange(H) + 0.5) / H * (y1 - y0)
+    X, Y = np.meshgrid(xs, ys)
+    inside = np.flipud((X - cx) ** 2 + (Y - cy) ** 2 <= r * r)  # row0 = haut
+    rgb[inside] = 255
+    return rgb
+
+
 def amr_boxes(amr, bounds):
     """Etendues (x0, x1, y0, y1, niveau) de chaque patch AMR (niveaux >= 1),
     pour dessiner le maillage adaptatif et le voir evoluer."""
@@ -337,6 +350,11 @@ def main():
                          "magma, cividis, turbo). Defaut selon le style.")
     ap.add_argument("--crop", default=None,
                     help="x0,x1,y0,y1 fixe (sinon : suivi auto)")
+    ap.add_argument("--mask-circle", default=None,
+                    help="cx,cy,r : disque blanc (corps immergé)")
+    ap.add_argument("--rho-range", default=None,
+                    help="lo,hi : borne la densité (style density) pour "
+                         "étaler la dynamique au lieu de min/max auto")
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--ytop", type=float, default=0.8,
                     help="hauteur de la fenetre de suivi (9:16)")
@@ -403,6 +421,10 @@ def main():
     if args.amr_cmap is None:             # colormap panneau densite
         args.amr_cmap = "Blues" if args.amr_bg == "light" else "turbo"
     light_bg = args.amr_bg == "light"
+    maskc = (tuple(float(v) for v in args.mask_circle.split(","))
+             if args.mask_circle else None)
+    rhorange = (tuple(float(v) for v in args.rho_range.split(","))
+                if args.rho_range else None)
 
     full = [0.0] * 6
     read_amr(files[0]).GetBounds(full)
@@ -448,11 +470,13 @@ def main():
         idx = (len(files) - 1) if args.still == "last" else int(args.still)
         rho = resample(read_amr(files[idx]), bounds_of(idx), dims)
         if args.style == "density":
-            scale = (float(rho.min()), float(rho.max()))
+            scale = rhorange or (float(rho.min()), float(rho.max()))
         else:
             scale = float(np.percentile(schlieren(rho, sigma), 99.5))
         rgb = colorize(rho, scale, args.style, args.gamma, args.k,
                        args.floor, sigma, args.cmap)
+        if maskc:
+            mask_circle(rgb, bounds_of(idx), *maskc)
         out = args.out or f"{args.prefix}_{args.style}_{idx:04d}.png"
         if args.annotate:
             annotate_dmr(rgb, rho, bounds_of(idx), args.title, out)
@@ -469,8 +493,9 @@ def main():
         for f, i in zip(sub, subi):
             r = resample(read_amr(f), bounds_of(i), (W // 4, H // 4))
             dlo, dhi = min(dlo, r.min()), max(dhi, r.max())
-        scale = (dlo, dhi)
-        print(f"  densite dans [{dlo:.3f}, {dhi:.3f}]")
+        scale = rhorange or (dlo, dhi)
+        print(f"  densite dans [{dlo:.3f}, {dhi:.3f}]"
+              f"{f' -> bornee {rhorange}' if rhorange else ''}")
     else:
         pcts = []
         for f, i in zip(sub, subi):
@@ -495,6 +520,8 @@ def main():
         rho = resample(amr, bounds_of(i), dims)
         top = colorize(rho, scale, args.style, args.gamma, args.k,
                        args.floor, sigma, args.cmap)
+        if maskc:
+            mask_circle(top, bounds_of(i), *maskc)
         if args.amr_panel:                          # densite + blocs AMR dessous
             bot = density_panel(rho, dlo, dhi, args.amr_cmap,
                                 amr_boxes(amr, bounds_of(i)), bounds_of(i), light_bg)
