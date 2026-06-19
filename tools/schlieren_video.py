@@ -321,6 +321,19 @@ def mask_circle(rgb, bounds, cx, cy, r):
     return rgb
 
 
+def overlay_schlieren(rgb, rho, scale, floor, gamma, sigma, weight):
+    """Superpose les CHOCS (|grad rho| fort) en BLANC sur l'image (mélange
+    vers blanc). Le seuil `floor` élevé n'y laisse que les discontinuités
+    fortes (chocs) — les gradients doux du sillage restent transparents."""
+    g = schlieren(rho, sigma)
+    n = np.clip(g / max(scale, 1e-12), 0, 1)
+    n = np.clip((n - floor) / (1 - floor), 0, 1) ** gamma
+    a = (n * weight)[..., None]
+    out = rgb.astype(np.float32) / 255.0
+    out = out * (1 - a) + a
+    return (np.clip(out, 0, 1) * 255).astype(np.uint8)
+
+
 def amr_boxes(amr, bounds):
     """Etendues (x0, x1, y0, y1, niveau) de chaque patch AMR (niveaux >= 1),
     pour dessiner le maillage adaptatif et le voir evoluer."""
@@ -387,6 +400,12 @@ def main():
     ap.add_argument("--rho-range", default=None,
                     help="lo,hi : borne la densité (style density) pour "
                          "étaler la dynamique au lieu de min/max auto")
+    ap.add_argument("--schlieren-overlay", type=float, default=0.0,
+                    help="superpose les chocs (|grad rho|) en blanc, poids "
+                         "0..1 (ex 0.85) — p.ex. sur --style vorticity")
+    ap.add_argument("--overlay-floor", type=float, default=0.45,
+                    help="seuil de l'overlay schlieren (haut = seuls les "
+                         "chocs ; défaut 0.45)")
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--ytop", type=float, default=0.8,
                     help="hauteur de la fenetre de suivi (9:16)")
@@ -513,6 +532,11 @@ def main():
                 scale = float(np.percentile(schlieren(rho, sigma), 99.5))
         rgb = colorize(rho, scale, args.style, args.gamma, args.k,
                        args.floor, sigma, args.cmap)
+        if args.schlieren_overlay > 0:
+            dens = resample(amr0, bounds_of(idx), dims)
+            ssc = float(np.percentile(schlieren(dens, sigma), 99.5))
+            rgb = overlay_schlieren(rgb, dens, ssc, args.overlay_floor,
+                                    args.gamma, sigma, args.schlieren_overlay)
         if maskc:
             mask_circle(rgb, bounds_of(idx), *maskc)
         out = args.out or f"{args.prefix}_{args.style}_{idx:04d}.png"
@@ -554,6 +578,16 @@ def main():
         if args.amr_panel:
             print(f"  panneau densite dans [{dlo:.3f}, {dhi:.3f}]")
 
+    # échelle de l'overlay schlieren (chocs en blanc) si demandé
+    schscale = None
+    if args.schlieren_overlay > 0:
+        ps = []
+        for f, i in zip(sub, subi):
+            r = resample(read_amr(f), bounds_of(i), (W // 4, H // 4))
+            ps.append(np.percentile(schlieren(r, sigma / 4), 99.5))
+        schscale = float(np.median(ps))
+        print(f"  overlay chocs |grad rho| = {schscale:.4f}")
+
     # --- passe 2 : rendu plein resolution (ralenti --hold + fige --freeze) ---
     tmp = args.frames_dir or tempfile.mkdtemp(prefix="schlieren_")
     os.makedirs(tmp, exist_ok=True)
@@ -568,6 +602,10 @@ def main():
                else resample(amr, bounds_of(i), dims))
         top = colorize(rho, scale, args.style, args.gamma, args.k,
                        args.floor, sigma, args.cmap)
+        if args.schlieren_overlay > 0:              # chocs en blanc par-dessus
+            dens = resample(amr, bounds_of(i), dims)
+            top = overlay_schlieren(top, dens, schscale, args.overlay_floor,
+                                    args.gamma, sigma, args.schlieren_overlay)
         if maskc:
             mask_circle(top, bounds_of(i), *maskc)
         if args.amr_panel:                          # densite + blocs AMR dessous
