@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -155,6 +156,14 @@ public:
         for (const std::string& key : numbered_(cfg, "ic.perturb."))
             c.perturbs_.push_back(parsePerturb_(cfg.requireString(key)));
 
+        // Immersed solids: static geometric regions flagged as solid
+        // (same shape grammar as IC regions, but no state and no motion).
+        // The solver masks these cells off and treats fluid/solid faces as
+        // reflective walls (slip). See [solid] in CASE_FORMAT.md.
+        for (const std::string& key : numbered_(cfg, "solid.region."))
+            c.solids_.push_back(
+                c.parseSolidRegion_(cfg.requireString(key)));
+
         c.periodicX = cfg.getString("bc.x", "") == "periodic";
         c.periodicY = cfg.getString("bc.y", "") == "periodic";
         const auto sideSpec = [&](const char* name, bool periodic) {
@@ -195,6 +204,15 @@ public:
     const GasPair& gases() const { return gas_; }
     bool reacts() const { return react_; }
     const Reaction& reaction() const { return reaction_; }
+
+    // Immersed solids: any declared [solid] region present?
+    bool hasSolids() const { return !solids_.empty(); }
+    // 1 if (x, y) falls inside a solid region, else 0 (static: no t).
+    std::uint8_t solidAt(Real x, Real y) const {
+        for (const Region& r : solids_)
+            if (r.inside(x, y, 0)) return 1;
+        return 0;
+    }
 
     template <class G>
     void fillGhosts(G& g, double t) const {
@@ -464,6 +482,53 @@ private:
         return r;
     }
 
+    // Solid region: the IC shape grammar without a state or motion —
+    // "rect x0 x1 y0 y1 | circle cx cy r | halfplane a b c | band x|y lo hi
+    //  | sinex x0 amp lambda". Reuses Region::inside (speed stays 0).
+    Region parseSolidRegion_(const std::string& spec) const {
+        const auto toks = tokens_(spec);
+        const std::size_t n = toks.size();
+        const auto need = [&](std::size_t want, const char* what) {
+            if (n != want)
+                throw std::runtime_error(std::string("malformed solid ") +
+                                         what + " region: " + spec);
+        };
+        Region r;
+        if (toks.empty()) throw std::runtime_error("empty solid region");
+        if (toks[0] == "halfplane") {
+            need(4, "halfplane");
+            r.shape = Region::Shape::HalfPlane;
+            r.p[0] = num_(toks[1]);
+            r.p[1] = num_(toks[2]);
+            r.p[2] = num_(toks[3]);
+            r.norm = std::sqrt(r.p[0] * r.p[0] + r.p[1] * r.p[1]);
+        } else if (toks[0] == "band") {
+            need(4, "band");
+            r.shape = toks[1] == "x" ? Region::Shape::BandX
+                                     : Region::Shape::BandY;
+            r.p[0] = num_(toks[2]);
+            r.p[1] = num_(toks[3]);
+        } else if (toks[0] == "rect") {
+            need(5, "rect");
+            r.shape = Region::Shape::Rect;
+            for (int k = 0; k < 4; ++k) r.p[k] = num_(toks[1 + k]);
+        } else if (toks[0] == "circle") {
+            need(4, "circle");
+            r.shape = Region::Shape::Circle;
+            for (int k = 0; k < 3; ++k) r.p[k] = num_(toks[1 + k]);
+        } else if (toks[0] == "sinex") {
+            need(4, "sinex");
+            r.shape = Region::Shape::SineX;
+            for (int k = 0; k < 3; ++k) r.p[k] = num_(toks[1 + k]);
+            if (r.p[2] == 0)
+                throw std::runtime_error("solid sinex: lambda must be != 0");
+        } else {
+            throw std::runtime_error("unknown solid region shape: " +
+                                     toks[0]);
+        }
+        return r;
+    }
+
     static Perturb parsePerturb_(const std::string& spec) {
         const auto toks = tokens_(spec);
         Perturb pb;
@@ -643,6 +708,7 @@ private:
     std::map<std::string, NamedState> states_;
     Prim def_{};
     std::vector<Region> regions_;
+    std::vector<Region> solids_; // immersed solid regions ([solid])
     std::vector<Perturb> perturbs_;
     Side sides_[4];
 };

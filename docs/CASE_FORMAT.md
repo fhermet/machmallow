@@ -120,6 +120,34 @@ perturb.N = <perturbation>
 
 ---
 
+## `[solid]` — corps immergés (optionnel)
+
+```ini
+region.N = <forme>       # bloc solide (N=1..99 ; même grammaire que [ic],
+                         # SANS état ni mouvement)
+```
+
+Les cellules dont le centre tombe dans une région `[solid]` sont retirées
+de l'écoulement ; les faces fluide↔solide deviennent des **murs
+réfléchissants glissants** (vitesse normale miroir). Les formes sont
+celles des régions d'IC — `rect`, `circle`, `halfplane`, `band`, `sinex` —
+sans le `: NOM` (un solide n'a pas d'état) ni `speed` (statique).
+
+```ini
+[solid]
+region.1 = rect 0.7 1.01 -0.01 0.03   # bloc / paroi alignée
+region.2 = circle 0.5 0.5 0.1         # cylindre (escalier)
+```
+
+> **Limites actuelles** (v1.6, premier incrément) : `backend = cpu`,
+> `scheme = muscl` mono-gaz, et le raffinement AMR est **désactivé** en
+> présence d'un solide (grille de base seule — un avis est imprimé).
+> L'intégration AMR, le portage GPU et le no-slip visqueux sont sur la
+> [feuille de route](../ROADMAP.md). Cas de référence :
+> `cases/shock_wall.ini` (gate `immersed_case`).
+
+---
+
 ## `[bc]` — conditions aux limites
 
 ```ini

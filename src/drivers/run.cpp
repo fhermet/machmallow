@@ -336,6 +336,10 @@ int list() {
         "                         | u|v|rho|p erf x0 width amp\n"
         "                         | u|v|rho|p sing per amp yc sigma\n"
         "                         | p hydro yref (hydrostatique)\n"
+        "  [solid]    region.N  = rect|circle|halfplane|band|sinex ...\n"
+        "             (corps immergé : meme grammaire geometrique que\n"
+        "              [ic], sans etat ; paroi reflechissante. backend\n"
+        "              cpu + muscl mono-gaz ; grille de base seule)\n"
         "  [bc]       x|y = periodic\n"
         "             left|right|bottom|top = transmissive | reflective\n"
         "                 | analytic | inflow X\n"
@@ -402,6 +406,25 @@ int main(int argc, char** argv) {
             throw std::runtime_error(
                 "grid.nx/ny must be multiples of amr.block");
 
+        // Immersed solids ([solid] regions): the mask is threaded into the
+        // CPU MUSCL coarse step only. Refinement near solids and the GPU
+        // path are not ported yet — guard explicitly rather than silently
+        // ignore the mask (route to Amr2, base grid only).
+        if (cd.hasSolids()) {
+            if (backend != "cpu")
+                throw std::runtime_error(
+                    "solides immergés : backend = cpu requis "
+                    "(portage GPU à venir)");
+            if (acfg.species || acfg.weno)
+                throw std::runtime_error(
+                    "solides immergés : scheme = muscl mono-gaz requis "
+                    "(AMR multi-niveaux / bi-gaz à venir)");
+            acfg.maxLevels = 2;             // route to the solid-aware Amr2
+            acfg.tagThreshold = Real(1e30); // no refinement near solids yet
+            std::printf("note: solides immergés — grille de base seule "
+                        "(raffinement AMR à venir)\n");
+        }
+
         std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "
                     "[%g,%g]x[%g,%g]%s%s | levels %d | mu %g\n",
                     path.c_str(), backend.c_str(), scheme.c_str(),
@@ -449,6 +472,10 @@ int main(int argc, char** argv) {
                                               unsigned s) {
                     cd.fillGhostSides(g, t, s);
                 };
+                if (cd.hasSolids())
+                    amr.solidAt = [&cd](Real x, Real y) {
+                        return cd.solidAt(x, y);
+                    };
                 rc = runCase(amr, cd, cfg);
             } else {
                 AmrML amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);

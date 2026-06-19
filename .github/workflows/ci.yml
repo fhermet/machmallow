@@ -32,6 +32,7 @@ jobs:
           ./build/convergence
           ./build/mms
           ./build/immersed
+          ./build/immersed_case
           ./build/reactor
           ./build/casedef_test
           for c in cases/*.ini; do ./build/run --check "$c"; done

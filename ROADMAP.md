@@ -367,11 +367,17 @@ posée :
   1D de choc, 0.33 %)**, non-pénétration `|u|/u_i = 0.000`. Face alignée
   ⇒ vérification exacte (pas d'erreur d'escalier). Ajouté à la suite CPU
   de la CI.
-- [ ] masque déclaratif dans le fichier de cas (`[solid]` / régions
-  `solid.N` : rectangle, cercle, demi-plan/coin — réutilise la grammaire
-  géométrique des régions IC).
-- [ ] intégration AMR (tag des cellules de bord solide) + portage GPU
-  (lock-step) du traitement de masque.
+- [x] **masque déclaratif** dans le fichier de cas — section `[solid]`
+  `region.N = rect|circle|halfplane|band|sinex …` (même grammaire
+  géométrique que `[ic]`, sans état ni mouvement ; `CaseDef::solidAt`).
+  Threadé dans le pas MUSCL de la grille de base d'`Amr2` ; garde-fou
+  dans `run.cpp` (backend cpu, muscl mono-gaz, raffinement désactivé →
+  grille de base seule). Gate `immersed_case` : `cases/shock_wall.ini`
+  rejoue la réflexion de choc par le chemin déclaratif → **14.95 vs 15.0
+  exact (0.33 %)**, ajouté à la suite CPU de la CI.
+- [ ] intégration AMR (tag des cellules de bord solide, refluxing/
+  restriction à travers faces solides) + portage GPU (lock-step) du
+  traitement de masque.
 - [ ] no-slip visqueux (flux visqueux masque-aware) ; corps courbes
   (coin θ-β-M, arc de choc sur cylindre) en escalier ; efforts (traînée
   par intégration de pression de paroi).

@@ -69,6 +69,12 @@ public:
     // prolongated coarse ghosts.
     std::function<void(Grid&, double, unsigned)> fillPatchPhysical;
 
+    // Optional immersed-solid mask: 1 where (x, y) is solid. When set,
+    // the coarse grid is masked off there (reflective fluid/solid faces).
+    // Refinement near solids is not yet supported — the case runner
+    // disables AMR when solids are present, so only the coarse grid runs.
+    std::function<std::uint8_t(Real, Real)> solidAt;
+
     Amr2(int nx, int ny, Real x0, Real y0, Real lx, Real ly, AmrConfig cfg)
         : coarse(nx, ny, x0, y0, lx, ly), cfg_(cfg), nbx_(nx / cfg.blockC),
           nby_(ny / cfg.blockC), blockOf_(std::size_t(nbx_) * nby_, -1) {
@@ -97,6 +103,7 @@ public:
         for (int j = NG; j < NG + coarse.ny; ++j)
             for (int i = NG; i < NG + coarse.nx; ++i)
                 coarse.at(i, j) = ic(coarse.xc(i), coarse.yc(j));
+        buildCoarseSolid_();
         fillPhysicalGhosts(coarse, 0); // regrid prolongation reads ghosts
         regrid();
         for (Patch& p : patches)
@@ -262,6 +269,17 @@ public:
     }
 
 private:
+    // Sample the solid mask onto every coarse cell (ghosts included, so
+    // step2D's neighbour lookups stay in range). No-op without solidAt.
+    void buildCoarseSolid_() {
+        if (!solidAt) { coarseSolidMask_.clear(); return; }
+        coarseSolidMask_.assign(coarse.q.size(), 0);
+        for (int j = 0; j < coarse.toty(); ++j)
+            for (int i = 0; i < coarse.totx(); ++i)
+                coarseSolidMask_[coarse.idx(i, j)] =
+                    solidAt(coarse.xc(i), coarse.yc(j));
+    }
+
     void fillAllPatchGhosts_(double t, Real theta) {
         for (Patch& p : patches) {
             fillPatchGhosts_(p, theta);
@@ -271,11 +289,17 @@ private:
         }
     }
 
+    // Coarse solid mask pointer (nullptr when no [solid] regions).
+    const std::uint8_t* coarseSolid_() const {
+        return coarseSolidMask_.empty() ? nullptr : coarseSolidMask_.data();
+    }
+
     void stepSingleRate_(Real dt, double t) {
         fillPhysicalGhosts(coarse, t);
         fillAllPatchGhosts_(t, Real(-1));
 
-        step2D(coarse, dt, scratchC_, cfg_.mu, cfg_.gx, cfg_.gy); // + fluxes kept
+        step2D(coarse, dt, scratchC_, cfg_.mu, cfg_.gx, cfg_.gy,
+               coarseSolid_()); // + fluxes kept
         for (Patch& p : patches) {
             step2D(p.grid, dt, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
             if (cfg_.reflux) {
@@ -295,7 +319,8 @@ private:
         fillPhysicalGhosts(coarse, t);
         fillAllPatchGhosts_(t, Real(-1)); // substep 1 ghosts at t^n
 
-        step2D(coarse, dtC, scratchC_, cfg_.mu, cfg_.gx, cfg_.gy);
+        step2D(coarse, dtC, scratchC_, cfg_.mu, cfg_.gx, cfg_.gy,
+               coarseSolid_());
         for (Patch& p : patches) {
             if (cfg_.reflux) refluxCoarse_(p, dtC);
             step2D(p.grid, dtF, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
@@ -504,6 +529,7 @@ private:
     std::vector<int> blockOf_; // block -> patch index, -1 if unrefined
     Scratch2D scratchC_, scratchF_;
     std::vector<Cons> coarseOld_; // coarse t^n copy (subcycled ghosts)
+    std::vector<std::uint8_t> coarseSolidMask_; // 1 = solid (empty = none)
     int stepCount_ = 0;
 };
 
