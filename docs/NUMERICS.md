@@ -144,7 +144,15 @@ grille cartésienne (méthode ghost-cell, pas de cellules coupées). Les
 cellules solides ne sont ni reconstruites ni mises à jour ; à chaque face
 **fluide↔solide** on impose un **mur glissant**.
 
-Le flux de paroi n'est *pas* le HLLC de l'état miroir : pour un écoulement
+Avec viscosité (`mu > 0`) la paroi devient **adhérente (no-slip)** : dans
+`addViscousFluxes`, un voisin solide est remplacé par un ghost no-slip (les
+deux composantes de vitesse inversées, ρ/p conservés → adiabatique), si
+bien que le cisaillement de paroi annule la vitesse tangentielle (le flux
+convectif glissant fournit la pression). Validé par la couche limite de
+Blasius sur une plaque immergée (gate `immersed_noslip`, profil RMS 0.7 %,
+Cf 3 %).
+
+Le flux de paroi (convectif) n'est *pas* le HLLC de l'état miroir : pour un écoulement
 **normal supersonique** (un > c), l'estimation de vitesse d'onde PVRS de
 HLLC garde $S_L = u_L - c_L\,q > 0$ et **décentre tout le flux entrant** —
 la paroi fuit et un corps supersonique devient quasi transparent (l'arc de

@@ -71,19 +71,37 @@ struct Scratch2D {
 // the MUSCL scratch and the WENO scratch can reuse it (the parabolic
 // term is 2nd-order central in both: only the convective part needs the
 // high-order reconstruction).
+// `solid` (optional): immersed mask. A solid neighbour becomes a NO-SLIP
+// ghost — the mirror of the face's fluid cell with BOTH velocity components
+// flipped (so the wall velocity is zero) and rho/p kept (adiabatic, zero
+// normal heat flux). Solid/solid faces carry no viscous flux. The slip
+// pressure wall is handled by the convective flux; this shear makes it
+// no-slip. With solid = nullptr the path is byte-identical to before.
 inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
-                             std::vector<Cons>& Fy, Real mu) {
+                             std::vector<Cons>& Fy, Real mu,
+                             const std::uint8_t* solid = nullptr) {
     const Real kT = heatConductivity(mu);
     const Real c23 = Real(2.0 / 3.0), c43 = Real(4.0 / 3.0);
+    const auto sol = [&](int ii, int jj) {
+        return solid != nullptr && solid[g.idx(ii, jj)] != 0;
+    };
+    const auto NS = [](Prim w) { w.u = -w.u; w.v = -w.v; return w; };
 
     for (int j = NG; j < NG + g.ny; ++j) // x faces (i+1/2, j)
         for (int i = NG - 1; i < NG + g.nx; ++i) {
-            const Prim w00 = toPrim(g.at(i, j));
-            const Prim w10 = toPrim(g.at(i + 1, j));
-            const Prim w0p = toPrim(g.at(i, j + 1));
-            const Prim w0m = toPrim(g.at(i, j - 1));
-            const Prim w1p = toPrim(g.at(i + 1, j + 1));
-            const Prim w1m = toPrim(g.at(i + 1, j - 1));
+            const bool sl = sol(i, j), sr = sol(i + 1, j);
+            if (sl && sr) continue; // no viscous flux across a solid wall
+            const Prim f00 = toPrim(g.at(i, j));
+            const Prim f10 = toPrim(g.at(i + 1, j));
+            const Prim refF = sl ? f10 : f00; // fluid cell at this face
+            const Prim w00 = sl ? NS(f10) : f00;
+            const Prim w10 = sr ? NS(f00) : f10;
+            const Prim w0p = sol(i, j + 1) ? NS(refF) : toPrim(g.at(i, j + 1));
+            const Prim w0m = sol(i, j - 1) ? NS(refF) : toPrim(g.at(i, j - 1));
+            const Prim w1p =
+                sol(i + 1, j + 1) ? NS(refF) : toPrim(g.at(i + 1, j + 1));
+            const Prim w1m =
+                sol(i + 1, j - 1) ? NS(refF) : toPrim(g.at(i + 1, j - 1));
             const Real ux = (w10.u - w00.u) / g.dx;
             const Real vx = (w10.v - w00.v) / g.dx;
             const Real Tx =
@@ -104,12 +122,19 @@ inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
 
     for (int j = NG - 1; j < NG + g.ny; ++j) // y faces (i, j+1/2)
         for (int i = NG; i < NG + g.nx; ++i) {
-            const Prim w00 = toPrim(g.at(i, j));
-            const Prim w01 = toPrim(g.at(i, j + 1));
-            const Prim wp0 = toPrim(g.at(i + 1, j));
-            const Prim wm0 = toPrim(g.at(i - 1, j));
-            const Prim wp1 = toPrim(g.at(i + 1, j + 1));
-            const Prim wm1 = toPrim(g.at(i - 1, j + 1));
+            const bool sb = sol(i, j), st = sol(i, j + 1);
+            if (sb && st) continue;
+            const Prim f00 = toPrim(g.at(i, j));
+            const Prim f01 = toPrim(g.at(i, j + 1));
+            const Prim refF = sb ? f01 : f00;
+            const Prim w00 = sb ? NS(f01) : f00;
+            const Prim w01 = st ? NS(f00) : f01;
+            const Prim wp0 = sol(i + 1, j) ? NS(refF) : toPrim(g.at(i + 1, j));
+            const Prim wm0 = sol(i - 1, j) ? NS(refF) : toPrim(g.at(i - 1, j));
+            const Prim wp1 =
+                sol(i + 1, j + 1) ? NS(refF) : toPrim(g.at(i + 1, j + 1));
+            const Prim wm1 =
+                sol(i - 1, j + 1) ? NS(refF) : toPrim(g.at(i - 1, j + 1));
             const Real uy = (w01.u - w00.u) / g.dy;
             const Real vy = (w01.v - w00.v) / g.dy;
             const Real Ty =
@@ -128,8 +153,9 @@ inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
             F.E -= ub * txy + vb * tyy + kT * Ty;
         }
 }
-inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu) {
-    addViscousFluxes(g, s.Fx, s.Fy, mu);
+inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu,
+                             const std::uint8_t* solid = nullptr) {
+    addViscousFluxes(g, s.Fx, s.Fy, mu, solid);
 }
 
 // Advance one step of size dt. Ghost cells must be filled by the caller.
@@ -228,7 +254,7 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
             s.Fy[id] = hllcFluxY(toPrim(B), toPrim(T));
         }
 
-    if (mu > 0) addViscousFluxes(g, s, mu);
+    if (mu > 0) addViscousFluxes(g, s, mu, solid);
 
     // Conservative update.
     const Real lx = dt / g.dx, ly = dt / g.dy;

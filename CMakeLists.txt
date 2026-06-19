@@ -97,6 +97,9 @@ target_include_directories(immersed_amr PRIVATE src)
 add_executable(immersed_wedge src/drivers/immersed_wedge.cpp)
 target_include_directories(immersed_wedge PRIVATE src)
 
+add_executable(immersed_noslip src/drivers/immersed_noslip.cpp)
+target_include_directories(immersed_noslip PRIVATE src)
+
 add_executable(immersed_gpu src/drivers/immersed_gpu.cpp)
 target_link_libraries(immersed_gpu PRIVATE mm_metal)
 target_include_directories(convergence PRIVATE src)

@@ -129,7 +129,9 @@ region.N = <forme>       # bloc solide (N=1..99 ; même grammaire que [ic],
 
 Les cellules dont le centre tombe dans une région `[solid]` sont retirées
 de l'écoulement ; les faces fluide↔solide deviennent des **murs
-réfléchissants glissants** (vitesse normale miroir). Les formes sont
+réfléchissants glissants** (vitesse normale miroir), ou **adhérents
+(no-slip)** dès que `mu > 0` (les flux visqueux imposent une vitesse de
+paroi nulle — validé Blasius, gate `immersed_noslip`). Les formes sont
 celles des régions d'IC — `rect`, `circle`, `halfplane`, `band`, `sinex` —
 sans le `: NOM` (un solide n'a pas d'état) ni `speed` (statique).
 
@@ -145,7 +147,8 @@ lisser l'escalier ; règle `[amr]` standard (`levels`, `tag_threshold`,
 `subcycle`…). Voir `cases/cylinder_bowshock.ini` et `cases/wc_step.ini`.
 
 > **Limites actuelles** (v1.6) : `backend = cpu` **ou `hybrid`** (GPU,
-> lock-step CPU/GPU vérifié), `scheme = muscl` mono-gaz, AMR **2 niveaux**.
+> lock-step CPU/GPU vérifié ; le no-slip visqueux `mu > 0` est CPU pour
+> l'instant), `scheme = muscl` mono-gaz, AMR **2 niveaux**.
 > Le multi-niveaux (profondeur > 2) et le no-slip visqueux sont sur la
 > [feuille de route](../ROADMAP.md). Cas de référence :
 > `cases/shock_wall.ini` (gates `immersed_case`, `immersed_amr`,

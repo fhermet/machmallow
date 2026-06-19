@@ -107,6 +107,7 @@ presets C++ :
 | **Choc oblique sur dièdre** immergé (M=2.5, θ=15°) | `immersed_wedge` | angle de choc β vs relation exacte **θ-β-M** | 38.3° vs 36.9° (**1.4°**, biais d'escalier, gate 2°) |
 | Pression de paroi du dièdre (intégrande de traînée) | `immersed_wedge` | C_p paroi vs choc oblique exact p₂ | 2.447 vs 2.468 (**0.8 %**) |
 | **Portance** d'un cylindre symétrique (∫p) | `immersed_wedge` | F_y vs 0 (symétrie exacte) | \|F_y/F_x\| = **0.000** (gate 0.03) |
+| **Blasius sur plaque immergée** (no-slip visqueux) | `immersed_noslip` | profil vs f', Cf vs 0.664/√Re_x | RMS **0.7 %** ; Cf **3 %** (Re_x≈1600) |
 
 ### 2.2 Contre l'expérience
 
@@ -135,7 +136,7 @@ cmake --build build -j
 # vérification / validation CPU (rapide)
 ./build/sod1d ; ./build/convergence ; ./build/mms ; ./build/reactor
 ./build/immersed ; ./build/immersed_case ; ./build/immersed_amr
-./build/immersed_wedge
+./build/immersed_wedge ; ./build/immersed_noslip
 ./build/species_suite ; ./build/casedef_test ; ./build/weno_suite
 # validation GPU
 ./build/mlgpu_amr ; ./build/dmr_amr 32 gpu ; ./build/detonation
@@ -147,8 +148,8 @@ Chaque exécutable renvoie `0` (PASS) ou `1` (FAIL) et imprime ses métriques.
 La **CI** (`.github/workflows/ci.yml`) rejoue tout à chaque push :
 - **suite CPU** (machine sans GPU) : sod*, convergence, **mms**,
   **immersed**, **immersed_case**, **immersed_amr**, **immersed_wedge**,
-  reactor, species_suite, weno_suite, analytic_suite, casedef_test, +
-  `--check` de tous les cas `cases/*.ini` ;
+  **immersed_noslip**, reactor, species_suite, weno_suite, analytic_suite,
+  casedef_test, + `--check` de tous les cas `cases/*.ini` ;
 - **suite GPU** (runner Metal) : dmr_gpu, dmr_amr, **mlgpu_amr**,
   **immersed_gpu**, detonation, hs_suite, blasius.
 

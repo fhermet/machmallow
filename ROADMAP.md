@@ -421,8 +421,14 @@ posée :
   Validé dans `immersed_wedge` : C_p de paroi du dièdre **2.447 vs 2.468
   exact (0.8 %, choc oblique)** et **portance d'un cylindre symétrique = 0**
   (|F_y/F_x| < 1e-3). Frottement visqueux non inclus (traînée de pression).
-- [ ] no-slip visqueux (flux visqueux masque-aware) + frottement de paroi.
-- [ ] cut-cells (supprimer l'escalier) ; multi-niveaux solide.
+- [x] **no-slip visqueux** (flux visqueux masque-aware) — un voisin solide
+  devient un ghost no-slip (deux vitesses inversées, ρ/p conservés →
+  adiabatique) ; le cisaillement de paroi rend le mur adhérent (le flux
+  convectif fournit la pression). Gate `immersed_noslip` : couche limite de
+  Blasius sur une **plaque immergée** → profil **RMS 0.7 %** vs f', Cf
+  **3 %** vs 0.664/√Re_x. CPU (mu>0 + solide → backend cpu ; no-slip GPU
+  à venir).
+- [ ] cut-cells (supprimer l'escalier) ; multi-niveaux solide ; no-slip GPU.
 
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 
