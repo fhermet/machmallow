@@ -35,8 +35,19 @@ try:
     from vtk.util.numpy_support import vtk_to_numpy
 except ImportError:
     sys.exit("vtk introuvable : pip install vtk")
+import matplotlib
 import matplotlib.cm as cm
 from matplotlib import colormaps
+from matplotlib.colors import LinearSegmentedColormap
+
+# "icefire" : divergente à CENTRE NOIR — la vorticité nulle (free-stream)
+# devient noire et les tourbillons brillent en cyan (sens horaire) / ambre
+# (anti-horaire). Fond sombre = rendu hypnotique de l'allée tourbillonnaire.
+if "icefire" not in colormaps:
+    colormaps.register(LinearSegmentedColormap.from_list("icefire", [
+        (0.00, "#bdf0ff"), (0.18, "#1fb6ff"), (0.36, "#0a3a6b"),
+        (0.50, "#000000"),
+        (0.64, "#6b1a0a"), (0.82, "#ff5a1f"), (1.00, "#ffe39a")]))
 
 
 def read_amr(path):
@@ -122,6 +133,21 @@ def schlieren(rho, sigma=0.0):
     """|grad rho| (grille uniforme -> magnitude du gradient en pixels)."""
     gy, gx = np.gradient(blur(rho, sigma))
     return np.hypot(gx, gy)
+
+
+def vorticity(amr, bounds, dims, sigma=0.0):
+    """omega = dv/dx - du/dy (signe = sens de rotation). On rééchantillonne
+    u et v sur la même grille puis on dérive. La grille a la rangée 0 en
+    HAUT (y décroissant vers le bas), d'où le signe sur du/dy."""
+    u = blur(resample(amr, bounds, dims, "u"), sigma)
+    v = blur(resample(amr, bounds, dims, "v"), sigma)
+    x0, x1, y0, y1 = bounds
+    W, H = dims
+    dx = (x1 - x0) / W
+    dy = (y1 - y0) / H
+    dvdx = np.gradient(v, dx, axis=1)
+    dudy = -np.gradient(u, dy, axis=0)  # rangée croissante = y décroissant
+    return dvdx - dudy
 
 
 def stem_x(amr, full_bounds, x_corner):
@@ -260,7 +286,11 @@ def annotate_dmr(rgb, rho, bounds, title, out):
 
 
 def colorize(rho, scale, style, gamma, k, floor, sigma, cmap):
-    if style == "density":
+    if style == "vorticity":
+        # `rho` porte déjà omega ; échelle symétrique -> divergente centrée.
+        n = 0.5 + 0.5 * np.clip(rho / max(scale, 1e-12), -1, 1)
+        rgb = colormaps[cmap](n)[..., :3]
+    elif style == "density":
         n = np.clip((rho - scale[0]) / max(scale[1] - scale[0], 1e-9), 0, 1)
         rgb = colormaps[cmap](n)[..., :3]
     else:
@@ -342,9 +372,11 @@ def main():
     ap.add_argument("--prefix", default="out/dmr_hero")
     ap.add_argument("--out", default=None)
     ap.add_argument("--style", default="fire",
-                    choices=["fire", "light", "schlieren", "density"],
+                    choices=["fire", "light", "schlieren", "density",
+                             "vorticity"],
                     help="fire=fond noir | light=fond blanc | schlieren="
-                         "N&B classique | density=champ rempli")
+                         "N&B classique | density=champ rempli | "
+                         "vorticity=rotation (divergente, allée tourbillonnaire)")
     ap.add_argument("--cmap", default=None,
                     help="colormap matplotlib (ex: inferno, plasma, viridis, "
                          "magma, cividis, turbo). Defaut selon le style.")
@@ -415,7 +447,8 @@ def main():
     print(f"plage : frames [{args.start}:{args.end}] -> {len(files)} frames")
     if args.cmap is None:                 # defaut de colormap selon le style
         args.cmap = {"fire": "inferno", "light": "magma_r",
-                     "density": "turbo"}.get(args.style, "inferno")
+                     "density": "turbo", "vorticity": "icefire"}.get(
+                         args.style, "inferno")
     if args.floor is None:                # fond blanc : couper plus haut
         args.floor = 0.1 if args.style == "light" else 0.10
     if args.amr_cmap is None:             # colormap panneau densite
@@ -468,11 +501,16 @@ def main():
     if args.still is not None:
         from PIL import Image
         idx = (len(files) - 1) if args.still == "last" else int(args.still)
-        rho = resample(read_amr(files[idx]), bounds_of(idx), dims)
-        if args.style == "density":
-            scale = rhorange or (float(rho.min()), float(rho.max()))
+        amr0 = read_amr(files[idx])
+        if args.style == "vorticity":
+            rho = vorticity(amr0, bounds_of(idx), dims, sigma)
+            scale = float(np.percentile(np.abs(rho), 99.5))
         else:
-            scale = float(np.percentile(schlieren(rho, sigma), 99.5))
+            rho = resample(amr0, bounds_of(idx), dims)
+            if args.style == "density":
+                scale = rhorange or (float(rho.min()), float(rho.max()))
+            else:
+                scale = float(np.percentile(schlieren(rho, sigma), 99.5))
         rgb = colorize(rho, scale, args.style, args.gamma, args.k,
                        args.floor, sigma, args.cmap)
         if maskc:
@@ -496,6 +534,14 @@ def main():
         scale = rhorange or (dlo, dhi)
         print(f"  densite dans [{dlo:.3f}, {dhi:.3f}]"
               f"{f' -> bornee {rhorange}' if rhorange else ''}")
+    elif args.style == "vorticity":
+        pcts = []
+        for f, i in zip(sub, subi):
+            w = vorticity(read_amr(f), bounds_of(i), (W // 4, H // 4),
+                          sigma / 4)
+            pcts.append(np.percentile(np.abs(w), 99.5))
+        scale = float(np.median(pcts))
+        print(f"  echelle |omega| = {scale:.4f}")
     else:
         pcts = []
         for f, i in zip(sub, subi):
@@ -517,7 +563,9 @@ def main():
     oi = 0                                          # index de sortie courant
     for i, f in enumerate(files):
         amr = read_amr(f)
-        rho = resample(amr, bounds_of(i), dims)
+        rho = (vorticity(amr, bounds_of(i), dims, sigma)
+               if args.style == "vorticity"
+               else resample(amr, bounds_of(i), dims))
         top = colorize(rho, scale, args.style, args.gamma, args.k,
                        args.floor, sigma, args.cmap)
         if maskc:
