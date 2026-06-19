@@ -99,7 +99,8 @@ presets C++ :
 | Réacteur 0D adiabatique | `reactor` g2 | T vs équilibre (5.2) | exact (résidu 4.8e-7) |
 | Réacteur raide (A=1e4, dt=1) | `reactor` g3 | stabilité | borné, λ=1 |
 | Advection d'interface bi-gaz | `species_suite` g1 | oscillation de pression | \|p−1\| < 1.0e-2 (pas d'oscillation parasite) |
-| **Réflexion de choc / paroi immergée** | `immersed` | p paroi vs réflexion 1D exacte (Ms=2, p_r=15.0) | 14.95 (**0.33 %**, gate 4 %) ; non-pénétration \|u\|/u_i = 0.000 |
+| **Réflexion de choc / paroi immergée** | `immersed` | p paroi vs réflexion 1D exacte, Ms=2 (post-choc subsonique) | 14.95 / 15.0 (**0.33 %**) ; \|u\|/u_i = 0 |
+| idem, Ms=3 (post-choc **supersonique** vers la paroi, M1≈1.36) | `immersed` | p paroi vs exact (verrouille le flux de paroi supersonique) | 51.68 / 51.67 (**0.02 %**, gate 5 %) |
 | Paroi immergée **déclarative** (`[solid]`) | `immersed_case` | idem via `cases/shock_wall.ini` (parsing → `solidAt` → masque) | 14.95 (**0.33 %**, gate 5 %) |
 
 ### 2.2 Contre l'expérience
@@ -117,6 +118,8 @@ presets C++ :
 | Double Mach reflection (Woodward & Colella 1984) | `dmr_amr`, `mlgpu_amr` g1 | structure (point triple, tige de Mach, glissement KH), stabilité fort Mach (M=10), lock-step |
 | Kelvin-Helmholtz | `kh_amr` | enroulements, conservation périodique |
 | Vortex isentropique | `convergence` | dissipation (WENO ~6× moins que MUSCL) |
+| **Marche Mach 3** (Woodward & Colella 1984) | `cases/wc_step.ini` | corps immergé aligné : arc détaché, réflexion de Mach, point triple, glissement, détente de coin (ρ stagnation 6.27) |
+| **Cylindre Mach 2** | `cases/cylinder_bowshock.ini` | corps courbe en escalier : arc de choc détaché, détente aux épaules, sillage (ρ stagnation 4.36) |
 
 ---
 

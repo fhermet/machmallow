@@ -10,6 +10,13 @@
 // (limite forte (3γ-1)/(γ-1) = 8 pour γ=1.4). La face étant alignée, il
 // n'y a pas d'erreur d'escalier : c'est une vérification exacte de la
 // paroi immergée. On vérifie aussi la non-pénétration (u ≈ 0 à la paroi).
+//
+// On teste DEUX régimes :
+//   Ms=2 : gaz post-choc SUBSONIQUE vers la paroi (M1≈0.96)
+//   Ms=3 : gaz post-choc SUPERSONIQUE vers la paroi (M1≈1.36)
+// Le cas supersonique verrouille spécifiquement le flux de paroi exact :
+// la paroi miroir + HLLC FUIT en supersonique (son estimation PVRS garde
+// SL > 0 et décentre tout le flux entrant) — d'où `wallPressure`.
 
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
@@ -23,19 +30,23 @@
 
 using namespace mm;
 
-int main() {
+namespace {
+
+// Réflexion d'un choc Ms sur une paroi immergée ; renvoie l'erreur
+// relative de pression de paroi vs la valeur 1D exacte (et |u|/u_i).
+struct Result { double pErr, uRel, p, pExact, M1; };
+
+Result runReflection(double Ms, double tEnd) {
     const double G = double(GAMMA);
-    const double Ms = 2.0;                 // Mach du choc incident
-    const double rho0 = 1.0, p0 = 1.0;     // gaz au repos en amont
+    const double rho0 = 1.0, p0 = 1.0;
     const double c0 = std::sqrt(G * p0 / rho0);
 
-    // état post-choc (Rankine-Hugoniot, choc se déplaçant en +x)
-    const double xi = 1.0 + 2.0 * G / (G + 1.0) * (Ms * Ms - 1.0); // p1/p0
+    const double xi = 1.0 + 2.0 * G / (G + 1.0) * (Ms * Ms - 1.0);
     const double p1 = xi * p0;
     const double rho1 = rho0 * (G + 1.0) * Ms * Ms /
                         ((G - 1.0) * Ms * Ms + 2.0);
     const double u1 = 2.0 / (G + 1.0) * (Ms - 1.0 / Ms) * c0;
-    // pression de paroi exacte après réflexion
+    const double c1 = std::sqrt(G * p1 / rho1);
     const double p2 = p1 * ((3 * G - 1) * xi - (G - 1)) /
                       ((G - 1) * xi + (G + 1));
 
@@ -58,7 +69,6 @@ int main() {
 
     Scratch2D s;
     double t = 0;
-    const double tEnd = 0.32; // choc atteint la paroi (~0.21) puis réflexion
     while (t < tEnd * (1 - 1e-12)) {
         const Real dt = std::min(maxStableDt(g, Real(0.4), 0),
                                  Real(tEnd - t));
@@ -69,22 +79,32 @@ int main() {
         t += dt;
     }
 
-    // cellule fluide adjacente à la paroi
     int iw = NG;
     while (iw < NG + nx && double(g.xc(iw)) < xWall) ++iw;
     const int jm = NG + ny / 2;
     const Prim w = toPrim(g.at(iw - 1, jm));
-    const double pErr = std::fabs(double(w.p) - p2) / p2;
-    const double uRel = std::fabs(double(w.u)) / u1;
+    return {std::fabs(double(w.p) - p2) / p2, std::fabs(double(w.u)) / u1,
+            double(w.p), p2, u1 / c1};
+}
 
-    std::printf("Réflexion de choc sur paroi immergée (Ms=%.1f, gamma=%.1f)\n",
-                Ms, G);
-    std::printf("  post-choc : p_i=%.3f, u_i=%.3f\n", p1, u1);
-    std::printf("  paroi : p=%.3f vs exact p_r=%.3f  (err %.2f%%, gate 4%%)\n",
-                double(w.p), p2, 100 * pErr);
-    std::printf("  non-pénétration : |u|/u_i = %.3f  (gate 5%%)\n", uRel);
+} // namespace
 
-    const bool ok = pErr < 0.04 && uRel < 0.05;
+int main() {
+    bool ok = true;
+    // (Ms, tEnd, gate) — Ms=3 atteint la paroi plus tôt, on mesure plus tôt.
+    const struct { double Ms, tEnd, tol; } cases[] = {
+        {2.0, 0.32, 0.04}, {3.0, 0.22, 0.05}};
+    for (const auto& c : cases) {
+        const Result r = runReflection(c.Ms, c.tEnd);
+        const bool pass = r.pErr < c.tol && r.uRel < 0.05;
+        ok = ok && pass;
+        std::printf("Ms=%.1f (post-choc M1=%.2f, %s vers la paroi) : "
+                    "p=%.3f vs %.3f exact  err %.2f%% (gate %.0f%%), "
+                    "|u|/u_i=%.3f  %s\n",
+                    c.Ms, r.M1, r.M1 < 1 ? "subsonique" : "SUPERSONIQUE",
+                    r.p, r.pExact, 100 * r.pErr, 100 * c.tol, r.uRel,
+                    pass ? "PASS" : "FAIL");
+    }
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

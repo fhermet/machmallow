@@ -362,11 +362,23 @@ posée :
   d'un solide, flux de face fluide↔solide = paroi réfléchissante
   (`mx→−mx` / `my→−my`). MVP **non-visqueux** (no-slip avec `mu>0`
   reporté ; les flux visqueux ignorent encore le masque).
-- [x] **gate `immersed`** — réflexion d'un choc plan (Ms=2) sur une paroi
-  immergée alignée : pression de paroi **14.95 vs 15.0 exact (réflexion
-  1D de choc, 0.33 %)**, non-pénétration `|u|/u_i = 0.000`. Face alignée
-  ⇒ vérification exacte (pas d'erreur d'escalier). Ajouté à la suite CPU
-  de la CI.
+- [x] **gate `immersed`** — réflexion d'un choc plan sur une paroi
+  immergée alignée, deux régimes : Ms=2 (post-choc subsonique) → **14.95
+  vs 15.0 exact (0.33 %)** ; Ms=3 (post-choc **supersonique** vers la
+  paroi, M1≈1.36) → **51.68 vs 51.67 (0.02 %)**. Face alignée ⇒
+  vérification exacte. Ajouté à la suite CPU de la CI.
+- [x] **flux de paroi exact** (`wallPressure`/`wallFluxX/Y` dans `Hllc`) —
+  la paroi miroir + HLLC **fuit en supersonique** (l'estimation PVRS garde
+  `SL = uL − cL·q > 0` et décentre tout le flux entrant : un corps
+  supersonique devenait ~transparent). Remplacé par le flux de pression de
+  paroi exact `(0, p*, 0, 0)`, `p*` résolu par Newton sur `f_W(p*) = u_n`
+  (Toro) — correct en sub- ET supersonique. C'est ce qui débloque les
+  arcs de choc (sans lui, l'arc se formait puis se vidait par la paroi).
+- [x] **démos visuelles** — `cases/wc_step.ini` (marche Mach 3 de
+  Woodward & Colella 1984 : arc de choc, réflexion de Mach, point triple,
+  ligne de glissement, détente de coin) et `cases/cylinder_bowshock.ini`
+  (cylindre Mach 2 : arc détaché en escalier, détente aux épaules,
+  sillage). ρ de stagnation conforme (step 6.27, cylindre 4.36).
 - [x] **masque déclaratif** dans le fichier de cas — section `[solid]`
   `region.N = rect|circle|halfplane|band|sinex …` (même grammaire
   géométrique que `[ic]`, sans état ni mouvement ; `CaseDef::solidAt`).
@@ -375,12 +387,14 @@ posée :
   grille de base seule). Gate `immersed_case` : `cases/shock_wall.ini`
   rejoue la réflexion de choc par le chemin déclaratif → **14.95 vs 15.0
   exact (0.33 %)**, ajouté à la suite CPU de la CI.
+- [~] corps courbes en escalier — fonctionnent qualitativement (cylindre
+  ci-dessus) ; reste à *quantifier* (angle de l'arc détaché vs corrélation,
+  θ-β-M sur un coin) et à raffiner par AMR pour lisser l'escalier.
 - [ ] intégration AMR (tag des cellules de bord solide, refluxing/
   restriction à travers faces solides) + portage GPU (lock-step) du
   traitement de masque.
-- [ ] no-slip visqueux (flux visqueux masque-aware) ; corps courbes
-  (coin θ-β-M, arc de choc sur cylindre) en escalier ; efforts (traînée
-  par intégration de pression de paroi).
+- [ ] no-slip visqueux (flux visqueux masque-aware) ; efforts (traînée par
+  intégration de pression de paroi) ; cut-cells (supprimer l'escalier).
 
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 

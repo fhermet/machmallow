@@ -137,6 +137,34 @@ opérateur visqueux d'**ordre 2** quel que soit le schéma inviscide
 
 ---
 
+## 6 bis. Corps immergés (masque solide)
+
+Un masque `solid` (1 = solide) retire des cellules de l'écoulement sur la
+grille cartésienne (méthode ghost-cell, pas de cellules coupées). Les
+cellules solides ne sont ni reconstruites ni mises à jour ; à chaque face
+**fluide↔solide** on impose un **mur glissant**.
+
+Le flux de paroi n'est *pas* le HLLC de l'état miroir : pour un écoulement
+**normal supersonique** (un > c), l'estimation de vitesse d'onde PVRS de
+HLLC garde $S_L = u_L - c_L\,q > 0$ et **décentre tout le flux entrant** —
+la paroi fuit et un corps supersonique devient quasi transparent (l'arc de
+choc se forme puis se vide). On impose donc le **flux de pression de paroi
+exact**
+
+$$\mathbf F_{\text{paroi}} = (0,\ p^\*,\ 0,\ 0)^\top,$$
+
+où $p^\*$ résout $f_W(p^\*) = u_n$ (fonction de pression de Toro : branche
+choc si $u_n>0$, détente sinon), par Newton — exact en sub- **et**
+supersonique. La paroi ne transporte ni masse ni énergie (glissement : le
+flux convectif tangentiel s'annule car la vitesse normale est nulle).
+Vérifié exactement sur la réflexion de choc alignée à Ms=2 (post-choc
+subsonique) **et Ms=3** (post-choc supersonique, M1≈1.36) — cf.
+[`VALIDATION.md`](VALIDATION.md). Sur une face oblique (corps courbe), la
+frontière est en **escalier** : qualitativement correct (arc de choc d'un
+cylindre), à raffiner par AMR ou cut-cells (cf. roadmap).
+
+---
+
 ## 7. Bi-gaz (`physics/TwoGas.hpp`, `solver/Muscl2DSpecies.hpp`)
 
 Modèle à deux gaz parfaits de $\gamma$ différents. On transporte la

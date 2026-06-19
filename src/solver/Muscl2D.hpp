@@ -206,9 +206,13 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
             const std::size_t id = g.idx(i, j);
             const bool sl = sol(i, j), sr = sol(i + 1, j);
             if (sl && sr) { s.Fx[id] = Cons{0, 0, 0, 0}; continue; }
-            Cons L = s.xR[id], R = s.xL[g.idx(i + 1, j)];
-            if (sl) L = mirX(R);          // paroi à gauche du fluide
-            else if (sr) R = mirX(L);     // paroi à droite du fluide
+            const Cons L = s.xR[id], R = s.xL[g.idx(i + 1, j)];
+            // Paroi : flux de pression exact (robuste en supersonique ;
+            // un = vitesse du fluide vers la paroi).
+            if (sr) { const Prim w = toPrim(L);
+                      s.Fx[id] = wallFluxX(w, w.u); continue; }
+            if (sl) { const Prim w = toPrim(R);
+                      s.Fx[id] = wallFluxX(w, -w.u); continue; }
             s.Fx[id] = hllcFluxX(toPrim(L), toPrim(R));
         }
     for (int j = NG - 1; j < NG + g.ny; ++j)
@@ -216,9 +220,11 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
             const std::size_t id = g.idx(i, j);
             const bool sb = sol(i, j), st = sol(i, j + 1);
             if (sb && st) { s.Fy[id] = Cons{0, 0, 0, 0}; continue; }
-            Cons B = s.yT[id], T = s.yB[g.idx(i, j + 1)];
-            if (sb) B = mirY(T);
-            else if (st) T = mirY(B);
+            const Cons B = s.yT[id], T = s.yB[g.idx(i, j + 1)];
+            if (st) { const Prim w = toPrim(B);
+                      s.Fy[id] = wallFluxY(w, w.v); continue; }
+            if (sb) { const Prim w = toPrim(T);
+                      s.Fy[id] = wallFluxY(w, -w.v); continue; }
             s.Fy[id] = hllcFluxY(toPrim(B), toPrim(T));
         }
 
