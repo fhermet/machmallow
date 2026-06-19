@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <utility>
 #include <vector>
@@ -36,6 +37,11 @@ public:
 
     std::function<void(GridRef&, double)> fillPhysicalGhosts;
     std::function<void(GridRef&, double, unsigned)> fillPatchPhysical;
+
+    // Optional immersed-solid mask: 1 where (x, y) is solid. Threaded
+    // through the coarse step, the patch pool, restriction, refluxing,
+    // prolongation and boundary tagging — the GPU mirror of Amr2.
+    std::function<std::uint8_t(Real, Real)> solidAt;
 
     // Cumulative wall time per step section (seconds).
     struct Timings {
@@ -68,6 +74,14 @@ public:
         FxP_ = mk(); FyP_ = mk();
         smaxP_ = ctx.device()->newBuffer(3 * sizeof(std::uint32_t),
                                          MTL::ResourceStorageModeShared);
+        // Pooled immersed-solid mask (1 byte/cell, one slot per patch).
+        // Always allocated and zero by default → no-op unless populated.
+        smaskP_ = ctx.device()->newBuffer(
+            std::size_t(capacity_) * stride_, MTL::ResourceStorageModeShared);
+        std::memset(smaskP_->contents(), 0,
+                    std::size_t(capacity_) * stride_);
+        ctotx_ = nx + 2 * NG;
+        ctoty_ = ny + 2 * NG;
         coarse_.setViscosity(cfg.mu);
         coarse_.setGravity(cfg.gx, cfg.gy);
         slotsBuf_ = ctx.device()->newBuffer(
@@ -84,8 +98,8 @@ public:
     }
 
     ~AmrGpu() {
-        for (MTL::Buffer* b :
-             {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_, smaxP_, slotsBuf_})
+        for (MTL::Buffer* b : {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_,
+                               smaxP_, smaskP_, slotsBuf_})
             b->release();
         for (MTL::ComputePipelineState* p :
              {predictorP_, fluxXP_, fluxYP_, updateP_, waveP_})
@@ -133,6 +147,7 @@ public:
         for (int j = NG; j < NG + c.ny; ++j)
             for (int i = NG; i < NG + c.nx; ++i)
                 c.at(i, j) = ic(c.xc(i), c.yc(j));
+        buildCoarseSolid_();
         fillPhysicalGhosts(c, 0);
         regrid();
         for (const Patch& p : patches) {
@@ -288,6 +303,16 @@ public:
                         soundSpeed(toPrim(c.at(NG + i, NG + j)));
                     t = std::max(du, dv) / c0 > cfg_.tagVelocity;
                 }
+                // Immersed boundary: tag fluid cells touching a solid so
+                // the body surface gets refined (unless AMR is disabled).
+                if (!t && !coarseSolidMask_.empty() &&
+                    cfg_.tagThreshold < Real(1e29) &&
+                    !solCoarse_(NG + i, NG + j) &&
+                    (solCoarse_(NG + ip, NG + j) ||
+                     solCoarse_(NG + im, NG + j) ||
+                     solCoarse_(NG + i, NG + jp) ||
+                     solCoarse_(NG + i, NG + jm)))
+                    t = true;
                 tag[std::size_t(j) * nx + i] = t;
             }
         });
@@ -333,6 +358,42 @@ private:
     Real dxc_() const { return coarseRef().dx; }
     Real dyc_() const { return coarseRef().dy; }
 
+    // --- immersed-solid mask helpers (mirror Amr2) ---
+    bool solCoarse_(int i, int j) const {
+        return !coarseSolidMask_.empty() &&
+               coarseSolidMask_[std::size_t(j) * ctotx_ + i] != 0;
+    }
+    const std::uint8_t* psolid_(const Patch& p) const {
+        return solidAt ? static_cast<const std::uint8_t*>(
+                             smaskP_->contents()) +
+                             std::size_t(p.slot) * stride_
+                       : nullptr;
+    }
+    // Sample the mask onto the coarse grid: CPU mirror (for restriction /
+    // reflux / prolong / tagging) AND the GPU buffer (for the coarse step).
+    void buildCoarseSolid_() {
+        if (!solidAt) { coarseSolidMask_.clear(); return; }
+        GridRef c = coarseRef();
+        coarseSolidMask_.assign(std::size_t(ctotx_) * ctoty_, 0);
+        auto* gpu = coarse_.solidData();
+        for (int j = 0; j < ctoty_; ++j)
+            for (int i = 0; i < ctotx_; ++i) {
+                const std::uint8_t s = solidAt(c.xc(i), c.yc(j));
+                coarseSolidMask_[std::size_t(j) * ctotx_ + i] = s;
+                gpu[std::size_t(j) * ctotx_ + i] = s;
+            }
+    }
+    // Sample the mask onto a patch's pool slot (ghosts included).
+    void buildPatchSolid_(const Patch& p) {
+        if (!solidAt) return;
+        GridRef g = patchRef(p);
+        auto* m = static_cast<std::uint8_t*>(smaskP_->contents()) +
+                  std::size_t(p.slot) * stride_;
+        for (int j = 0; j < g.toty(); ++j)
+            for (int i = 0; i < g.totx(); ++i)
+                m[std::size_t(j) * pTot_ + i] = solidAt(g.xc(i), g.yc(j));
+    }
+
     void fillAllPatchGhosts_(double t, Real theta) {
         parallelFor(patches.size(), [&](std::size_t k) {
             const Patch& p = patches[k];
@@ -346,13 +407,14 @@ private:
     }
 
     void encodePoolStep_(MTL::CommandBuffer* cmd, Real dt) const {
-        encodePool_(cmd, predictorP_, {qP_, xLP_, xRP_, yBP_, yTP_}, dt,
-                    pTot_ - 2, pTot_ - 2, 1, 1);
-        encodePool_(cmd, fluxXP_, {xLP_, xRP_, qP_, FxP_}, dt, nf_ + 1,
-                    nf_, NG - 1, NG);
-        encodePool_(cmd, fluxYP_, {yBP_, yTP_, qP_, FyP_}, dt, nf_,
+        encodePool_(cmd, predictorP_, {qP_, xLP_, xRP_, yBP_, yTP_, smaskP_},
+                    dt, pTot_ - 2, pTot_ - 2, 1, 1);
+        encodePool_(cmd, fluxXP_, {xLP_, xRP_, qP_, FxP_, smaskP_}, dt,
+                    nf_ + 1, nf_, NG - 1, NG);
+        encodePool_(cmd, fluxYP_, {yBP_, yTP_, qP_, FyP_, smaskP_}, dt, nf_,
                     nf_ + 1, NG, NG - 1);
-        encodePool_(cmd, updateP_, {qP_, FxP_, FyP_}, dt, nf_, nf_, NG, NG);
+        encodePool_(cmd, updateP_, {qP_, FxP_, FyP_, smaskP_}, dt, nf_, nf_,
+                    NG, NG);
     }
 
     void zeroWaveAll_() {
@@ -491,6 +553,7 @@ private:
                 const int gfj = 2 * p.cj0 + (j - NG);
                 g.at(i, j) = prolong_(gfi / 2, gfj / 2, gfi & 1, gfj & 1);
             }
+        buildPatchSolid_(p);
         return p;
     }
 
@@ -508,10 +571,16 @@ private:
         const GridRef c = coarseRef();
         const int I = NG + ci, J = NG + cj;
         const Cons q0 = coarseAt_(c, I, J, theta);
-        const Cons dqx = limitedSlope(coarseAt_(c, I - 1, J, theta), q0,
-                                      coarseAt_(c, I + 1, J, theta));
-        const Cons dqy = limitedSlope(coarseAt_(c, I, J - 1, theta), q0,
-                                      coarseAt_(c, I, J + 1, theta));
+        // Near a solid, drop to piecewise-constant in the affected
+        // direction: a frozen solid neighbour must not feed the slope.
+        const bool sX = solCoarse_(I - 1, J) || solCoarse_(I + 1, J);
+        const bool sY = solCoarse_(I, J - 1) || solCoarse_(I, J + 1);
+        const Cons dqx = sX ? Cons{0, 0, 0, 0}
+                            : limitedSlope(coarseAt_(c, I - 1, J, theta), q0,
+                                           coarseAt_(c, I + 1, J, theta));
+        const Cons dqy = sY ? Cons{0, 0, 0, 0}
+                            : limitedSlope(coarseAt_(c, I, J - 1, theta), q0,
+                                           coarseAt_(c, I, J + 1, theta));
         const Real sx = ox ? Real(0.25) : Real(-0.25);
         const Real sy = oy ? Real(0.25) : Real(-0.25);
         return q0 + sx * dqx + sy * dqy;
@@ -597,22 +666,31 @@ private:
         const Cons* fyC = coarse_.fy();
         const auto cid = [&](int i, int j) { return j * ctx + i; };
 
+        // A solid uncovered neighbour is frozen — never reflux into it.
         if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 c.at(NG + n.cell, NG + p.cj0 + r) +=
                     lx * fxC[cid(NG + n.cell, NG + p.cj0 + r)];
+            }
         if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 c.at(NG + n.cell, NG + p.cj0 + r) -=
                     lx * fxC[cid(NG + n.cell - 1, NG + p.cj0 + r)];
+            }
         if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 c.at(NG + p.ci0 + r, NG + n.cell) +=
                     ly * fyC[cid(NG + p.ci0 + r, NG + n.cell)];
+            }
         if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 c.at(NG + p.ci0 + r, NG + n.cell) -=
                     ly * fyC[cid(NG + p.ci0 + r, NG + n.cell - 1)];
+            }
     }
 
     void refluxFine_(const Patch& p, Real dt) {
@@ -627,6 +705,7 @@ private:
 
         if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 const Cons ff =
                     Real(0.5) * (fxF[fid(NG - 1, NG + 2 * r)] +
                                  fxF[fid(NG - 1, NG + 2 * r + 1)]);
@@ -634,6 +713,7 @@ private:
             }
         if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 const Cons ff =
                     Real(0.5) * (fxF[fid(NG + nf_ - 1, NG + 2 * r)] +
                                  fxF[fid(NG + nf_ - 1, NG + 2 * r + 1)]);
@@ -641,6 +721,7 @@ private:
             }
         if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 const Cons ff =
                     Real(0.5) * (fyF[fid(NG + 2 * r, NG - 1)] +
                                  fyF[fid(NG + 2 * r + 1, NG - 1)]);
@@ -648,6 +729,7 @@ private:
             }
         if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 const Cons ff =
                     Real(0.5) * (fyF[fid(NG + 2 * r, NG + nf_ - 1)] +
                                  fyF[fid(NG + 2 * r + 1, NG + nf_ - 1)]);
@@ -655,20 +737,36 @@ private:
             }
     }
 
-    // Patches cover disjoint coarse blocks: parallel-safe.
+    // Patches cover disjoint coarse blocks: parallel-safe. With an
+    // immersed mask: solid coarse cells stay frozen, and only the FLUID
+    // fine children contribute (mirrors Amr2).
     void restrictFine_() {
         GridRef c = coarseRef();
         parallelFor(patches.size(), [&](std::size_t k) {
             const Patch& p = patches[k];
             const GridRef g = patchRef(p);
+            const std::uint8_t* ps = psolid_(p);
             for (int b = 0; b < cfg_.blockC; ++b)
                 for (int a = 0; a < cfg_.blockC; ++a) {
+                    const int ci = NG + p.ci0 + a, cj = NG + p.cj0 + b;
+                    if (solCoarse_(ci, cj)) continue; // solid: frozen
                     const int fi = NG + 2 * a, fj = NG + 2 * b;
-                    const Cons sum = g.at(fi, fj) + g.at(fi + 1, fj) +
-                                     g.at(fi, fj + 1) +
-                                     g.at(fi + 1, fj + 1);
-                    c.at(NG + p.ci0 + a, NG + p.cj0 + b) =
-                        Real(0.25) * sum;
+                    if (!ps) {
+                        c.at(ci, cj) =
+                            Real(0.25) * (g.at(fi, fj) + g.at(fi + 1, fj) +
+                                          g.at(fi, fj + 1) +
+                                          g.at(fi + 1, fj + 1));
+                        continue;
+                    }
+                    Cons sum{0, 0, 0, 0};
+                    int n = 0;
+                    for (int dj = 0; dj < 2; ++dj)
+                        for (int di = 0; di < 2; ++di) {
+                            if (ps[g.idx(fi + di, fj + dj)]) continue;
+                            sum += g.at(fi + di, fj + dj);
+                            ++n;
+                        }
+                    if (n > 0) c.at(ci, cj) = (Real(1) / n) * sum;
                 }
         });
     }
@@ -678,6 +776,8 @@ private:
     Real x0_, y0_;
     Euler2DGpu coarse_;
     int nbx_, nby_, nf_ = 0, pTot_ = 0, stride_ = 0, capacity_ = 0;
+    int ctotx_ = 0, ctoty_ = 0; // coarse grid dims incl. ghosts
+    std::vector<std::uint8_t> coarseSolidMask_; // CPU mirror (empty = none)
     std::vector<int> blockOf_;
     std::vector<int> freeSlots_;
     std::vector<Cons> coarseOld_; // coarse t^n copy (subcycled ghosts)
@@ -693,6 +793,7 @@ private:
     MTL::Buffer *qP_ = nullptr, *xLP_ = nullptr, *xRP_ = nullptr,
                 *yBP_ = nullptr, *yTP_ = nullptr, *FxP_ = nullptr,
                 *FyP_ = nullptr, *smaxP_ = nullptr, *slotsBuf_ = nullptr;
+    MTL::Buffer* smaskP_ = nullptr; // pooled solid mask (capacity*stride)
 };
 
 } // namespace mm

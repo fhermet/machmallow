@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <limits>
 #include <utility>
@@ -45,10 +46,15 @@ public:
         // [0] = max sx, [1] = max sy, [2] = min rho (uint-ordered floats)
         smax_ = ctx.device()->newBuffer(3 * sizeof(std::uint32_t),
                                         MTL::ResourceStorageModeShared);
+        // Immersed-solid mask (1 = solid), bound to the inviscid kernels.
+        // Always allocated and zero by default → no-op unless populated.
+        smask_ = ctx.device()->newBuffer(std::size_t(tx_) * ty_,
+                                         MTL::ResourceStorageModeShared);
+        std::memset(smask_->contents(), 0, std::size_t(tx_) * ty_);
     }
 
     ~Euler2DGpu() {
-        for (MTL::Buffer* b : {q_, xL_, xR_, yB_, yT_, Fx_, Fy_, smax_})
+        for (MTL::Buffer* b : {q_, xL_, xR_, yB_, yT_, Fx_, Fy_, smax_, smask_})
             b->release();
         for (MTL::Buffer* b : {s_, fXb_, fYb_, sFx_, sFy_})
             if (b) b->release();
@@ -149,11 +155,11 @@ public:
                    ny_);
             return;
         }
-        encode(cmd, predictor_, {q_, xL_, xR_, yB_, yT_}, p, tx_ - 2,
-               ty_ - 2);
-        encode(cmd, fluxX_, {xL_, xR_, q_, Fx_}, p, nx_ + 1, ny_);
-        encode(cmd, fluxY_, {yB_, yT_, q_, Fy_}, p, nx_, ny_ + 1);
-        encode(cmd, update_, {q_, Fx_, Fy_}, p, nx_, ny_);
+        encode(cmd, predictor_, {q_, xL_, xR_, yB_, yT_, smask_}, p,
+               tx_ - 2, ty_ - 2);
+        encode(cmd, fluxX_, {xL_, xR_, q_, Fx_, smask_}, p, nx_ + 1, ny_);
+        encode(cmd, fluxY_, {yB_, yT_, q_, Fy_, smask_}, p, nx_, ny_ + 1);
+        encode(cmd, update_, {q_, Fx_, Fy_, smask_}, p, nx_, ny_);
     }
 
     // Dynamic viscosity for the flux kernels (0 = inviscid Euler).
@@ -308,6 +314,12 @@ public:
 
     MTL::Buffer* qBuffer() const { return q_; }
 
+    // Immersed-solid mask (1 = solid), CPU-visible, tx*ty bytes, ghosts
+    // included. Default all-zero (no solid). The caller populates it.
+    std::uint8_t* solidData() {
+        return static_cast<std::uint8_t*>(smask_->contents());
+    }
+
     // Step fluxes, CPU-visible (needed by AMR refluxing).
     const Cons* fx() const { return static_cast<const Cons*>(Fx_->contents()); }
     const Cons* fy() const { return static_cast<const Cons*>(Fy_->contents()); }
@@ -366,7 +378,7 @@ private:
                               *waveY_ = nullptr;
     MTL::Buffer *q_ = nullptr, *xL_ = nullptr, *xR_ = nullptr,
                 *yB_ = nullptr, *yT_ = nullptr, *Fx_ = nullptr,
-                *Fy_ = nullptr, *smax_ = nullptr;
+                *Fy_ = nullptr, *smax_ = nullptr, *smask_ = nullptr;
     MTL::Buffer *s_ = nullptr, *fXb_ = nullptr, *fYb_ = nullptr,
                 *sFx_ = nullptr, *sFy_ = nullptr;
     bool weno_ = false, wenoSpecies_ = false;

@@ -59,6 +59,7 @@ jobs:
           ./build/dmr_gpu 60
           ./build/dmr_amr 32 gpu
           ./build/mlgpu_amr 32
+          ./build/immersed_gpu
           ./build/detonation
           ./build/hs_suite
           ./build/blasius

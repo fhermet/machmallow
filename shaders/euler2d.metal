@@ -112,17 +112,61 @@ inline float4 hllcFluxY(float4 L, float4 R) {
     return float4(f.x, f.z, f.y, f.w);
 }
 
+// Exact slip-wall pressure for fluid primitive W (x=rho,y=u,z=v,w=p) whose
+// velocity INTO the wall is `un`. Solves Toro's f_W(p*) = un by Newton —
+// correct for sub- AND supersonic normal inflow (mirror-state HLLC leaks at
+// supersonic walls). Mirrors wallPressure() in numerics/Hllc.hpp.
+inline float wallPressure(float4 W, float un) {
+    const float c = soundSpeed(W);
+    const float A = 2.0f / ((GAMMA + 1.0f) * W.x);
+    const float B = (GAMMA - 1.0f) / (GAMMA + 1.0f) * W.w;
+    const float m = (GAMMA - 1.0f) / (2.0f * GAMMA);
+    float p = max(P_FLOOR, W.w + un * W.x * c); // acoustic guess
+    for (int it = 0; it < 30; ++it) {
+        float f, df;
+        if (p > W.w) {
+            const float s = sqrt(A / (p + B));
+            f = (p - W.w) * s;
+            df = s * (1.0f - 0.5f * (p - W.w) / (p + B));
+        } else {
+            f = 2.0f * c / (GAMMA - 1.0f) * (pow(p / W.w, m) - 1.0f);
+            df = 1.0f / (W.x * c) *
+                 pow(p / W.w, -(GAMMA + 1.0f) / (2.0f * GAMMA));
+        }
+        const float step = (f - un) / df;
+        p = max(P_FLOOR, p - step);
+        if (fabs(step) < 1e-6f * (p + P_FLOOR)) break;
+    }
+    return p;
+}
+inline float4 wallFluxX(float4 W, float un) {
+    return float4(0.0f, wallPressure(W, un), 0.0f, 0.0f);
+}
+inline float4 wallFluxY(float4 W, float un) {
+    return float4(0.0f, 0.0f, wallPressure(W, un), 0.0f);
+}
+
 // ---- kernel bodies --------------------------------------------------------
 
 inline void predictorBody(device const float4* q, device float4* xL,
                           device float4* xR, device float4* yB,
-                          device float4* yT, constant Params& P, int base,
-                          int i, int j) {
+                          device float4* yT, device const uchar* solid,
+                          constant Params& P, int base, int i, int j) {
     const int id = base + j * P.tx + i;
+    if (solid[id] != 0) return; // solid cell: not reconstructed
 
     const float4 q0 = q[id];
-    const float4 dqx = limitedSlope(q[id - 1], q0, q[id + 1]);
-    const float4 dqy = limitedSlope(q[id - P.tx], q0, q[id + P.tx]);
+    // solid neighbours -> mirror state (reflective wall) for the slope
+    const float4 qxl = solid[id - 1]
+        ? float4(q0.x, -q0.y, q0.z, q0.w) : q[id - 1];
+    const float4 qxr = solid[id + 1]
+        ? float4(q0.x, -q0.y, q0.z, q0.w) : q[id + 1];
+    const float4 qyb = solid[id - P.tx]
+        ? float4(q0.x, q0.y, -q0.z, q0.w) : q[id - P.tx];
+    const float4 qyt = solid[id + P.tx]
+        ? float4(q0.x, q0.y, -q0.z, q0.w) : q[id + P.tx];
+    const float4 dqx = limitedSlope(qxl, q0, qxr);
+    const float4 dqy = limitedSlope(qyb, q0, qyt);
 
     const float4 xl = q0 - 0.5f * dqx;
     const float4 xr = q0 + 0.5f * dqx;
@@ -153,9 +197,15 @@ inline void predictorBody(device const float4* q, device float4* xL,
 
 inline void fluxXBody(device const float4* xL, device const float4* xR,
                       device const float4* q, device float4* Fx,
-                      constant Params& P, int base, int i, int j) {
+                      device const uchar* solid, constant Params& P,
+                      int base, int i, int j) {
     const int id = base + j * P.tx + i;
-    float4 F = hllcFluxX(toPrim(xR[id]), toPrim(xL[id + 1]));
+    const bool sl = solid[id] != 0, sr = solid[id + 1] != 0;
+    if (sl && sr) { Fx[id] = float4(0.0f); return; }
+    float4 F;
+    if (sr) { const float4 w = toPrim(xR[id]); F = wallFluxX(w, w.y); }
+    else if (sl) { const float4 w = toPrim(xL[id + 1]); F = wallFluxX(w, -w.y); }
+    else F = hllcFluxX(toPrim(xR[id]), toPrim(xL[id + 1]));
     if (P.mu > 0.0f) {
         // Central viscous flux from t^n cell values (mirrors the CPU).
         const float4 w00 = toPrim(q[id]);
@@ -182,9 +232,15 @@ inline void fluxXBody(device const float4* xL, device const float4* xR,
 
 inline void fluxYBody(device const float4* yB, device const float4* yT,
                       device const float4* q, device float4* Fy,
-                      constant Params& P, int base, int i, int j) {
+                      device const uchar* solid, constant Params& P,
+                      int base, int i, int j) {
     const int id = base + j * P.tx + i;
-    float4 F = hllcFluxY(toPrim(yT[id]), toPrim(yB[id + P.tx]));
+    const bool sb = solid[id] != 0, st = solid[id + P.tx] != 0;
+    if (sb && st) { Fy[id] = float4(0.0f); return; }
+    float4 F;
+    if (st) { const float4 w = toPrim(yT[id]); F = wallFluxY(w, w.z); }
+    else if (sb) { const float4 w = toPrim(yB[id + P.tx]); F = wallFluxY(w, -w.z); }
+    else F = hllcFluxY(toPrim(yT[id]), toPrim(yB[id + P.tx]));
     if (P.mu > 0.0f) {
         const float4 w00 = toPrim(q[id]);
         const float4 w01 = toPrim(q[id + P.tx]);
@@ -209,9 +265,10 @@ inline void fluxYBody(device const float4* yB, device const float4* yT,
 }
 
 inline void updateBody(device float4* q, device const float4* Fx,
-                       device const float4* Fy, constant Params& P,
-                       int base, int i, int j) {
+                       device const float4* Fy, device const uchar* solid,
+                       constant Params& P, int base, int i, int j) {
     const int id = base + j * P.tx + i;
+    if (solid[id] != 0) return; // solid cell: frozen
     float4 qn = q[id] + (P.dt / P.dx) * (Fx[id - 1] - Fx[id]) +
                 (P.dt / P.dy) * (Fy[id - P.tx] - Fy[id]);
     if (P.gx != 0.0f || P.gy != 0.0f) {
@@ -254,39 +311,44 @@ kernel void predictor(device const float4* q [[buffer(0)]],
                       device float4* xR [[buffer(2)]],
                       device float4* yB [[buffer(3)]],
                       device float4* yT [[buffer(4)]],
-                      constant Params& P [[buffer(5)]],
+                      device const uchar* solid [[buffer(5)]],
+                      constant Params& P [[buffer(6)]],
                       uint2 g [[thread_position_in_grid]])
 {
-    predictorBody(q, xL, xR, yB, yT, P, 0, int(g.x) + 1, int(g.y) + 1);
+    predictorBody(q, xL, xR, yB, yT, solid, P, 0, int(g.x) + 1,
+                  int(g.y) + 1);
 }
 
 kernel void flux_x(device const float4* xL [[buffer(0)]],
                    device const float4* xR [[buffer(1)]],
                    device const float4* q [[buffer(2)]],
                    device float4* Fx [[buffer(3)]],
-                   constant Params& P [[buffer(4)]],
+                   device const uchar* solid [[buffer(4)]],
+                   constant Params& P [[buffer(5)]],
                    uint2 g [[thread_position_in_grid]])
 {
-    fluxXBody(xL, xR, q, Fx, P, 0, int(g.x) + NG - 1, int(g.y) + NG);
+    fluxXBody(xL, xR, q, Fx, solid, P, 0, int(g.x) + NG - 1, int(g.y) + NG);
 }
 
 kernel void flux_y(device const float4* yB [[buffer(0)]],
                    device const float4* yT [[buffer(1)]],
                    device const float4* q [[buffer(2)]],
                    device float4* Fy [[buffer(3)]],
-                   constant Params& P [[buffer(4)]],
+                   device const uchar* solid [[buffer(4)]],
+                   constant Params& P [[buffer(5)]],
                    uint2 g [[thread_position_in_grid]])
 {
-    fluxYBody(yB, yT, q, Fy, P, 0, int(g.x) + NG, int(g.y) + NG - 1);
+    fluxYBody(yB, yT, q, Fy, solid, P, 0, int(g.x) + NG, int(g.y) + NG - 1);
 }
 
 kernel void update_cons(device float4* q [[buffer(0)]],
                         device const float4* Fx [[buffer(1)]],
                         device const float4* Fy [[buffer(2)]],
-                        constant Params& P [[buffer(3)]],
+                        device const uchar* solid [[buffer(3)]],
+                        constant Params& P [[buffer(4)]],
                         uint2 g [[thread_position_in_grid]])
 {
-    updateBody(q, Fx, Fy, P, 0, int(g.x) + NG, int(g.y) + NG);
+    updateBody(q, Fx, Fy, solid, P, 0, int(g.x) + NG, int(g.y) + NG);
 }
 
 kernel void wave_speed(device const float4* q [[buffer(0)]],
@@ -304,11 +366,12 @@ kernel void predictor_pool(device const float4* q [[buffer(0)]],
                            device float4* xR [[buffer(2)]],
                            device float4* yB [[buffer(3)]],
                            device float4* yT [[buffer(4)]],
-                           constant Params& P [[buffer(5)]],
-                           device const uint* slots [[buffer(6)]],
+                           device const uchar* solid [[buffer(5)]],
+                           constant Params& P [[buffer(6)]],
+                           device const uint* slots [[buffer(7)]],
                            uint3 g [[thread_position_in_grid]])
 {
-    predictorBody(q, xL, xR, yB, yT, P, int(slots[g.z]) * P.stride,
+    predictorBody(q, xL, xR, yB, yT, solid, P, int(slots[g.z]) * P.stride,
                   int(g.x) + 1, int(g.y) + 1);
 }
 
@@ -316,11 +379,12 @@ kernel void flux_x_pool(device const float4* xL [[buffer(0)]],
                         device const float4* xR [[buffer(1)]],
                         device const float4* q [[buffer(2)]],
                         device float4* Fx [[buffer(3)]],
-                        constant Params& P [[buffer(4)]],
-                        device const uint* slots [[buffer(5)]],
+                        device const uchar* solid [[buffer(4)]],
+                        constant Params& P [[buffer(5)]],
+                        device const uint* slots [[buffer(6)]],
                         uint3 g [[thread_position_in_grid]])
 {
-    fluxXBody(xL, xR, q, Fx, P, int(slots[g.z]) * P.stride,
+    fluxXBody(xL, xR, q, Fx, solid, P, int(slots[g.z]) * P.stride,
               int(g.x) + NG - 1, int(g.y) + NG);
 }
 
@@ -328,23 +392,25 @@ kernel void flux_y_pool(device const float4* yB [[buffer(0)]],
                         device const float4* yT [[buffer(1)]],
                         device const float4* q [[buffer(2)]],
                         device float4* Fy [[buffer(3)]],
-                        constant Params& P [[buffer(4)]],
-                        device const uint* slots [[buffer(5)]],
+                        device const uchar* solid [[buffer(4)]],
+                        constant Params& P [[buffer(5)]],
+                        device const uint* slots [[buffer(6)]],
                         uint3 g [[thread_position_in_grid]])
 {
-    fluxYBody(yB, yT, q, Fy, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
-              int(g.y) + NG - 1);
+    fluxYBody(yB, yT, q, Fy, solid, P, int(slots[g.z]) * P.stride,
+              int(g.x) + NG, int(g.y) + NG - 1);
 }
 
 kernel void update_pool(device float4* q [[buffer(0)]],
                         device const float4* Fx [[buffer(1)]],
                         device const float4* Fy [[buffer(2)]],
-                        constant Params& P [[buffer(3)]],
-                        device const uint* slots [[buffer(4)]],
+                        device const uchar* solid [[buffer(3)]],
+                        constant Params& P [[buffer(4)]],
+                        device const uint* slots [[buffer(5)]],
                         uint3 g [[thread_position_in_grid]])
 {
-    updateBody(q, Fx, Fy, P, int(slots[g.z]) * P.stride, int(g.x) + NG,
-               int(g.y) + NG);
+    updateBody(q, Fx, Fy, solid, P, int(slots[g.z]) * P.stride,
+               int(g.x) + NG, int(g.y) + NG);
 }
 
 kernel void wave_pool(device const float4* q [[buffer(0)]],

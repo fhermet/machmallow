@@ -93,6 +93,9 @@ target_include_directories(immersed_case PRIVATE src)
 
 add_executable(immersed_amr src/drivers/immersed_amr.cpp)
 target_include_directories(immersed_amr PRIVATE src)
+
+add_executable(immersed_gpu src/drivers/immersed_gpu.cpp)
+target_link_libraries(immersed_gpu PRIVATE mm_metal)
 target_include_directories(convergence PRIVATE src)
 
 # WENO5 + SSP-RK3 scheme validation (uniform grid, CPU).

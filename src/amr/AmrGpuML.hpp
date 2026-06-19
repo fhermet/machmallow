@@ -19,6 +19,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <stdexcept>
@@ -116,6 +117,13 @@ public:
         FxP_ = mk(); FyP_ = mk();
         smaxP_ = ctx.device()->newBuffer(3 * sizeof(std::uint32_t),
                                          MTL::ResourceStorageModeShared);
+        // The inviscid pool kernels take a solid mask; this multi-level
+        // class has no immersed-solid support yet, so bind an always-zero
+        // mask (1 byte/cell) — a no-op the kernels read as all-fluid.
+        zmaskP_ = ctx.device()->newBuffer(
+            std::size_t(capacity_) * stride_, MTL::ResourceStorageModeShared);
+        std::memset(zmaskP_->contents(), 0,
+                    std::size_t(capacity_) * stride_);
         for (int s = capacity_ - 1; s >= 0; --s) freeSlots_.push_back(s);
 
         lib_ = ctx.compileLibrary("euler2d.metal");
@@ -176,7 +184,7 @@ public:
             L.slotTable->release();
         }
         for (MTL::Buffer* b :
-             {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_, smaxP_})
+             {qP_, xLP_, xRP_, yBP_, yTP_, FxP_, FyP_, smaxP_, zmaskP_})
             b->release();
         for (MTL::Buffer* b : {sP_, fXP_, fYP_, sFxP_, sFyP_})
             if (b) b->release();
@@ -511,13 +519,15 @@ private:
                         {qP_, sP_, FxP_, FyP_, sFxP_, sFyP_}, dt, nf_,
                         nf_);
         } else {
-            encodePool_(cmd, l, predictorP_, {qP_, xLP_, xRP_, yBP_, yTP_},
+            encodePool_(cmd, l, predictorP_,
+                        {qP_, xLP_, xRP_, yBP_, yTP_, zmaskP_},
                         dt, pTot_ - 2, pTot_ - 2);
-            encodePool_(cmd, l, fluxXP_, {xLP_, xRP_, qP_, FxP_}, dt,
-                        nf_ + 1, nf_);
-            encodePool_(cmd, l, fluxYP_, {yBP_, yTP_, qP_, FyP_}, dt, nf_,
-                        nf_ + 1);
-            encodePool_(cmd, l, updateP_, {qP_, FxP_, FyP_}, dt, nf_, nf_);
+            encodePool_(cmd, l, fluxXP_, {xLP_, xRP_, qP_, FxP_, zmaskP_},
+                        dt, nf_ + 1, nf_);
+            encodePool_(cmd, l, fluxYP_, {yBP_, yTP_, qP_, FyP_, zmaskP_},
+                        dt, nf_, nf_ + 1);
+            encodePool_(cmd, l, updateP_, {qP_, FxP_, FyP_, zmaskP_}, dt,
+                        nf_, nf_);
         }
         cmd->commit();
         cmd->waitUntilCompleted();
@@ -1355,7 +1365,7 @@ private:
                               *waveP_ = nullptr;
     MTL::Buffer *qP_ = nullptr, *xLP_ = nullptr, *xRP_ = nullptr,
                 *yBP_ = nullptr, *yTP_ = nullptr, *FxP_ = nullptr,
-                *FyP_ = nullptr, *smaxP_ = nullptr;
+                *FyP_ = nullptr, *smaxP_ = nullptr, *zmaskP_ = nullptr;
     MTL::Buffer *sP_ = nullptr, *fXP_ = nullptr, *fYP_ = nullptr,
                 *sFxP_ = nullptr, *sFyP_ = nullptr;
     MTL::ComputePipelineState *predictorYP_ = nullptr,

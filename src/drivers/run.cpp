@@ -407,24 +407,20 @@ int main(int argc, char** argv) {
                 "grid.nx/ny must be multiples of amr.block");
 
         // Immersed solids ([solid] regions): the mask is threaded through
-        // the solid-aware Amr2 (CPU MUSCL, 2 levels) — coarse step, patch
-        // step, restriction, refluxing, prolongation and boundary tagging
-        // are all mask-aware. Multi-level (AmrML), bi-gas/WENO and the GPU
-        // path are not ported yet — guard explicitly. The body boundary is
-        // refined automatically (tagging); user [amr] tag/regrid still apply.
+        // the solid-aware 2-level AMR — coarse step, patch step,
+        // restriction, refluxing, prolongation and boundary tagging are all
+        // mask-aware, on CPU (Amr2) AND GPU (AmrGpu, lock-step). Multi-level
+        // (AmrML/AmrGpuML) and bi-gas/WENO are not ported yet — guard
+        // explicitly. The body boundary refines automatically (tagging).
         if (cd.hasSolids()) {
-            if (backend != "cpu")
-                throw std::runtime_error(
-                    "solides immergés : backend = cpu requis "
-                    "(portage GPU à venir)");
             if (acfg.species || acfg.weno)
                 throw std::runtime_error(
                     "solides immergés : scheme = muscl mono-gaz requis "
                     "(bi-gaz / WENO à venir)");
             if (acfg.maxLevels != 2)
                 std::printf("note: solides immergés — AMR limité à 2 "
-                            "niveaux (Amr2 ; multi-niveaux à venir)\n");
-            acfg.maxLevels = 2; // route to the solid-aware Amr2
+                            "niveaux (multi-niveaux à venir)\n");
+            acfg.maxLevels = 2; // route to the solid-aware 2-level class
         }
 
         std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "
@@ -502,6 +498,10 @@ int main(int argc, char** argv) {
                                               unsigned s) {
                     cd.fillGhostSides(g, t, s);
                 };
+                if (cd.hasSolids())
+                    amr.solidAt = [&cd](Real x, Real y) {
+                        return cd.solidAt(x, y);
+                    };
                 rc = runCase(amr, cd, cfg);
             } else {
                 AmrGpuML amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx,

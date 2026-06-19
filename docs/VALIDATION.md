@@ -66,6 +66,7 @@ Chaque chemin GPU est comparé à sa référence CPU. Écart relatif max ~1e-4
 | Sod bi-gaz WENO5 AMR | `mlgpu_amr` g6 | 3.97e-4 | 1e-2 |
 | Gravité | `casedef_test` g6 | 3.30e-4 | 1e-3 |
 | Détonation CJ (vitesse) | `detonation` | **identique** (4.7168 = 4.7168) | — |
+| **Corps immergé** (cylindre Mach 2, 2 niv.) | `immersed_gpu` | AmrGpu vs Amr2, single + subcyclé | 5.9e-4 / 1.1e-3 (gate 1e-2) |
 
 ### 1.4 Équivalence du système déclaratif
 
@@ -145,7 +146,7 @@ La **CI** (`.github/workflows/ci.yml`) rejoue tout à chaque push :
   species_suite, weno_suite, analytic_suite, casedef_test, + `--check` de
   tous les cas `cases/*.ini` ;
 - **suite GPU** (runner Metal) : dmr_gpu, dmr_amr, **mlgpu_amr**,
-  detonation, hs_suite, blasius.
+  **immersed_gpu**, detonation, hs_suite, blasius.
 
 Études **lourdes manuelles** (compilées en CI, pas exécutées) : `benchmark`
 (débit GPU vs CPU) et `deflagration` (flamme laminaire diffusive, dt ~ dx²/ν).

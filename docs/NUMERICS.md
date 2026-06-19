@@ -166,8 +166,11 @@ taguées — en plus des chocs. La chaîne AMR est masque-aware de bout en
 bout : masque par patch, **restriction** sur les seules filles fluides,
 **refluxing** qui épargne les cellules solides, **prolongation** en
 escalier constant au contact d'un solide. Tout est no-op sans `[solid]`
-(les gates AMR non-solides sont inchangés). Reste à supprimer l'escalier
-par des cut-cells (cf. roadmap).
+(les gates AMR non-solides sont inchangés). Le **GPU** (`AmrGpu` hybride)
+reproduit exactement cette chaîne : masque dans les kernels Metal (dont
+`wallPressure` porté en MSL), masque par slot du pool, lock-step CPU↔GPU
+vérifié (`immersed_gpu`, écart ~1e-3). Reste à supprimer l'escalier par des
+cut-cells (cf. roadmap).
 
 ---
 

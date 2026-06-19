@@ -398,9 +398,20 @@ posée :
   pression de paroi **14.98 / 15.00 subcyclé** vs 15.0 exact (0.14 / 0.03 %)
   et cohérente avec la grille de base (0.19 %) ; teste single-rate ET
   subcyclé. Démos `cylinder_bowshock`/`wc_step` raffinées (bord + chocs).
+- [x] **portage GPU** (`AmrGpu` hybride, lock-step) — masque solide dans
+  les kernels Metal (`predictor`/`flux_x`/`flux_y`/`update` + variantes
+  `_pool` : cellules solides figées, pentes en miroir, **flux de paroi
+  exact `wallPressure` en MSL**), masque par slot (`smaskP_`) + masque
+  coarse (`Euler2DGpu`), et chaîne AMR masque-aware CPU (restriction,
+  reflux, prolongation, tagging) identique à `Amr2`. `AmrGpuML` reçoit un
+  masque-zéro (kernels inviscides partagés). Gate `immersed_gpu` :
+  lock-step CPU↔GPU sur un cylindre Mach 2 (single **5.9e-4** + subcyclé
+  **1.1e-3** vs gate 1e-2, patches identiques). Démos en `backend=hybrid`
+  (~5× : cylindre 56→10 s, marche 116→23 s). Non-solides intacts
+  (`dmr_gpu` 9.8e-6, `mlgpu_amr`).
 - [~] corps courbes en escalier — l'AMR lisse le bord (cylindre net) ;
   reste à *quantifier* (angle de l'arc détaché vs corrélation, θ-β-M).
-- [ ] portage GPU (lock-step) du masque ; multi-niveaux (`AmrML`).
+- [ ] multi-niveaux solide (`AmrML`/`AmrGpuML`, profondeur > 2).
 - [ ] no-slip visqueux (flux visqueux masque-aware) ; efforts (traînée par
   intégration de pression de paroi) ; cut-cells (supprimer l'escalier).
 
