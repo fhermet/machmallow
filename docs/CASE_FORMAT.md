@@ -146,9 +146,10 @@ fluide au contact d'un solide sont taguées) en plus des chocs — utile pour
 lisser l'escalier ; règle `[amr]` standard (`levels`, `tag_threshold`,
 `subcycle`…). Voir `cases/cylinder_bowshock.ini` et `cases/wc_step.ini`.
 
-> **Limites actuelles** (v1.6) : `backend = cpu` **ou `hybrid`** (GPU,
-> lock-step CPU/GPU vérifié, y compris le no-slip visqueux `mu > 0`),
-> `scheme = muscl` mono-gaz, AMR **2 niveaux**.
+> **Limites actuelles** (v1.6) : `backend = cpu` (AMR profondeur
+> arbitraire) **ou `hybrid`** (GPU, lock-step vérifié, no-slip visqueux
+> inclus — mais AMR **2 niveaux** sur GPU pour l'instant), `scheme = muscl`
+> mono-gaz.
 > Le multi-niveaux (profondeur > 2) et le no-slip visqueux sont sur la
 > [feuille de route](../ROADMAP.md). Cas de référence :
 > `cases/shock_wall.ini` (gates `immersed_case`, `immersed_amr`,

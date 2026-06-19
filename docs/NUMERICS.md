@@ -174,8 +174,11 @@ automatiquement — les cellules de fluide au contact d'un solide sont
 taguées — en plus des chocs. La chaîne AMR est masque-aware de bout en
 bout : masque par patch, **restriction** sur les seules filles fluides,
 **refluxing** qui épargne les cellules solides, **prolongation** en
-escalier constant au contact d'un solide. Tout est no-op sans `[solid]`
-(les gates AMR non-solides sont inchangés). Le **GPU** (`AmrGpu` hybride)
+escalier constant au contact d'un solide. **Multi-niveaux** (`AmrML`,
+profondeur arbitraire) : même chaîne à chaque niveau, via une requête
+géométrique `solidAt(position)` (le parent d'un niveau fin est un patch, pas
+la base) — validé à 3 niveaux (`immersed_amr`). Tout est no-op sans
+`[solid]` (les gates AMR non-solides sont inchangés). Le **GPU** (`AmrGpu` hybride)
 reproduit exactement cette chaîne : masque dans les kernels Metal (dont
 `wallPressure` porté en MSL), masque par slot du pool, lock-step CPU↔GPU
 vérifié (`immersed_gpu`, écart ~1e-3). Reste à supprimer l'escalier par des

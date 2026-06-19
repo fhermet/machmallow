@@ -46,6 +46,7 @@ public:
                                   // (RK-weighted sums in WENO mode)
         std::vector<Cons> old;    // own state at parent-substep start
         std::vector<Cons> rk0;    // RK step start state (WENO mode)
+        std::vector<std::uint8_t> solid; // immersed mask (empty = none)
         // two-gas fields (allocated only when cfg.species)
         std::vector<Real> phi, Gmf, oldPhi, oldGm, Fpx, Fpy;
         std::vector<Real> rkPhi0, rkGm0; // RK start (WENO two-gas)
@@ -61,6 +62,11 @@ public:
 
     std::function<void(Grid&, double)> fillPhysicalGhosts;
     std::function<void(Grid&, double, unsigned)> fillPatchPhysical;
+
+    // Optional immersed-solid mask: 1 where (x, y) is solid. Threaded
+    // through every level — base + patch steps, restriction, refluxing,
+    // prolongation and boundary tagging (the N-level mirror of Amr2).
+    std::function<std::uint8_t(Real, Real)> solidAt;
 
     AmrML(int nx, int ny, Real x0, Real y0, Real lx, Real ly,
           AmrConfig cfg)
@@ -115,6 +121,7 @@ public:
                     baseGm_[id] = gas_.Gamma(Y);
                 }
             }
+        buildCoarseSolid_();
         fillPhysicalGhosts(base, 0);
         if (cfg_.species) baseScalarGhosts_();
         // Repeated regrids let each new level tag from real (IC) data.
@@ -265,6 +272,50 @@ public:
     }
 
 private:
+    // ---- immersed-solid mask helpers -----------------------------------
+    // Geometric queries (the mask is a static function of position), used
+    // by restriction / refluxing / prolongation / tagging at every level —
+    // no need to find which level the parent cell lives on.
+    bool solCell_(const Grid& g, int i, int j) const {
+        return solidAt && solidAt(g.xc(i), g.yc(j)) != 0;
+    }
+    bool solAtGlobal_(int lp, int cg, int cgj) const { // global cell @ level lp
+        if (!solidAt) return false;
+        const Real dx = base.dx / Real(1 << lp), dy = base.dy / Real(1 << lp);
+        return solidAt(base.x0 + (cg + Real(0.5)) * dx,
+                       base.y0 + (cgj + Real(0.5)) * dy) != 0;
+    }
+    bool solBound_(const Grid& g, int i, int j, int ip, int im, int jp,
+                   int jm) const { // fluid cell touching a solid?
+        return solidAt && cfg_.tagThreshold < Real(1e29) &&
+               !solCell_(g, NG + i, NG + j) &&
+               (solCell_(g, NG + ip, NG + j) || solCell_(g, NG + im, NG + j) ||
+                solCell_(g, NG + i, NG + jp) || solCell_(g, NG + i, NG + jm));
+    }
+    // Stored contiguous masks (for step2D's buffer pointer only).
+    const std::uint8_t* coarseSolid_() const {
+        return coarseSolidMask_.empty() ? nullptr : coarseSolidMask_.data();
+    }
+    static const std::uint8_t* psolid_(const Patch& p) {
+        return p.solid.empty() ? nullptr : p.solid.data();
+    }
+    void buildCoarseSolid_() {
+        if (!solidAt) { coarseSolidMask_.clear(); return; }
+        coarseSolidMask_.assign(base.q.size(), 0);
+        for (int j = 0; j < base.toty(); ++j)
+            for (int i = 0; i < base.totx(); ++i)
+                coarseSolidMask_[base.idx(i, j)] =
+                    solidAt(base.xc(i), base.yc(j));
+    }
+    void buildPatchSolid_(Patch& p) const {
+        if (!solidAt) { p.solid.clear(); return; }
+        p.solid.assign(p.grid.q.size(), 0);
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i)
+                p.solid[p.grid.idx(i, j)] =
+                    solidAt(p.grid.xc(i), p.grid.yc(j));
+    }
+
     // ---- geometry helpers ----------------------------------------------
     int nxAt_(int l) const { return base.nx << l; }
     int nyAt_(int l) const { return base.ny << l; }
@@ -342,7 +393,8 @@ private:
                           im = std::max(i - 1, 0);
                 const int jp = std::min(j + 1, base.ny - 1),
                           jm = std::max(j - 1, 0);
-                if (tagCell_(at, i, j, ip, im, jp, jm))
+                if (tagCell_(at, i, j, ip, im, jp, jm) ||
+                    solBound_(base, i, j, ip, im, jp, jm))
                     markDilated_(want, lv, base.nx, base.ny, i, j);
             }
     }
@@ -360,7 +412,8 @@ private:
                     // the +-1 stencil reads the ghost ring at patch
                     // edges — clamping there would blind the tagging to
                     // gradients straddling a patch seam
-                    if (tagCell_(at, i, j, i + 1, i - 1, j + 1, j - 1))
+                    if (tagCell_(at, i, j, i + 1, i - 1, j + 1, j - 1) ||
+                        solBound_(p.grid, i, j, i + 1, i - 1, j + 1, j - 1))
                         markDilated_(want, kid, nx, ny, 2 * p.ci0 + i,
                                      2 * p.cj0 + j);
                 }
@@ -409,12 +462,20 @@ private:
     Cons prolong_(int l, const Patch* home, int cg, int cgj, int ox,
                   int oy, Real theta) const {
         const Cons q0 = parentVal_(l, home, cg, cgj, theta);
+        // Near a solid, drop to piecewise-constant in that direction: a
+        // frozen solid parent must not feed the slope (mirrors Amr2).
+        const bool sX = solAtGlobal_(l - 1, cg - 1, cgj) ||
+                        solAtGlobal_(l - 1, cg + 1, cgj);
+        const bool sY = solAtGlobal_(l - 1, cg, cgj - 1) ||
+                        solAtGlobal_(l - 1, cg, cgj + 1);
         const Cons dqx =
-            limitedSlope(parentVal_(l, home, cg - 1, cgj, theta), q0,
-                         parentVal_(l, home, cg + 1, cgj, theta));
+            sX ? Cons{0, 0, 0, 0}
+               : limitedSlope(parentVal_(l, home, cg - 1, cgj, theta), q0,
+                              parentVal_(l, home, cg + 1, cgj, theta));
         const Cons dqy =
-            limitedSlope(parentVal_(l, home, cg, cgj - 1, theta), q0,
-                         parentVal_(l, home, cg, cgj + 1, theta));
+            sY ? Cons{0, 0, 0, 0}
+               : limitedSlope(parentVal_(l, home, cg, cgj - 1, theta), q0,
+                              parentVal_(l, home, cg, cgj + 1, theta));
         const Real sx = ox ? Real(0.25) : Real(-0.25);
         const Real sy = oy ? Real(0.25) : Real(-0.25);
         return q0 + sx * dqx + sy * dqy;
@@ -455,6 +516,7 @@ private:
                                                Real(-1));
                 }
             }
+        buildPatchSolid_(p);
         return p;
     }
 
@@ -666,7 +728,8 @@ private:
                 step2DY(base, basePhi_, baseGm_, dt, scratchYB_, gas_,
                         cfg_.mu);
             else
-                step2D(base, dt, scratchB_, cfg_.mu, cfg_.gx, cfg_.gy);
+                step2D(base, dt, scratchB_, cfg_.mu, cfg_.gx, cfg_.gy,
+                       coarseSolid_());
             return;
         }
         for (Patch& p : lvls_[l - 1].patches) {
@@ -677,7 +740,8 @@ private:
                 p.Fpx = scratchY_.Fpx;
                 p.Fpy = scratchY_.Fpy;
             } else {
-                step2D(p.grid, dt, scratch_, cfg_.mu, cfg_.gx, cfg_.gy);
+                step2D(p.grid, dt, scratch_, cfg_.mu, cfg_.gx, cfg_.gy,
+                       psolid_(p));
                 p.Fx = scratch_.Fx;
                 p.Fy = scratch_.Fy;
             }
@@ -953,6 +1017,7 @@ private:
                     const int cg = (dir < 2) ? n.cg : n.cg + r;
                     const int cgj = (dir < 2) ? n.cgj + r : n.cgj;
                     ParentCell pc = parentCell_(lc - 1, cg, cgj);
+                    if (solCell_(*pc.g, pc.li, pc.lj)) continue; // solid
                     const Real lam =
                         dtParent / (dir < 2 ? pc.g->dx : pc.g->dy);
                     const std::size_t pid =
@@ -1001,6 +1066,7 @@ private:
                     const int cg = (dir < 2) ? n.cg : n.cg + r;
                     const int cgj = (dir < 2) ? n.cgj + r : n.cgj;
                     ParentCell pc = parentCell_(lc - 1, cg, cgj);
+                    if (solCell_(*pc.g, pc.li, pc.lj)) continue; // solid
                     const Real lam =
                         dtChild / (dir < 2 ? pc.g->dx : pc.g->dy);
                     Cons ff;
@@ -1047,13 +1113,28 @@ private:
             for (int b = 0; b < bC; ++b)
                 for (int a = 0; a < bC; ++a) {
                     const int fi = NG + 2 * a, fj = NG + 2 * b;
-                    const Cons sum = p.grid.at(fi, fj) +
-                                     p.grid.at(fi + 1, fj) +
-                                     p.grid.at(fi, fj + 1) +
-                                     p.grid.at(fi + 1, fj + 1);
                     ParentCell pc =
                         parentCell_(l - 1, p.ci0 + a, p.cj0 + b);
-                    pc.g->at(pc.li, pc.lj) = Real(0.25) * sum;
+                    // Solid parent stays frozen; otherwise average only the
+                    // FLUID fine children (mirrors Amr2).
+                    if (solCell_(*pc.g, pc.li, pc.lj)) continue;
+                    if (const std::uint8_t* ps = psolid_(p)) {
+                        Cons s{0, 0, 0, 0};
+                        int n = 0;
+                        for (int dj = 0; dj < 2; ++dj)
+                            for (int di = 0; di < 2; ++di) {
+                                if (ps[p.grid.idx(fi + di, fj + dj)]) continue;
+                                s += p.grid.at(fi + di, fj + dj);
+                                ++n;
+                            }
+                        if (n > 0) pc.g->at(pc.li, pc.lj) = (Real(1) / n) * s;
+                    } else {
+                        pc.g->at(pc.li, pc.lj) =
+                            Real(0.25) * (p.grid.at(fi, fj) +
+                                          p.grid.at(fi + 1, fj) +
+                                          p.grid.at(fi, fj + 1) +
+                                          p.grid.at(fi + 1, fj + 1));
+                    }
                     if (cfg_.species) {
                         const auto avg = [&](const std::vector<Real>& f) {
                             return Real(0.25) *
@@ -1208,6 +1289,7 @@ private:
     std::vector<Real> rkPhiB0_, rkGmB0_;   // base RK start (two-gas)
     std::vector<Real> wFpxB_, wFpyB_;      // base species flux sums
     std::vector<Cons> baseOld_;
+    std::vector<std::uint8_t> coarseSolidMask_; // base mask (empty = none)
     std::vector<Real> basePhi_, baseGm_, baseOldPhi_, baseOldGm_;
     GasPair gas_;
     std::vector<int> stepCounts_ = std::vector<int>(16, 0);

@@ -407,20 +407,20 @@ int main(int argc, char** argv) {
                 "grid.nx/ny must be multiples of amr.block");
 
         // Immersed solids ([solid] regions): the mask is threaded through
-        // the solid-aware 2-level AMR — coarse step, patch step,
-        // restriction, refluxing, prolongation and boundary tagging are all
-        // mask-aware, on CPU (Amr2) AND GPU (AmrGpu, lock-step). Multi-level
-        // (AmrML/AmrGpuML) and bi-gas/WENO are not ported yet — guard
-        // explicitly. The body boundary refines automatically (tagging).
+        // the solid-aware AMR — base/patch steps, restriction, refluxing,
+        // prolongation, boundary tagging — at every level. CPU: Amr2
+        // (2 levels) and AmrML (profondeur arbitraire). GPU: AmrGpu
+        // (2 levels, lock-step). Bi-gas/WENO and GPU multi-level are not
+        // ported yet — guard explicitly. The body boundary auto-refines.
         if (cd.hasSolids()) {
             if (acfg.species || acfg.weno)
                 throw std::runtime_error(
                     "solides immergés : scheme = muscl mono-gaz requis "
                     "(bi-gaz / WENO à venir)");
-            if (acfg.maxLevels != 2)
-                std::printf("note: solides immergés — AMR limité à 2 "
-                            "niveaux (multi-niveaux à venir)\n");
-            acfg.maxLevels = 2; // route to the solid-aware 2-level class
+            if (backend != "cpu" && acfg.maxLevels > 2)
+                throw std::runtime_error(
+                    "solides immergés : AMR > 2 niveaux sur GPU à venir — "
+                    "backend = cpu (ou amr.levels = 2)");
         }
 
         std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "
@@ -484,6 +484,10 @@ int main(int argc, char** argv) {
                                               unsigned s) {
                     cd.fillGhostSides(g, t, s);
                 };
+                if (cd.hasSolids())
+                    amr.solidAt = [&cd](Real x, Real y) {
+                        return cd.solidAt(x, y);
+                    };
                 rc = runCase(amr, cd, cfg);
             }
         } else if (backend == "hybrid") {

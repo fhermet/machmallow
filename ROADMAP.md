@@ -429,7 +429,16 @@ posée :
   **3 %** vs 0.664/√Re_x. **Porté sur GPU** (flux visqueux masque-aware dans
   les kernels Metal) : lock-step CPU↔GPU visqueux vérifié (`immersed_gpu`,
   écart 4e-4) — `mu > 0` + solide tourne en `hybrid`.
-- [ ] cut-cells (supprimer l'escalier) ; multi-niveaux solide.
+- [x] **multi-niveaux solide** (profondeur > 2) — masque threadé dans
+  `AmrML` (CPU, profondeur arbitraire) : par-patch + base, restriction
+  (filles fluides), refluxing (cellules solides épargnées), prolongation
+  (escalier constant), tagging de bord — à chaque niveau, via une requête
+  géométrique `solidAt(position)` (le parent d'un niveau peut être un patch,
+  pas la base). Gate `immersed_amr` étendu : réflexion de choc à **3
+  niveaux** → paroi 15.03 vs 15.0 exact (0.21 %, 16 patches). No-op sans
+  `[solid]` (ml_amr / species / weno intacts). GPU multi-niveaux solide
+  (`AmrGpuML`) : à venir.
+- [ ] cut-cells (supprimer l'escalier) ; GPU multi-niveaux solide.
 
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 
