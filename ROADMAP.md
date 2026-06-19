@@ -409,8 +409,12 @@ posée :
   **1.1e-3** vs gate 1e-2, patches identiques). Démos en `backend=hybrid`
   (~5× : cylindre 56→10 s, marche 116→23 s). Non-solides intacts
   (`dmr_gpu` 9.8e-6, `mlgpu_amr`).
-- [~] corps courbes en escalier — l'AMR lisse le bord (cylindre net) ;
-  reste à *quantifier* (angle de l'arc détaché vs corrélation, θ-β-M).
+- [x] **validation chiffrée — choc oblique θ-β-M** : dièdre immergé
+  (rampe 15°, Mach 2.5) → angle de choc mesuré **β = 38.3° vs 36.9° exact**
+  (relation θ-β-M, biais d'escalier 1.4° qui décroît avec la résolution :
+  6.1°→1.7°→1.4°). Gate `immersed_wedge` (CI CPU) + démo `cases/wedge.ini`
+  (réflexion sur paroi haute, type entrée d'air). Reste l'arc détaché du
+  cylindre vs corrélation de Billig (qualitatif pour l'instant).
 - [ ] multi-niveaux solide (`AmrML`/`AmrGpuML`, profondeur > 2).
 - [ ] no-slip visqueux (flux visqueux masque-aware) ; efforts (traînée par
   intégration de pression de paroi) ; cut-cells (supprimer l'escalier).
