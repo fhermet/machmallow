@@ -84,6 +84,9 @@ target_link_libraries(benchmark PRIVATE mm_metal)
 add_executable(convergence src/drivers/convergence.cpp)
 add_executable(mms src/drivers/mms.cpp)
 target_include_directories(mms PRIVATE src)
+
+add_executable(immersed src/drivers/immersed.cpp)
+target_include_directories(immersed PRIVATE src)
 target_include_directories(convergence PRIVATE src)
 
 # WENO5 + SSP-RK3 scheme validation (uniform grid, CPU).

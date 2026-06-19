@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace mm {
@@ -135,23 +136,41 @@ inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu) {
 // Gravity is a split source applied after the conservative update, with
 // the energy work term taken at the momentum midpoint (2nd order in the
 // split step); cell-local, so AMR refluxing is unaffected.
+//
+// `solid` (optionnel, taille g.q.size(), 0 = fluide) immerge un corps
+// solide : les cellules solides ne sont pas mises à jour, et chaque face
+// fluide/solide reçoit un flux de PAROI réfléchissante (état solide =
+// miroir de la vitesse normale de l'état fluide) — conservatif (pas de
+// masse à travers la paroi), exact sur les faces alignées (escalier sur
+// les formes obliques).
 inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
-                   Real gx = 0, Real gy = 0) {
+                   Real gx = 0, Real gy = 0,
+                   const std::uint8_t* solid = nullptr) {
     const int tx = g.totx(), ty = g.toty();
     s.resize(g.q.size());
 
     const Real hx = Real(0.5) * dt / g.dx;
     const Real hy = Real(0.5) * dt / g.dy;
 
+    const auto sol = [&](int ii, int jj) {
+        return solid != nullptr && solid[g.idx(ii, jj)] != 0;
+    };
+    const auto mirX = [](Cons c) { c.mx = -c.mx; return c; };
+    const auto mirY = [](Cons c) { c.my = -c.my; return c; };
+
     // Predictor: time-advanced face states (needs a 1-cell ring of ghosts).
     for (int j = 1; j < ty - 1; ++j) {
         for (int i = 1; i < tx - 1; ++i) {
             const std::size_t id = g.idx(i, j);
+            if (sol(i, j)) continue; // cellule solide : pas reconstruite
             const Cons& q0 = g.q[id];
-            const Cons dqx =
-                limitedSlope(g.at(i - 1, j), q0, g.at(i + 1, j));
-            const Cons dqy =
-                limitedSlope(g.at(i, j - 1), q0, g.at(i, j + 1));
+            // voisins solides -> état miroir (paroi) pour la pente
+            const Cons qxl = sol(i - 1, j) ? mirX(q0) : g.at(i - 1, j);
+            const Cons qxr = sol(i + 1, j) ? mirX(q0) : g.at(i + 1, j);
+            const Cons qyb = sol(i, j - 1) ? mirY(q0) : g.at(i, j - 1);
+            const Cons qyt = sol(i, j + 1) ? mirY(q0) : g.at(i, j + 1);
+            const Cons dqx = limitedSlope(qxl, q0, qxr);
+            const Cons dqy = limitedSlope(qyb, q0, qyt);
             const Cons xl = q0 - Real(0.5) * dqx;
             const Cons xr = q0 + Real(0.5) * dqx;
             const Cons yb = q0 - Real(0.5) * dqy;
@@ -185,12 +204,22 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG - 1; i < NG + g.nx; ++i) {
             const std::size_t id = g.idx(i, j);
-            s.Fx[id] = hllcFluxX(toPrim(s.xR[id]), toPrim(s.xL[g.idx(i + 1, j)]));
+            const bool sl = sol(i, j), sr = sol(i + 1, j);
+            if (sl && sr) { s.Fx[id] = Cons{0, 0, 0, 0}; continue; }
+            Cons L = s.xR[id], R = s.xL[g.idx(i + 1, j)];
+            if (sl) L = mirX(R);          // paroi à gauche du fluide
+            else if (sr) R = mirX(L);     // paroi à droite du fluide
+            s.Fx[id] = hllcFluxX(toPrim(L), toPrim(R));
         }
     for (int j = NG - 1; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i) {
             const std::size_t id = g.idx(i, j);
-            s.Fy[id] = hllcFluxY(toPrim(s.yT[id]), toPrim(s.yB[g.idx(i, j + 1)]));
+            const bool sb = sol(i, j), st = sol(i, j + 1);
+            if (sb && st) { s.Fy[id] = Cons{0, 0, 0, 0}; continue; }
+            Cons B = s.yT[id], T = s.yB[g.idx(i, j + 1)];
+            if (sb) B = mirY(T);
+            else if (st) T = mirY(B);
+            s.Fy[id] = hllcFluxY(toPrim(B), toPrim(T));
         }
 
     if (mu > 0) addViscousFluxes(g, s, mu);
@@ -200,6 +229,7 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i) {
             const std::size_t id = g.idx(i, j);
+            if (sol(i, j)) continue; // cellule solide : figée
             g.q[id] += lx * (s.Fx[g.idx(i - 1, j)] - s.Fx[id]) +
                        ly * (s.Fy[g.idx(i, j - 1)] - s.Fy[id]);
         }
@@ -207,6 +237,7 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
     if (gx != 0 || gy != 0) {
         for (int j = NG; j < NG + g.ny; ++j)
             for (int i = NG; i < NG + g.nx; ++i) {
+                if (sol(i, j)) continue;
                 Cons& q = g.q[g.idx(i, j)];
                 const Real rho = std::max(q.rho, RHO_FLOOR);
                 const Real mx0 = q.mx, my0 = q.my;

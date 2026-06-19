@@ -348,6 +348,34 @@ source) et l'EOS à Γ variable.
 - Effort : cœur CPU + gate CJ ~1-2 sessions ; intégration GPU/AMR
   complète ≈ taille du jalon multi-espèces.
 
+### v1.6 — Corps immergés *(labo + démo)*
+Des géométries dans l'écoulement, sans mailler le solide : un **masque
+solide** sur la grille cartésienne (méthode ghost-cell / paroi
+réfléchissante — pas de cellules coupées, donc pas de problème de petite
+cellule). Les faces fluide↔solide reçoivent un flux de paroi
+réfléchissante (vitesse normale mirroir, glissement). Première brique
+posée :
+- [x] **`step2D` masque-aware** — paramètre optionnel `const uint8_t*
+  solid` (défaut `nullptr` → chemin inchangé, régressions
+  `convergence`/`sod1d`/`mms` intactes) : cellules solides ignorées
+  (prédicteur/update/gravité), pentes reconstruites en mirroir au contact
+  d'un solide, flux de face fluide↔solide = paroi réfléchissante
+  (`mx→−mx` / `my→−my`). MVP **non-visqueux** (no-slip avec `mu>0`
+  reporté ; les flux visqueux ignorent encore le masque).
+- [x] **gate `immersed`** — réflexion d'un choc plan (Ms=2) sur une paroi
+  immergée alignée : pression de paroi **14.95 vs 15.0 exact (réflexion
+  1D de choc, 0.33 %)**, non-pénétration `|u|/u_i = 0.000`. Face alignée
+  ⇒ vérification exacte (pas d'erreur d'escalier). Ajouté à la suite CPU
+  de la CI.
+- [ ] masque déclaratif dans le fichier de cas (`[solid]` / régions
+  `solid.N` : rectangle, cercle, demi-plan/coin — réutilise la grammaire
+  géométrique des régions IC).
+- [ ] intégration AMR (tag des cellules de bord solide) + portage GPU
+  (lock-step) du traitement de masque.
+- [ ] no-slip visqueux (flux visqueux masque-aware) ; corps courbes
+  (coin θ-β-M, arc de choc sur cylindre) en escalier ; efforts (traînée
+  par intégration de pression de paroi).
+
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 
 Mode stationnaire (local time stepping — donnerait tout leur sens aux

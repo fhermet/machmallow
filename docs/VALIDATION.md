@@ -99,6 +99,7 @@ presets C++ :
 | Réacteur 0D adiabatique | `reactor` g2 | T vs équilibre (5.2) | exact (résidu 4.8e-7) |
 | Réacteur raide (A=1e4, dt=1) | `reactor` g3 | stabilité | borné, λ=1 |
 | Advection d'interface bi-gaz | `species_suite` g1 | oscillation de pression | \|p−1\| < 1.0e-2 (pas d'oscillation parasite) |
+| **Réflexion de choc / paroi immergée** | `immersed` | p paroi vs réflexion 1D exacte (Ms=2, p_r=15.0) | 14.95 (**0.33 %**, gate 4 %) ; non-pénétration \|u\|/u_i = 0.000 |
 
 ### 2.2 Contre l'expérience
 
@@ -123,7 +124,7 @@ presets C++ :
 ```sh
 cmake --build build -j
 # vérification / validation CPU (rapide)
-./build/sod1d ; ./build/convergence ; ./build/mms ; ./build/reactor
+./build/sod1d ; ./build/convergence ; ./build/mms ; ./build/immersed ; ./build/reactor
 ./build/species_suite ; ./build/casedef_test ; ./build/weno_suite
 # validation GPU
 ./build/mlgpu_amr ; ./build/dmr_amr 32 gpu ; ./build/detonation
@@ -133,9 +134,9 @@ cmake --build build -j
 Chaque exécutable renvoie `0` (PASS) ou `1` (FAIL) et imprime ses métriques.
 
 La **CI** (`.github/workflows/ci.yml`) rejoue tout à chaque push :
-- **suite CPU** (machine sans GPU) : sod*, convergence, **mms**, reactor,
-  species_suite, weno_suite, analytic_suite, casedef_test, + `--check` de
-  tous les cas `cases/*.ini` ;
+- **suite CPU** (machine sans GPU) : sod*, convergence, **mms**,
+  **immersed**, reactor, species_suite, weno_suite, analytic_suite,
+  casedef_test, + `--check` de tous les cas `cases/*.ini` ;
 - **suite GPU** (runner Metal) : dmr_gpu, dmr_amr, **mlgpu_amr**,
   detonation, hs_suite, blasius.
 
