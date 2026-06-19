@@ -139,12 +139,16 @@ region.1 = rect 0.7 1.01 -0.01 0.03   # bloc / paroi alignée
 region.2 = circle 0.5 0.5 0.1         # cylindre (escalier)
 ```
 
-> **Limites actuelles** (v1.6, premier incrément) : `backend = cpu`,
-> `scheme = muscl` mono-gaz, et le raffinement AMR est **désactivé** en
-> présence d'un solide (grille de base seule — un avis est imprimé).
-> L'intégration AMR, le portage GPU et le no-slip visqueux sont sur la
+L'**AMR raffine automatiquement le bord du corps** (les cellules de
+fluide au contact d'un solide sont taguées) en plus des chocs — utile pour
+lisser l'escalier ; règle `[amr]` standard (`levels`, `tag_threshold`,
+`subcycle`…). Voir `cases/cylinder_bowshock.ini` et `cases/wc_step.ini`.
+
+> **Limites actuelles** (v1.6) : `backend = cpu`, `scheme = muscl`
+> mono-gaz, AMR **2 niveaux** (classe `Amr2`). Le multi-niveaux (`AmrML`),
+> le portage GPU et le no-slip visqueux sont sur la
 > [feuille de route](../ROADMAP.md). Cas de référence :
-> `cases/shock_wall.ini` (gate `immersed_case`).
+> `cases/shock_wall.ini` (gates `immersed_case`, `immersed_amr`).
 
 ---
 

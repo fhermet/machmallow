@@ -406,10 +406,12 @@ int main(int argc, char** argv) {
             throw std::runtime_error(
                 "grid.nx/ny must be multiples of amr.block");
 
-        // Immersed solids ([solid] regions): the mask is threaded into the
-        // CPU MUSCL coarse step only. Refinement near solids and the GPU
-        // path are not ported yet — guard explicitly rather than silently
-        // ignore the mask (route to Amr2, base grid only).
+        // Immersed solids ([solid] regions): the mask is threaded through
+        // the solid-aware Amr2 (CPU MUSCL, 2 levels) — coarse step, patch
+        // step, restriction, refluxing, prolongation and boundary tagging
+        // are all mask-aware. Multi-level (AmrML), bi-gas/WENO and the GPU
+        // path are not ported yet — guard explicitly. The body boundary is
+        // refined automatically (tagging); user [amr] tag/regrid still apply.
         if (cd.hasSolids()) {
             if (backend != "cpu")
                 throw std::runtime_error(
@@ -418,11 +420,11 @@ int main(int argc, char** argv) {
             if (acfg.species || acfg.weno)
                 throw std::runtime_error(
                     "solides immergés : scheme = muscl mono-gaz requis "
-                    "(AMR multi-niveaux / bi-gaz à venir)");
-            acfg.maxLevels = 2;             // route to the solid-aware Amr2
-            acfg.tagThreshold = Real(1e30); // no refinement near solids yet
-            std::printf("note: solides immergés — grille de base seule "
-                        "(raffinement AMR à venir)\n");
+                    "(bi-gaz / WENO à venir)");
+            if (acfg.maxLevels != 2)
+                std::printf("note: solides immergés — AMR limité à 2 "
+                            "niveaux (Amr2 ; multi-niveaux à venir)\n");
+            acfg.maxLevels = 2; // route to the solid-aware Amr2
         }
 
         std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "

@@ -387,12 +387,20 @@ posée :
   grille de base seule). Gate `immersed_case` : `cases/shock_wall.ini`
   rejoue la réflexion de choc par le chemin déclaratif → **14.95 vs 15.0
   exact (0.33 %)**, ajouté à la suite CPU de la CI.
-- [~] corps courbes en escalier — fonctionnent qualitativement (cylindre
-  ci-dessus) ; reste à *quantifier* (angle de l'arc détaché vs corrélation,
-  θ-β-M sur un coin) et à raffiner par AMR pour lisser l'escalier.
-- [ ] intégration AMR (tag des cellules de bord solide, refluxing/
-  restriction à travers faces solides) + portage GPU (lock-step) du
-  traitement de masque.
+- [x] **intégration AMR** (`Amr2`, 2 niveaux) — masque par patch
+  (`buildPatchSolid_`), pas de patch masque-aware, **restriction** sur les
+  seules cellules filles fluides (cellules grossières solides figées),
+  **refluxing** qui ne corrige jamais une cellule solide, **prolongation**
+  en escalier constant au contact d'un solide, et **tagging du bord** du
+  corps (cellules fluides au contact → raffinement de l'escalier). Tout est
+  no-op sans `[solid]` (gates non-solides `dmr_amr`/`casedef_test`/`ml_amr`
+  intacts). Gate `immersed_amr` : réflexion de choc raffinée (4 patches),
+  pression de paroi **14.98 / 15.00 subcyclé** vs 15.0 exact (0.14 / 0.03 %)
+  et cohérente avec la grille de base (0.19 %) ; teste single-rate ET
+  subcyclé. Démos `cylinder_bowshock`/`wc_step` raffinées (bord + chocs).
+- [~] corps courbes en escalier — l'AMR lisse le bord (cylindre net) ;
+  reste à *quantifier* (angle de l'arc détaché vs corrélation, θ-β-M).
+- [ ] portage GPU (lock-step) du masque ; multi-niveaux (`AmrML`).
 - [ ] no-slip visqueux (flux visqueux masque-aware) ; efforts (traînée par
   intégration de pression de paroi) ; cut-cells (supprimer l'escalier).
 

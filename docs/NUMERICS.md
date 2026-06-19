@@ -160,8 +160,14 @@ flux convectif tangentiel s'annule car la vitesse normale est nulle).
 Vérifié exactement sur la réflexion de choc alignée à Ms=2 (post-choc
 subsonique) **et Ms=3** (post-choc supersonique, M1≈1.36) — cf.
 [`VALIDATION.md`](VALIDATION.md). Sur une face oblique (corps courbe), la
-frontière est en **escalier** : qualitativement correct (arc de choc d'un
-cylindre), à raffiner par AMR ou cut-cells (cf. roadmap).
+frontière est en **escalier** : l'AMR (`Amr2`, 2 niveaux) le raffine
+automatiquement — les cellules de fluide au contact d'un solide sont
+taguées — en plus des chocs. La chaîne AMR est masque-aware de bout en
+bout : masque par patch, **restriction** sur les seules filles fluides,
+**refluxing** qui épargne les cellules solides, **prolongation** en
+escalier constant au contact d'un solide. Tout est no-op sans `[solid]`
+(les gates AMR non-solides sont inchangés). Reste à supprimer l'escalier
+par des cut-cells (cf. roadmap).
 
 ---
 

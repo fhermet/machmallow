@@ -102,6 +102,7 @@ presets C++ :
 | **Réflexion de choc / paroi immergée** | `immersed` | p paroi vs réflexion 1D exacte, Ms=2 (post-choc subsonique) | 14.95 / 15.0 (**0.33 %**) ; \|u\|/u_i = 0 |
 | idem, Ms=3 (post-choc **supersonique** vers la paroi, M1≈1.36) | `immersed` | p paroi vs exact (verrouille le flux de paroi supersonique) | 51.68 / 51.67 (**0.02 %**, gate 5 %) |
 | Paroi immergée **déclarative** (`[solid]`) | `immersed_case` | idem via `cases/shock_wall.ini` (parsing → `solidAt` → masque) | 14.95 (**0.33 %**, gate 5 %) |
+| Paroi immergée **+ AMR** (2 niv., bord + choc raffinés) | `immersed_amr` | p paroi vs exact + cohérence vs grille de base ; single-rate ET subcyclé | 14.98 / 15.00 (**0.14 / 0.03 %**) ; vs base 0.19 % |
 
 ### 2.2 Contre l'expérience
 
@@ -129,7 +130,7 @@ presets C++ :
 cmake --build build -j
 # vérification / validation CPU (rapide)
 ./build/sod1d ; ./build/convergence ; ./build/mms ; ./build/reactor
-./build/immersed ; ./build/immersed_case
+./build/immersed ; ./build/immersed_case ; ./build/immersed_amr
 ./build/species_suite ; ./build/casedef_test ; ./build/weno_suite
 # validation GPU
 ./build/mlgpu_amr ; ./build/dmr_amr 32 gpu ; ./build/detonation
@@ -140,8 +141,9 @@ Chaque exécutable renvoie `0` (PASS) ou `1` (FAIL) et imprime ses métriques.
 
 La **CI** (`.github/workflows/ci.yml`) rejoue tout à chaque push :
 - **suite CPU** (machine sans GPU) : sod*, convergence, **mms**,
-  **immersed**, **immersed_case**, reactor, species_suite, weno_suite,
-  analytic_suite, casedef_test, + `--check` de tous les cas `cases/*.ini` ;
+  **immersed**, **immersed_case**, **immersed_amr**, reactor,
+  species_suite, weno_suite, analytic_suite, casedef_test, + `--check` de
+  tous les cas `cases/*.ini` ;
 - **suite GPU** (runner Metal) : dmr_gpu, dmr_amr, **mlgpu_amr**,
   detonation, hs_suite, blasius.
 

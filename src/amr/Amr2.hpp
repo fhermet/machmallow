@@ -55,6 +55,7 @@ public:
         int bi, bj;   // block coordinates
         int ci0, cj0; // coarse-cell origin of the block
         Grid grid;    // fine grid: 2*blockC cells square + ghosts
+        std::vector<std::uint8_t> solid; // immersed mask (empty = none)
     };
 
     Grid coarse;
@@ -226,6 +227,17 @@ public:
                         soundSpeed(toPrim(coarse.at(NG + i, NG + j)));
                     t = std::max(du, dv) / c0 > cfg_.tagVelocity;
                 }
+                // Immersed boundary: tag fluid cells touching a solid so
+                // the body surface (the staircase) gets refined — unless
+                // refinement is disabled (tag_threshold sentinel).
+                if (!t && !coarseSolidMask_.empty() &&
+                    cfg_.tagThreshold < Real(1e29) &&
+                    !solCoarse_(NG + i, NG + j) &&
+                    (solCoarse_(NG + ip, NG + j) ||
+                     solCoarse_(NG + im, NG + j) ||
+                     solCoarse_(NG + i, NG + jp) ||
+                     solCoarse_(NG + i, NG + jm)))
+                    t = true;
                 tag[std::size_t(j) * nx + i] = t;
             }
 
@@ -293,6 +305,22 @@ private:
     const std::uint8_t* coarseSolid_() const {
         return coarseSolidMask_.empty() ? nullptr : coarseSolidMask_.data();
     }
+    bool solCoarse_(int i, int j) const {
+        return !coarseSolidMask_.empty() &&
+               coarseSolidMask_[coarse.idx(i, j)] != 0;
+    }
+    static const std::uint8_t* psolid_(const Patch& p) {
+        return p.solid.empty() ? nullptr : p.solid.data();
+    }
+    // Sample the solid mask onto a patch (ghosts included). No-op if unset.
+    void buildPatchSolid_(Patch& p) const {
+        if (!solidAt) { p.solid.clear(); return; }
+        p.solid.assign(p.grid.q.size(), 0);
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i)
+                p.solid[p.grid.idx(i, j)] =
+                    solidAt(p.grid.xc(i), p.grid.yc(j));
+    }
 
     void stepSingleRate_(Real dt, double t) {
         fillPhysicalGhosts(coarse, t);
@@ -301,7 +329,8 @@ private:
         step2D(coarse, dt, scratchC_, cfg_.mu, cfg_.gx, cfg_.gy,
                coarseSolid_()); // + fluxes kept
         for (Patch& p : patches) {
-            step2D(p.grid, dt, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
+            step2D(p.grid, dt, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy,
+                   psolid_(p));
             if (cfg_.reflux) {
                 refluxCoarse_(p, dt);
                 refluxFine_(p, dt, scratchF_);
@@ -323,7 +352,8 @@ private:
                coarseSolid_());
         for (Patch& p : patches) {
             if (cfg_.reflux) refluxCoarse_(p, dtC);
-            step2D(p.grid, dtF, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
+            step2D(p.grid, dtF, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy,
+                   psolid_(p));
             if (cfg_.reflux) refluxFine_(p, dtF, scratchF_);
         }
 
@@ -331,7 +361,8 @@ private:
         // the half-time blend of t^n and t^{n+1}.
         fillAllPatchGhosts_(t + dtF, Real(0.5));
         for (Patch& p : patches) {
-            step2D(p.grid, dtF, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy);
+            step2D(p.grid, dtF, scratchF_, cfg_.mu, cfg_.gx, cfg_.gy,
+                   psolid_(p));
             if (cfg_.reflux) refluxFine_(p, dtF, scratchF_);
         }
     }
@@ -350,6 +381,7 @@ private:
                 p.grid.at(i, j) =
                     prolong_(gfi / 2, gfj / 2, gfi & 1, gfj & 1);
             }
+        buildPatchSolid_(p);
         return p;
     }
 
@@ -368,10 +400,16 @@ private:
                   Real theta = Real(-1)) const {
         const int I = NG + ci, J = NG + cj;
         const Cons q0 = coarseAt_(I, J, theta);
-        const Cons dqx = limitedSlope(coarseAt_(I - 1, J, theta), q0,
-                                      coarseAt_(I + 1, J, theta));
-        const Cons dqy = limitedSlope(coarseAt_(I, J - 1, theta), q0,
-                                      coarseAt_(I, J + 1, theta));
+        // Near a solid, drop to piecewise-constant in the affected
+        // direction: a frozen solid neighbour must not feed the slope.
+        const bool sX = solCoarse_(I - 1, J) || solCoarse_(I + 1, J);
+        const bool sY = solCoarse_(I, J - 1) || solCoarse_(I, J + 1);
+        const Cons dqx = sX ? Cons{0, 0, 0, 0}
+                            : limitedSlope(coarseAt_(I - 1, J, theta), q0,
+                                           coarseAt_(I + 1, J, theta));
+        const Cons dqy = sY ? Cons{0, 0, 0, 0}
+                            : limitedSlope(coarseAt_(I, J - 1, theta), q0,
+                                           coarseAt_(I, J + 1, theta));
         const Real sx = ox ? Real(0.25) : Real(-0.25);
         const Real sy = oy ? Real(0.25) : Real(-0.25);
         return q0 + sx * dqx + sy * dqy;
@@ -451,26 +489,35 @@ private:
         const int bc = cfg_.blockC;
         const Real lx = dt / coarse.dx, ly = dt / coarse.dy;
 
+        // A solid uncovered neighbour is frozen — never reflux into it.
         if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 coarse.at(NG + n.cell, NG + p.cj0 + r) +=
                     lx * scratchC_.Fx[coarse.idx(NG + n.cell,
                                                  NG + p.cj0 + r)];
+            }
         if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 coarse.at(NG + n.cell, NG + p.cj0 + r) -=
                     lx * scratchC_.Fx[coarse.idx(NG + n.cell - 1,
                                                  NG + p.cj0 + r)];
+            }
         if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 coarse.at(NG + p.ci0 + r, NG + n.cell) +=
                     ly * scratchC_.Fy[coarse.idx(NG + p.ci0 + r,
                                                  NG + n.cell)];
+            }
         if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
-            for (int r = 0; r < bc; ++r)
+            for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 coarse.at(NG + p.ci0 + r, NG + n.cell) -=
                     ly * scratchC_.Fy[coarse.idx(NG + p.ci0 + r,
                                                  NG + n.cell - 1)];
+            }
     }
 
     void refluxFine_(const Patch& p, Real dt, const Scratch2D& sf) {
@@ -479,6 +526,7 @@ private:
 
         if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 const Cons ff =
                     Real(0.5) * (sf.Fx[p.grid.idx(NG - 1, NG + 2 * r)] +
                                  sf.Fx[p.grid.idx(NG - 1, NG + 2 * r + 1)]);
@@ -486,6 +534,7 @@ private:
             }
         if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + n.cell, NG + p.cj0 + r)) continue;
                 const Cons ff =
                     Real(0.5) *
                     (sf.Fx[p.grid.idx(NG + nf - 1, NG + 2 * r)] +
@@ -494,6 +543,7 @@ private:
             }
         if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 const Cons ff =
                     Real(0.5) * (sf.Fy[p.grid.idx(NG + 2 * r, NG - 1)] +
                                  sf.Fy[p.grid.idx(NG + 2 * r + 1, NG - 1)]);
@@ -501,6 +551,7 @@ private:
             }
         if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
+                if (solCoarse_(NG + p.ci0 + r, NG + n.cell)) continue;
                 const Cons ff =
                     Real(0.5) *
                     (sf.Fy[p.grid.idx(NG + 2 * r, NG + nf - 1)] +
@@ -509,19 +560,37 @@ private:
             }
     }
 
-    // Average each 2x2 fine block onto its covered coarse cell.
+    // Average each 2x2 fine block onto its covered coarse cell. With an
+    // immersed mask: solid coarse cells stay frozen, and only the FLUID
+    // fine children contribute (solid children carry frozen data). Without
+    // a mask this is the plain 0.25*sum.
     void restrictFine_() {
-        for (const Patch& p : patches)
+        for (const Patch& p : patches) {
+            const std::uint8_t* ps = psolid_(p);
             for (int b = 0; b < cfg_.blockC; ++b)
                 for (int a = 0; a < cfg_.blockC; ++a) {
+                    const int ci = NG + p.ci0 + a, cj = NG + p.cj0 + b;
+                    if (solCoarse_(ci, cj)) continue; // solid: frozen
                     const int fi = NG + 2 * a, fj = NG + 2 * b;
-                    const Cons sum = p.grid.at(fi, fj) +
-                                     p.grid.at(fi + 1, fj) +
-                                     p.grid.at(fi, fj + 1) +
-                                     p.grid.at(fi + 1, fj + 1);
-                    coarse.at(NG + p.ci0 + a, NG + p.cj0 + b) =
-                        Real(0.25) * sum;
+                    if (!ps) {
+                        coarse.at(ci, cj) =
+                            Real(0.25) * (p.grid.at(fi, fj) +
+                                          p.grid.at(fi + 1, fj) +
+                                          p.grid.at(fi, fj + 1) +
+                                          p.grid.at(fi + 1, fj + 1));
+                        continue;
+                    }
+                    Cons sum{0, 0, 0, 0};
+                    int n = 0;
+                    for (int dj = 0; dj < 2; ++dj)
+                        for (int di = 0; di < 2; ++di) {
+                            if (ps[p.grid.idx(fi + di, fj + dj)]) continue;
+                            sum += p.grid.at(fi + di, fj + dj);
+                            ++n;
+                        }
+                    if (n > 0) coarse.at(ci, cj) = (Real(1) / n) * sum;
                 }
+        }
     }
 
     AmrConfig cfg_;
