@@ -269,9 +269,9 @@ private:
 
     struct Region {
         enum class Shape {
-            HalfPlane, BandX, BandY, Rect, Circle, SineX
+            HalfPlane, BandX, BandY, Rect, Circle, SineX, Triangle
         } shape;
-        Real p[4] = {0, 0, 0, 0};
+        Real p[6] = {0, 0, 0, 0, 0, 0};
         Real speed = 0, norm = 1; // half-plane front motion
         Prim st{};
         Real Y = 0; // mass fraction of gas 2 (two-gas cases)
@@ -285,6 +285,20 @@ private:
             case Shape::BandY: return y > p[0] && y < p[1];
             case Shape::Rect:
                 return x > p[0] && x < p[1] && y > p[2] && y < p[3];
+            case Shape::Triangle: {
+                // point-in-triangle (sommets (p0,p1),(p2,p3),(p4,p5)) :
+                // les trois produits vectoriels de bord ont le même signe.
+                const auto cross = [](Real ax, Real ay, Real bx, Real by,
+                                      Real px, Real py) {
+                    return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+                };
+                const Real d1 = cross(p[0], p[1], p[2], p[3], x, y);
+                const Real d2 = cross(p[2], p[3], p[4], p[5], x, y);
+                const Real d3 = cross(p[4], p[5], p[0], p[1], x, y);
+                const bool neg = d1 < 0 || d2 < 0 || d3 < 0;
+                const bool pos = d1 > 0 || d2 > 0 || d3 > 0;
+                return !(neg && pos);
+            }
             case Shape::SineX: // x < x0 + amp*cos(2*pi*y/lambda)
                 return x < p[0] +
                                p[1] * std::cos(Real(2 * M_PI) * y / p[2]);
@@ -522,6 +536,11 @@ private:
             for (int k = 0; k < 3; ++k) r.p[k] = num_(toks[1 + k]);
             if (r.p[2] == 0)
                 throw std::runtime_error("solid sinex: lambda must be != 0");
+        } else if (toks[0] == "triangle") {
+            // triangle x1 y1 x2 y2 x3 y3 (sommets, ordre quelconque)
+            need(7, "triangle");
+            r.shape = Region::Shape::Triangle;
+            for (int k = 0; k < 6; ++k) r.p[k] = num_(toks[1 + k]);
         } else {
             throw std::runtime_error("unknown solid region shape: " +
                                      toks[0]);

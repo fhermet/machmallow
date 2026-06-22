@@ -133,6 +133,7 @@ réfléchissants glissants** (vitesse normale miroir), ou **adhérents
 (no-slip)** dès que `mu > 0` (les flux visqueux imposent une vitesse de
 paroi nulle — validé Blasius, gate `immersed_noslip`). Les formes sont
 celles des régions d'IC — `rect`, `circle`, `halfplane`, `band`, `sinex` —
+plus **`triangle x1 y1 x2 y2 x3 y3`** (trois sommets, ordre quelconque),
 sans le `: NOM` (un solide n'a pas d'état) ni `speed` (statique).
 
 ```ini
