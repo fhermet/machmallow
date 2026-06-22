@@ -343,6 +343,8 @@ int list() {
         "  [bc]       x|y = periodic\n"
         "             left|right|bottom|top = transmissive | reflective\n"
         "                 | analytic | inflow X\n"
+        "                 | backpressure p0 p1 t0 t1 (pression de sortie\n"
+        "                   rampee de p0 a p1 sur [t0,t1] ; transitoire)\n"
         "                 [if x|y < val else <spec>]\n"
         "             ('analytic' evaluates the time-dependent region\n"
         "              stack at the ghosts: exact moving-shock BCs)\n"

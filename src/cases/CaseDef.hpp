@@ -254,11 +254,14 @@ public:
     }
 
 private:
-    enum class Bc { Transmissive, Reflective, NoSlip, Analytic, Inflow };
+    enum class Bc {
+        Transmissive, Reflective, NoSlip, Analytic, Inflow, BackPressure
+    };
     struct Spec {
         Bc type = Bc::Transmissive;
         Prim inflow{};
         Real inflowG = 1 / (GAMMA - 1); // EOS closure of the inflow gas
+        Real bp[4] = {0, 0, 0, 0}; // backpressure ramp: p0, p1, t0, t1
     };
     struct Side {
         Spec a;
@@ -607,6 +610,15 @@ private:
             const NamedState& ns = lookupState_(toks[i + 1]);
             s.inflow = ns.w;
             s.inflowG = 1 / (gammaOf_(ns.gas) - 1);
+        } else if (t == "backpressure") {
+            // backpressure p0 p1 t0 t1 : pression statique de sortie rampée
+            // de p0 à p1 sur [t0,t1] (sortie subsonique : on impose p ;
+            // supersonique : transmissif).
+            s.type = Bc::BackPressure;
+            if (i + 5 > end)
+                throw std::runtime_error(
+                    "backpressure needs p0 p1 t0 t1");
+            for (int k = 0; k < 4; ++k) s.bp[k] = num_(toks[i + 1 + k]);
         } else
             throw std::runtime_error("unknown boundary type: " + t);
         return s;
@@ -709,6 +721,30 @@ private:
                 case Bc::Inflow:
                     g.at(i, j) = toConsG(sp.inflow, sp.inflowG);
                     break;
+                case Bc::BackPressure: {
+                    // pression de sortie imposée (subsonique) / transmissif
+                    // (supersonique). rho, u, v extrapolés de l'intérieur.
+                    const int ci = xSide ? (dir == 0 ? NG : NG + g.nx - 1)
+                                         : mi;
+                    const int cj = xSide ? mj
+                                         : (dir == 2 ? NG : NG + g.ny - 1);
+                    Prim w = toPrim(g.at(ci, cj));
+                    const Real un = xSide ? w.u : w.v;
+                    if (std::fabs(un) < soundSpeedG(w, GAMMA)) {
+                        const Real fr =
+                            sp.bp[3] > sp.bp[2]
+                                ? std::clamp((Real(t) - sp.bp[2]) /
+                                                 (sp.bp[3] - sp.bp[2]),
+                                             Real(0), Real(1))
+                                : Real(1);
+                        w.p = std::max(sp.bp[0] + fr * (sp.bp[1] - sp.bp[0]),
+                                       P_FLOOR);
+                        g.at(i, j) = toCons(w);
+                    } else {
+                        g.at(i, j) = g.at(ci, cj); // supersonique : sortie libre
+                    }
+                    break;
+                }
                 }
             }
         }
