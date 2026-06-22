@@ -262,8 +262,23 @@ private:
         Bc type = Bc::Transmissive;
         Prim inflow{};
         Real inflowG = 1 / (GAMMA - 1); // EOS closure of the inflow gas
-        Real bp[4] = {0, 0, 0, 0}; // backpressure ramp: p0, p1, t0, t1
+        // backpressure : schedule (t0,p0, t1,p1, ...) linéaire par morceaux,
+        // maintenu avant t0 / après le dernier (plateaux = pauses de régime)
+        std::vector<Real> bp;
     };
+    static Real schedEval_(const std::vector<Real>& s, Real t) {
+        const int n = int(s.size()) / 2;
+        if (n == 0) return P_FLOOR;
+        if (t <= s[0]) return s[1];
+        for (int k = 0; k < n - 1; ++k)
+            if (t <= s[2 * k + 2]) {
+                const Real t0 = s[2 * k], p0 = s[2 * k + 1];
+                const Real t1 = s[2 * k + 2], p1 = s[2 * k + 3];
+                const Real f = t1 > t0 ? (t - t0) / (t1 - t0) : Real(1);
+                return p0 + f * (p1 - p0);
+            }
+        return s[2 * (n - 1) + 1];
+    }
     struct Side {
         Spec a;
         bool split = false;
@@ -621,14 +636,16 @@ private:
             const NamedState& ns = lookupState_(toks[i + 1]);
             s.inflow = ns.w; // rho = rho0, p = p0 (état d'arrêt)
         } else if (t == "backpressure") {
-            // backpressure p0 p1 t0 t1 : pression statique de sortie rampée
-            // de p0 à p1 sur [t0,t1] (sortie subsonique : on impose p ;
-            // supersonique : transmissif).
+            // backpressure t0 p0 t1 p1 ... : pression statique de sortie,
+            // schedule linéaire par morceaux (plateaux = pauses de régime).
+            // Sortie subsonique : on impose p(t) ; supersonique : transmissif.
             s.type = Bc::BackPressure;
-            if (i + 5 > end)
+            const std::size_t navail = end - (i + 1);
+            if (navail < 4 || navail % 2 != 0)
                 throw std::runtime_error(
-                    "backpressure needs p0 p1 t0 t1");
-            for (int k = 0; k < 4; ++k) s.bp[k] = num_(toks[i + 1 + k]);
+                    "backpressure needs (t p) pairs: t0 p0 t1 p1 ...");
+            for (std::size_t k = i + 1; k < end; ++k)
+                s.bp.push_back(num_(toks[k]));
         } else
             throw std::runtime_error("unknown boundary type: " + t);
         return s;
@@ -766,14 +783,7 @@ private:
                     Prim w = toPrim(g.at(ci, cj));
                     const Real un = xSide ? w.u : w.v;
                     if (std::fabs(un) < soundSpeedG(w, GAMMA)) {
-                        const Real fr =
-                            sp.bp[3] > sp.bp[2]
-                                ? std::clamp((Real(t) - sp.bp[2]) /
-                                                 (sp.bp[3] - sp.bp[2]),
-                                             Real(0), Real(1))
-                                : Real(1);
-                        w.p = std::max(sp.bp[0] + fr * (sp.bp[1] - sp.bp[0]),
-                                       P_FLOOR);
+                        w.p = std::max(schedEval_(sp.bp, Real(t)), P_FLOOR);
                         g.at(i, j) = toCons(w);
                     } else {
                         g.at(i, j) = g.at(ci, cj); // supersonique : sortie libre

@@ -173,7 +173,7 @@ left|right|bottom|top = <spec>
 | `analytic` | réévalue la pile de régions au temps `t` dans les ghosts → **BC exacte d'un choc mobile** (haut du DMR) |
 | `inflow NOM` | impose l'état primitif `NOM` |
 | `reservoir NOM` | **entrée à conditions d'arrêt** : `NOM` donne (ρ0, p0) d'arrêt ; la pression statique vient de l'intérieur, l'état est isentropique et la vitesse normale s'ajuste (M déduit de p0/p) → non-réfléchissant, alimentation stable (chambre de tuyère) |
-| `backpressure p0 p1 t0 t1` | **pression de sortie variable** : sortie subsonique → impose une pression statique rampée de `p0` à `p1` sur `[t0,t1]` (constante hors de l'intervalle) ; sortie supersonique → transmissif. ρ,u,v extrapolés. Pour piloter un transitoire entre régimes (tuyère, `cases/nozzle.ini`) |
+| `backpressure t0 p0 t1 p1 ...` | **pression de sortie programmée** : sortie subsonique → impose une pression statique suivant un **schedule linéaire par morceaux** (paires temps-pression, ≥2, croissantes en `t` ; constante avant `t0` et après le dernier nœud) ; sortie supersonique → transmissif. ρ,u,v extrapolés. Des **plateaux** (`… t1 p t2 p …`) font PAUSER l'écoulement sur chaque régime ; piloter un balayage de régimes (tuyère, `cases/nozzle.ini`) |
 
 **Côté segmenté** : `<specA> if x < val else <specB>` (ou `if y < val`) —
 ex. le bas du DMR : `analytic if x < 0.1667 else reflective`.
