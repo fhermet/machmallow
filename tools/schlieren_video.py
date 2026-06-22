@@ -321,6 +321,22 @@ def mask_circle(rgb, bounds, cx, cy, r):
     return rgb
 
 
+def mask_triangle(rgb, bounds, v):
+    """Peint un triangle (sommets v=[x1,y1,x2,y2,x3,y3]) en BLANC."""
+    x0, x1, y0, y1 = bounds
+    H, W = rgb.shape[:2]
+    xs = x0 + (np.arange(W) + 0.5) / W * (x1 - x0)
+    ys = y0 + (np.arange(H) + 0.5) / H * (y1 - y0)
+    X, Y = np.meshgrid(xs, ys)
+    ax, ay, bx, by, cx, cy = v
+    cr = lambda px, py, qx, qy: (qx - px) * (Y - py) - (qy - py) * (X - px)
+    d1, d2, d3 = cr(ax, ay, bx, by), cr(bx, by, cx, cy), cr(cx, cy, ax, ay)
+    inside = ~(((d1 < 0) | (d2 < 0) | (d3 < 0)) &
+               ((d1 > 0) | (d2 > 0) | (d3 > 0)))
+    rgb[np.flipud(inside)] = 255
+    return rgb
+
+
 def overlay_schlieren(rgb, rho, scale, floor, gamma, sigma, weight):
     """Superpose les CHOCS (|grad rho| fort) en BLANC sur l'image (mélange
     vers blanc). Le seuil `floor` élevé n'y laisse que les discontinuités
@@ -397,6 +413,8 @@ def main():
                     help="x0,x1,y0,y1 fixe (sinon : suivi auto)")
     ap.add_argument("--mask-circle", default=None,
                     help="cx,cy,r : disque blanc (corps immergé)")
+    ap.add_argument("--mask-tri", default=None,
+                    help="x1,y1,x2,y2,x3,y3 : triangle blanc (corps immergé)")
     ap.add_argument("--rho-range", default=None,
                     help="lo,hi : borne la densité (style density) pour "
                          "étaler la dynamique au lieu de min/max auto")
@@ -475,6 +493,8 @@ def main():
     light_bg = args.amr_bg == "light"
     maskc = (tuple(float(v) for v in args.mask_circle.split(","))
              if args.mask_circle else None)
+    maskt = ([float(v) for v in args.mask_tri.split(",")]
+             if args.mask_tri else None)
     rhorange = (tuple(float(v) for v in args.rho_range.split(","))
                 if args.rho_range else None)
 
@@ -539,6 +559,8 @@ def main():
                                     args.gamma, sigma, args.schlieren_overlay)
         if maskc:
             mask_circle(rgb, bounds_of(idx), *maskc)
+        if maskt:
+            mask_triangle(rgb, bounds_of(idx), maskt)
         out = args.out or f"{args.prefix}_{args.style}_{idx:04d}.png"
         if args.annotate:
             annotate_dmr(rgb, rho, bounds_of(idx), args.title, out)
@@ -608,6 +630,8 @@ def main():
                                     args.gamma, sigma, args.schlieren_overlay)
         if maskc:
             mask_circle(top, bounds_of(i), *maskc)
+        if maskt:
+            mask_triangle(top, bounds_of(i), maskt)
         if args.amr_panel:                          # densite + blocs AMR dessous
             bot = density_panel(rho, dlo, dhi, args.amr_cmap,
                                 amr_boxes(amr, bounds_of(i)), bounds_of(i), light_bg)
