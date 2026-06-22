@@ -172,6 +172,7 @@ left|right|bottom|top = <spec>
 | `noslip` | mur visqueux adhérent (les deux composantes miroir ; `mu > 0`) |
 | `analytic` | réévalue la pile de régions au temps `t` dans les ghosts → **BC exacte d'un choc mobile** (haut du DMR) |
 | `inflow NOM` | impose l'état primitif `NOM` |
+| `reservoir NOM` | **entrée à conditions d'arrêt** : `NOM` donne (ρ0, p0) d'arrêt ; la pression statique vient de l'intérieur, l'état est isentropique et la vitesse normale s'ajuste (M déduit de p0/p) → non-réfléchissant, alimentation stable (chambre de tuyère) |
 | `backpressure p0 p1 t0 t1` | **pression de sortie variable** : sortie subsonique → impose une pression statique rampée de `p0` à `p1` sur `[t0,t1]` (constante hors de l'intervalle) ; sortie supersonique → transmissif. ρ,u,v extrapolés. Pour piloter un transitoire entre régimes (tuyère, `cases/nozzle.ini`) |
 
 **Côté segmenté** : `<specA> if x < val else <specB>` (ou `if y < val`) —

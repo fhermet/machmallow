@@ -343,6 +343,8 @@ int list() {
         "  [bc]       x|y = periodic\n"
         "             left|right|bottom|top = transmissive | reflective\n"
         "                 | analytic | inflow X\n"
+        "                 | reservoir X (entree a conditions d'arret :\n"
+        "                   X = etat d'arret, non-reflechissant)\n"
         "                 | backpressure p0 p1 t0 t1 (pression de sortie\n"
         "                   rampee de p0 a p1 sur [t0,t1] ; transitoire)\n"
         "                 [if x|y < val else <spec>]\n"

@@ -255,7 +255,8 @@ public:
 
 private:
     enum class Bc {
-        Transmissive, Reflective, NoSlip, Analytic, Inflow, BackPressure
+        Transmissive, Reflective, NoSlip, Analytic, Inflow, BackPressure,
+        Reservoir
     };
     struct Spec {
         Bc type = Bc::Transmissive;
@@ -610,6 +611,15 @@ private:
             const NamedState& ns = lookupState_(toks[i + 1]);
             s.inflow = ns.w;
             s.inflowG = 1 / (gammaOf_(ns.gas) - 1);
+        } else if (t == "reservoir") {
+            // reservoir NOM : entrée subsonique à conditions d'arrêt
+            // (NOM donne rho0, p0 ; la vitesse est déduite de la pression
+            // intérieure -> non-réfléchissant, alimentation stable).
+            s.type = Bc::Reservoir;
+            if (i + 1 >= end)
+                throw std::runtime_error("reservoir needs a state name");
+            const NamedState& ns = lookupState_(toks[i + 1]);
+            s.inflow = ns.w; // rho = rho0, p = p0 (état d'arrêt)
         } else if (t == "backpressure") {
             // backpressure p0 p1 t0 t1 : pression statique de sortie rampée
             // de p0 à p1 sur [t0,t1] (sortie subsonique : on impose p ;
@@ -721,6 +731,31 @@ private:
                 case Bc::Inflow:
                     g.at(i, j) = toConsG(sp.inflow, sp.inflowG);
                     break;
+                case Bc::Reservoir: {
+                    // entrée à conditions d'arrêt (p0, rho0) : pression
+                    // statique = pression intérieure, état isentropique,
+                    // vitesse normale = M(p0/p) * a, dirigée vers l'intérieur.
+                    const Real p0 = sp.inflow.p, rho0 = sp.inflow.rho;
+                    const int ci = xSide ? (dir == 0 ? NG : NG + g.nx - 1)
+                                         : mi;
+                    const int cj = xSide ? mj
+                                         : (dir == 2 ? NG : NG + g.ny - 1);
+                    Real pi = std::min(toPrim(g.at(ci, cj)).p, p0);
+                    const Real e = (GAMMA - 1) / GAMMA;
+                    Real M2 = 2 / (GAMMA - 1) *
+                              (std::pow(p0 / std::max(pi, P_FLOOR), e) - 1);
+                    const Real M = std::min(std::sqrt(std::max(M2, Real(0))),
+                                            Real(0.999));
+                    const Real rho = rho0 * std::pow(pi / p0, 1 / GAMMA);
+                    const Real un = M * std::sqrt(GAMMA * pi / rho);
+                    Prim w{rho, 0, 0, pi};
+                    if (dir == 0) w.u = un;
+                    else if (dir == 1) w.u = -un;
+                    else if (dir == 2) w.v = un;
+                    else w.v = -un;
+                    g.at(i, j) = toCons(w);
+                    break;
+                }
                 case Bc::BackPressure: {
                     // pression de sortie imposée (subsonique) / transmissif
                     // (supersonique). rho, u, v extrapolés de l'intérieur.
