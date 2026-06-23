@@ -32,28 +32,31 @@ DPI = 200
 # lignes de commentaire). Les frames suivent le schedule de nozzle.ini a
 # 25 fps (palier choc droit ~45, surdetendu ~80, adapte ~110,
 # sousdetendu ~142, disque de Mach ~180).
+# frame source = FIN de palier (écoulement le plus établi), schedule long
+# de nozzle.ini : t_end 21.5 / 215 frames (Δt = 0.1) -> paliers terminant
+# à t = 4.9, 8.9, 12.9, 16.9, 21.4.
 REGIMES = [
-    (45, "Choc droit dans le divergent", "1,6",
-     ["Le col est amorcé (M = 1) : débit figé.",
-      "L'écoulement devient supersonique dans le divergent puis",
-      "repasse subsonique à travers un CHOC DROIT, qui décolle",
-      "la couche limite des parois."]),
-    (80, "Surdétendu — chocs obliques", "3,5",
+    (49, "Choc droit dans le divergent", "1,6",
+     ["Le col est amorcé (M = 1) : débit figé. L'écoulement",
+      "supersonique du divergent est recomprimé par un CHOC DROIT",
+      "(train de chocs λ avec décollement de couche limite),",
+      "puis redevient subsonique — régime instationnaire."]),
+    (89, "Surdétendu — chocs obliques", "3,5",
      ["La pression de sortie reste SUPÉRIEURE à l'ambiante :",
       "le jet est surdétendu. Des chocs obliques se forment en",
       "sortie pour le recomprimer, avec décollement et",
       "recirculation au bord de fuite."]),
-    (110, "Adapté (régime de design)", "13",
+    (129, "Adapté (régime de design)", "13",
      ["Pression de sortie = pression ambiante : le jet sort",
       "sans choc ni détente nette. Les cellules de choc sont",
       "à peine marquées — c'est le point de fonctionnement",
       "nominal de la tuyère."]),
-    (142, "Sous-détendu — détentes", "22",
+    (169, "Sous-détendu — détentes", "22",
      ["Pression de sortie INFÉRIEURE à l'ambiante : le jet se",
       "détend en sortie (éventails de Prandtl-Meyer) et",
       "s'élargit. Les cellules de choc en losange (diamants)",
       "se succèdent le long du jet."]),
-    (180, "Fortement sous-détendu — disque de Mach", "46",
+    (210, "Fortement sous-détendu — disque de Mach", "46",
      ["Forte sous-détente : un TONNEAU de choc se referme par",
       "un DISQUE DE MACH (choc droit dans le jet libre).",
       "Les nappes de cisaillement sont très écartées ;",
@@ -154,6 +157,8 @@ def main():
     ap.add_argument("--pause", type=float, default=3.2, help="arret/regime (s)")
     ap.add_argument("--pause-last", type=float, default=4.0)
     ap.add_argument("--tail", type=float, default=1.2, help="fin apres dernier")
+    ap.add_argument("--step", type=int, default=2,
+                    help="sous-echantillonnage de lecture (paliers longs)")
     args = ap.parse_args()
 
     work = tempfile.mkdtemp(prefix="pedago_")
@@ -201,7 +206,10 @@ def main():
 
     def emit_play(lo, hi):           # frames source [lo,hi] composees + labels
         nonlocal oi
-        for i in range(lo, hi + 1):
+        idxs = list(range(lo, hi + 1, max(1, args.step)))
+        if idxs and idxs[-1] != hi:  # toujours finir sur hi (frame etablie)
+            idxs.append(hi)
+        for i in idxs:
             dst = os.path.join(seq, f"o_{oi:05d}.png")
             composite(os.path.join(src, f"s_{i:04d}.png"), labels_rgba, dst)
             oi += 1
