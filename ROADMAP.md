@@ -446,7 +446,10 @@ posée :
 ## Backlog (tiré dans un jalon quand il sert, jamais en direct)
 
 Mode stationnaire (local time stepping — donnerait tout leur sens aux
-résidus du journal) ; tagging de Richardson ;
+résidus du journal **et débloquerait les régimes internes de tuyère** ;
+cf. leçon tuyère) ; **outflow/inflow non-réfléchissant caractéristique
+(NSCBC)** — réclamé par le Blasius (haut ZPG) ET la tuyère/jet (cf.
+leçons) ; tagging de Richardson ;
 checkpoint multi-niveaux ; perf (pipelining GPU, ghost fill GPU, syncs
 multi-niveaux) ; sondes ponctuelles ; régions ellipse/polygone ; Riemann
 2D 4-quadrants ; ratio de raffinement 4 ; sources additionnelles
@@ -495,6 +498,25 @@ multi-niveaux) ; sondes ponctuelles ; régions ellipse/polygone ; Riemann
   désormais passé en uniform (`ng`). Leçon : une vérif « bit-identique »
   doit couvrir TOUS les consommateurs de la mémoire, pas seulement le
   solveur — le rendu zéro-copie en est un.
+- **Tuyère C-D : régimes & convergence stationnaire** (BC `backpressure`
+  déclarative ajoutée : schedule en escalier `t0 p0 t1 p1 …`). Le balayage
+  de contre-pression et les cas par régime ont révélé deux limites
+  STRUCTURELLES (pas des bugs), chacune pointant un item de backlog :
+  (a) la convergence vers un état STATIONNAIRE subsonique est très lente en
+  explicite (le M au col grimpe sur des dizaines d'unités de temps, et le
+  premier critique réel — amorçage — est plus bas que la prédiction 1D à
+  cause du blocage de couche limite / immersed-boundary) → **mode
+  stationnaire (local time stepping / pseudo-temps)** ; (b) en domaine
+  ouvert, le jet débouchant dans un ambiant au repos crée une couche de
+  mélange + des réflexions à l'outflow (`backpressure` transmissif en
+  supersonique) qui empêchent un stationnaire propre et raidissent le pas
+  de temps → **outflow non-réfléchissant caractéristique**. En prime : le
+  choc droit transsonique est intrinsèquement instationnaire (train de
+  chocs λ + décollement), et les régimes sur/sous-détendus ont un jet
+  turbulent (KH) jamais figé — l'« établi » utile y est la structure de
+  choc PROCHE-sortie, pas un champ gelé. Diagnostic clé : tracer le **champ
+  de Mach + ligne sonique M=1**, pas la schlieren (qui sur-réagit au bruit
+  AMR et au mélange de sortie — m'a fait conclure à tort à un choc).
 - **KH inviscide raide = mal posé** (σ ∝ k, aucune coupure) : la
   structure fine des enroulements est du bruit de troncature amplifié,
   donc SCHÉMA-DÉPENDANTE. MUSCL et WENO5-HLLC divergent complètement en
