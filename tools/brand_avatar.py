@@ -193,8 +193,9 @@ def banner(out, debug=False):
     draw_scene(ax, cx=1.32, cy=0.50, R=0.078, stream_x0=0.04, lw_scale=1.9)
 
     # big wordmark inside the safe zone, in the clear band left of the shock
-    # (shock vertex ~x=1.05; text/backing kept left of it).
-    tx = 0.66
+    # (shock vertex ~x=1.17; text/backing kept left of it, and the left edge
+    # kept inside the safe zone left border ~0.352).
+    tx = 0.70
     for rw, rh, a in [(0.74, 0.32, 0.50), (0.58, 0.24, 0.50)]:
         ax.add_patch(Ellipse((tx, 0.50), rw, rh, fc=BG, ec="none",
                      alpha=a, zorder=15))
