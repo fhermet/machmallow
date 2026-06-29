@@ -65,9 +65,10 @@ def shock_color(t):
     return ACCENT
 
 
-def draw_scene(ax, cx, cy, R, stream_x0):
+def draw_scene(ax, cx, cy, R, stream_x0, lw_scale=1.0):
     """Draw the full mascot scene centered on (cx, cy) with cap radius R.
-    stream_x0 = left x where incoming streamlines begin."""
+    stream_x0 = left x where incoming streamlines begin.
+    lw_scale   = thickness multiplier for the incoming streamlines."""
     u = R / 0.120                       # unit scale (offsets tuned at R=0.120)
     half_w, half_h = R, 0.215 * u
     nose_x = cx - half_w
@@ -93,10 +94,10 @@ def draw_scene(ax, cx, cy, R, stream_x0):
         amp = 0.135 * u * np.exp(-(off / (0.20 * u))**2)
         y = y0 + np.sign(off) * amp * prox**1.8
         a_near = 0.22 + 0.30 * t
-        ax.plot(x, y, color=CYAN, lw=5.0 * u, alpha=0.07,
+        ax.plot(x, y, color=CYAN, lw=5.0 * u * lw_scale, alpha=0.07,
                 solid_capstyle="round", zorder=1)
         for i in range(len(x) - 1):
-            ax.plot(x[i:i+2], y[i:i+2], color=ACCENT, lw=2.0 * u,
+            ax.plot(x[i:i+2], y[i:i+2], color=ACCENT, lw=2.0 * u * lw_scale,
                     alpha=float(a_near[i]), solid_capstyle="round", zorder=1)
         xi = 90
         ax.annotate("", xy=(x[xi+8], y[xi+8]), xytext=(x[xi], y[xi]),
@@ -181,29 +182,20 @@ def banner(out):
     # the text so nothing overlaps the shock).
     AR = 2560 / 1440
     fig, ax = _fig(25.60, 14.40, xmax=AR)
-    cyc = 0.50
-
-    # left: faint incoming supersonic flow, fading out well before the text
-    for y0 in np.linspace(cyc - 0.30, cyc + 0.30, 6):
-        x = np.linspace(0.05, 0.46, 140)
-        a = np.clip(0.30 * (1 - (x - 0.05) / 0.41), 0, 1)   # fade to 0
-        for i in range(len(x) - 1):
-            ax.plot(x[i:i+2], [y0, y0], color=ACCENT, lw=2.0,
-                    alpha=float(a[i]), solid_capstyle="round", zorder=1)
-        ax.annotate("", xy=(0.21, y0), xytext=(0.13, y0),
-                    arrowprops=dict(arrowstyle="-|>", color=ACCENT, lw=1.6,
-                                    alpha=0.32), zorder=1)
-
-    # right: the mascot getting hit (its own short approach streamlines)
-    draw_scene(ax, cx=1.585, cy=cyc, R=0.110, stream_x0=1.31)
-
-    # wordmark + tagline, centered in the safe band on clean black
-    tx = AR / 2
+    # large mascot on the right, streamlines (thick) sweep the full width
+    draw_scene(ax, cx=1.40, cy=0.50, R=0.150, stream_x0=0.04, lw_scale=1.9)
+    # big wordmark, shifted LEFT of centre so it clears the shock (vertex
+    # ~x=1.12); soft dark backing sized to the text so it lifts off the
+    # thick streamlines without touching the shock.
+    tx = 0.70
+    for rw, rh, a in [(0.80, 0.32, 0.50), (0.64, 0.24, 0.50)]:
+        ax.add_patch(Ellipse((tx, 0.50), rw, rh, fc=BG, ec="none",
+                     alpha=a, zorder=15))
     ax.text(tx, 0.555, "machmallow", ha="center", va="center",
-            color="#FFFFFF", fontproperties=title_font(94, "medium"),
+            color="#FFFFFF", fontproperties=title_font(118, "medium"),
             zorder=20)
     ax.text(tx, 0.452, TAGLINE, ha="center", va="center", color=ACCENT,
-            alpha=0.92, fontproperties=title_font(29, "regular"), zorder=20)
+            alpha=0.92, fontproperties=title_font(34, "regular"), zorder=20)
     fig.savefig(out, facecolor=BG); plt.close(fig); print("wrote", out)
 
 
