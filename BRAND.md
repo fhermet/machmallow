@@ -52,10 +52,11 @@ Candidats : volute de DMR, tourbillon de sillage (cylindre), billow KH.
 
 ## Bannière (2560×1440, zone sûre centrale 1546×423)
 
-Champ de vorticité **large** en icefire (sillage / allée de tourbillons)
-en pleine largeur, assombri sur les bords ; **wordmark** `machmallow`
-centré + tagline : **"fluid dynamics, simulated from scratch"**. Garder
-le texte dans la zone sûre (visible sur tous les écrans).
+Filets de courant **épais** balayant toute la largeur jusqu'à l'arc de
+choc ; **wordmark** `machmallow` (décalé à gauche du centre) + tagline :
+**"a hybrid CPU/GPU AMR CFD solver, coded on a Mac"** ; mascotte + choc à
+droite. **Tout le texte ET le chamallow tiennent dans la zone sûre
+1546×423** (garantis visibles sur mobile / ordinateur / TV).
 
 ## Carte de titre / intro-sting (1,5 s)
 

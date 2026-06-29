@@ -33,7 +33,7 @@ CREAM_D  = "#E7D9C2"
 FACE     = "#2E2016"
 ROSE     = "#F2622E"
 
-TAGLINE = "a hybrid CPU/GPU AMR solver, coded on a Mac"
+TAGLINE = "a hybrid CPU/GPU AMR CFD solver, coded on a Mac"
 
 
 def title_font(size, weight="medium"):
@@ -188,10 +188,12 @@ def banner(out, debug=False):
     # large mascot on the right, streamlines (thick) sweep the full width.
     # Keep the mascot+shock fully inside the safe zone so mobile shows it
     # whole (shock vertex ~x=1.01, mascot right edge ~1.40 < 1.426).
-    draw_scene(ax, cx=1.27, cy=0.50, R=0.135, stream_x0=0.04, lw_scale=1.9)
+    # mascot sized so its FULL body fits the short mobile safe band (height
+    # 0.294): body height = 2*0.215*(R/0.12). R=0.078 -> 0.28, fits whole.
+    draw_scene(ax, cx=1.32, cy=0.50, R=0.078, stream_x0=0.04, lw_scale=1.9)
 
     # big wordmark inside the safe zone, in the clear band left of the shock
-    # (text spans ~x in [0.36, 0.96], shock vertex ~1.01 -> clears it).
+    # (shock vertex ~x=1.05; text/backing kept left of it).
     tx = 0.66
     for rw, rh, a in [(0.74, 0.32, 0.50), (0.58, 0.24, 0.50)]:
         ax.add_patch(Ellipse((tx, 0.50), rw, rh, fc=BG, ec="none",
@@ -200,7 +202,7 @@ def banner(out, debug=False):
             color="#FFFFFF", fontproperties=title_font(104, "medium"),
             zorder=20)
     ax.text(tx, 0.455, TAGLINE, ha="center", va="center", color=ACCENT,
-            alpha=0.92, fontproperties=title_font(30, "regular"), zorder=20)
+            alpha=0.92, fontproperties=title_font(29, "regular"), zorder=20)
 
     if debug:
         ax.add_patch(plt.Rectangle((SX0, SY0), SX1-SX0, SY1-SY0, fill=False,
