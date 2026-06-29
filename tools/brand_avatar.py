@@ -174,27 +174,36 @@ def wordmark(out):
 
 
 def banner(out):
-    # 2560x1440, safe zone centered 1546x423 -> x in [0.282,0.901] (units of
-    # height since aspect=equal, xmax=16/9), y in [0.353,0.647].
+    # 2560x1440, YouTube safe zone centered 1546x423. With aspect=equal and
+    # xmax=16/9, the safe band is x in [0.352, 1.426], y in [0.353, 0.647].
+    # Layout: incoming flow fades in on the LEFT, wordmark CENTERED on clean
+    # black in the safe band, mascot+shock emblem on the RIGHT (separate from
+    # the text so nothing overlaps the shock).
     AR = 2560 / 1440
     fig, ax = _fig(25.60, 14.40, xmax=AR)
-    # mascot scene on the right; streamlines sweep across the full width
-    draw_scene(ax, cx=1.28, cy=0.52, R=0.150, stream_x0=0.04)
-    # edge vignette (darken left/right bleed so wordmark pops)
-    for x0, w in [(0.0, 0.18), (AR - 0.18, 0.18)]:
-        ax.add_patch(plt.Rectangle((x0, 0), w, 1, fc=BG, ec="none",
-                     alpha=0.0, zorder=0))
-    # soft dark backing so the wordmark lifts off the streamlines
-    tx = 0.62
-    for rw, rh, a in [(0.95, 0.34, 0.55), (0.78, 0.26, 0.55)]:
-        ax.add_patch(Ellipse((tx, 0.50), rw, rh, fc=BG, ec="none",
-                     alpha=a, zorder=15))
-    # wordmark in the central safe band, left of the mascot
-    ax.text(tx, 0.55, "machmallow", ha="center", va="center",
-            color="#FFFFFF", fontproperties=title_font(120, "medium"),
+    cyc = 0.50
+
+    # left: faint incoming supersonic flow, fading out well before the text
+    for y0 in np.linspace(cyc - 0.30, cyc + 0.30, 6):
+        x = np.linspace(0.05, 0.46, 140)
+        a = np.clip(0.30 * (1 - (x - 0.05) / 0.41), 0, 1)   # fade to 0
+        for i in range(len(x) - 1):
+            ax.plot(x[i:i+2], [y0, y0], color=ACCENT, lw=2.0,
+                    alpha=float(a[i]), solid_capstyle="round", zorder=1)
+        ax.annotate("", xy=(0.21, y0), xytext=(0.13, y0),
+                    arrowprops=dict(arrowstyle="-|>", color=ACCENT, lw=1.6,
+                                    alpha=0.32), zorder=1)
+
+    # right: the mascot getting hit (its own short approach streamlines)
+    draw_scene(ax, cx=1.585, cy=cyc, R=0.110, stream_x0=1.31)
+
+    # wordmark + tagline, centered in the safe band on clean black
+    tx = AR / 2
+    ax.text(tx, 0.555, "machmallow", ha="center", va="center",
+            color="#FFFFFF", fontproperties=title_font(94, "medium"),
             zorder=20)
-    ax.text(tx, 0.45, TAGLINE, ha="center", va="center", color=ACCENT,
-            alpha=0.92, fontproperties=title_font(34, "regular"), zorder=20)
+    ax.text(tx, 0.452, TAGLINE, ha="center", va="center", color=ACCENT,
+            alpha=0.92, fontproperties=title_font(29, "regular"), zorder=20)
     fig.savefig(out, facecolor=BG); plt.close(fig); print("wrote", out)
 
 
