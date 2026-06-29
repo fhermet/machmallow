@@ -174,28 +174,39 @@ def wordmark(out):
     fig.savefig(out, facecolor=BG); plt.close(fig); print("wrote", out)
 
 
-def banner(out):
-    # 2560x1440, YouTube safe zone centered 1546x423. With aspect=equal and
-    # xmax=16/9, the safe band is x in [0.352, 1.426], y in [0.353, 0.647].
-    # Layout: incoming flow fades in on the LEFT, wordmark CENTERED on clean
-    # black in the safe band, mascot+shock emblem on the RIGHT (separate from
-    # the text so nothing overlaps the shock).
+def banner(out, debug=False):
+    # 2560x1440. Devices crop the banner differently; the ONLY region
+    # guaranteed visible everywhere (mobile is the tightest) is the central
+    # 1546x423 px "safe zone". All critical content (wordmark + tagline)
+    # must live inside it. With aspect=equal and xmax=16/9 (1 unit = 1440px):
+    #   safe x in [0.352, 1.426], safe y in [0.353, 0.647].
     AR = 2560 / 1440
+    SX0, SX1 = (AR - 1546/1440) / 2, (AR + 1546/1440) / 2   # 0.352 .. 1.426
+    SY0, SY1 = (1 - 423/1440) / 2, (1 + 423/1440) / 2        # 0.353 .. 0.647
     fig, ax = _fig(25.60, 14.40, xmax=AR)
-    # large mascot on the right, streamlines (thick) sweep the full width
-    draw_scene(ax, cx=1.40, cy=0.50, R=0.150, stream_x0=0.04, lw_scale=1.9)
-    # big wordmark, shifted LEFT of centre so it clears the shock (vertex
-    # ~x=1.12); soft dark backing sized to the text so it lifts off the
-    # thick streamlines without touching the shock.
-    tx = 0.70
-    for rw, rh, a in [(0.80, 0.32, 0.50), (0.64, 0.24, 0.50)]:
+
+    # large mascot on the right, streamlines (thick) sweep the full width.
+    # Keep the mascot+shock fully inside the safe zone so mobile shows it
+    # whole (shock vertex ~x=1.01, mascot right edge ~1.40 < 1.426).
+    draw_scene(ax, cx=1.27, cy=0.50, R=0.135, stream_x0=0.04, lw_scale=1.9)
+
+    # big wordmark inside the safe zone, in the clear band left of the shock
+    # (text spans ~x in [0.36, 0.96], shock vertex ~1.01 -> clears it).
+    tx = 0.66
+    for rw, rh, a in [(0.74, 0.32, 0.50), (0.58, 0.24, 0.50)]:
         ax.add_patch(Ellipse((tx, 0.50), rw, rh, fc=BG, ec="none",
                      alpha=a, zorder=15))
-    ax.text(tx, 0.555, "machmallow", ha="center", va="center",
-            color="#FFFFFF", fontproperties=title_font(118, "medium"),
+    ax.text(tx, 0.552, "machmallow", ha="center", va="center",
+            color="#FFFFFF", fontproperties=title_font(104, "medium"),
             zorder=20)
-    ax.text(tx, 0.452, TAGLINE, ha="center", va="center", color=ACCENT,
-            alpha=0.92, fontproperties=title_font(34, "regular"), zorder=20)
+    ax.text(tx, 0.455, TAGLINE, ha="center", va="center", color=ACCENT,
+            alpha=0.92, fontproperties=title_font(30, "regular"), zorder=20)
+
+    if debug:
+        ax.add_patch(plt.Rectangle((SX0, SY0), SX1-SX0, SY1-SY0, fill=False,
+                     ec="#00FF6A", lw=2, ls="--", zorder=30))
+        ax.text(SX0+0.01, SY1-0.02, "safe 1546x423 (all devices)",
+                color="#00FF6A", fontsize=11, va="top", zorder=30)
     fig.savefig(out, facecolor=BG); plt.close(fig); print("wrote", out)
 
 
