@@ -69,8 +69,9 @@ viennent en appui. Croissance la plus rapide.
 ## 4. Backlog de vidéos (mappé sur ce que le solveur sait rendre)
 
 ### Shorts — boucles (priorité de production)
-- [ ] **Allée de von Kármán** (cylindre, sillage subsonique visqueux) —
-  *flagship*, boucle parfaite, icefire.
+- [x] **Allée de von Kármán** (cylindre, sillage subsonique visqueux) —
+  *flagship*, boucle parfaite, icefire. Cas `cases/von_karman.ini`
+  (Re~150, M~0.25), Short 9:16 produit via `tools/hero.py`.
 - [ ] **Kelvin-Helmholtz** — train de volutes (déjà rapide à produire).
 - [ ] **Rayleigh-Taylor** — champignons qui descendent.
 - [ ] **Arc de choc qui respire** (cylindre/triangle Mach 2) — déjà rendu.
@@ -129,7 +130,9 @@ sort, depuis un même rendu, les **deux formats prêts à poster** :
   tagline) dans `BRAND.md` + `tools/brand_avatar.py`.
 
 ### Phase 1 — Pipeline
-- [ ] `tools/hero.py` : double format + boucle + brand, validé sur un cas.
+- [x] `tools/hero.py` : 9:16 / 16:9, **boucle sans couture** (détection de
+  période par auto-similarité), watermark de marque — validé sur le cas von
+  Kármán. Reste à étendre : batch multi-cas (Phase 2), musique.
 
 ### Phase 2 — Banque de boucles (le stock de lancement)
 - [ ] Produire **15-20 Shorts** d'avance (cadence agressive = il faut un
