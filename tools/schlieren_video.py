@@ -371,6 +371,31 @@ def amr_boxes(amr, bounds):
     return out
 
 
+def draw_amr_boxes(rgb, boxes, bounds, alpha=0.55):
+    """Superpose les contours des patchs AMR SUR le champ principal (par ex.
+    vorticite icefire) -> on voit le maillage adaptatif suivre les structures.
+    Contours colores par niveau, melanges en semi-transparence."""
+    H, W = rgb.shape[:2]
+    x0, x1, y0, y1 = bounds
+    pal = [(255, 255, 255), (246, 201, 91), (159, 211, 255),
+           (255, 120, 40), (255, 0, 200)]        # 1 teinte par niveau
+    pX = lambda x: int(round((x - x0) / (x1 - x0) * (W - 1)))
+    pY = lambda y: int(round((y1 - y) / (y1 - y0) * (H - 1)))   # y=0 en bas
+    a = float(np.clip(alpha, 0, 1))
+    def blend(sl, c):
+        rgb[sl] = (rgb[sl] * (1 - a) + np.array(c, np.float32) * a).astype(
+            np.uint8)
+    for ex0, ex1, ey0, ey1, lvl in boxes:
+        i0, i1 = sorted((max(0, min(W - 1, pX(ex0))),
+                         max(0, min(W - 1, pX(ex1)))))
+        ja, jb = sorted((max(0, min(H - 1, pY(ey1))),
+                         max(0, min(H - 1, pY(ey0)))))
+        c = pal[(lvl - 1) % len(pal)]
+        blend((ja, slice(i0, i1 + 1)), c); blend((jb, slice(i0, i1 + 1)), c)
+        blend((slice(ja, jb + 1), i0), c); blend((slice(ja, jb + 1), i1), c)
+    return rgb
+
+
 def density_panel(rho, vmin, vmax, cmap, boxes, bounds, light_bg=False):
     """Champ de densite colorise + contours des patchs AMR -> on voit le
     raffinement adaptatif suivre les structures. `light_bg` : fond clair
@@ -464,6 +489,11 @@ def main():
     ap.add_argument("--freeze", type=float, default=0.0,
                     help="figer la frame annotee SEC secondes a la fin "
                          "(DMR uniquement ; ex. 2.5)")
+    ap.add_argument("--amr-boxes", action="store_true",
+                    help="superposer les contours des patchs AMR SUR le champ "
+                         "principal (maillage qui suit les structures)")
+    ap.add_argument("--amr-boxes-alpha", type=float, default=0.55,
+                    help="opacite des contours AMR superposes (0..1)")
     ap.add_argument("--amr-panel", action="store_true",
                     help="empiler sous le schlieren un panneau densite + "
                          "blocs AMR (montre le raffinement evoluer)")
@@ -557,6 +587,9 @@ def main():
             ssc = float(np.percentile(schlieren(dens, sigma), 99.5))
             rgb = overlay_schlieren(rgb, dens, ssc, args.overlay_floor,
                                     args.gamma, sigma, args.schlieren_overlay)
+        if args.amr_boxes:
+            draw_amr_boxes(rgb, amr_boxes(amr0, bounds_of(idx)),
+                           bounds_of(idx), args.amr_boxes_alpha)
         if maskc:
             mask_circle(rgb, bounds_of(idx), *maskc)
         if maskt:
@@ -628,6 +661,9 @@ def main():
             dens = resample(amr, bounds_of(i), dims)
             top = overlay_schlieren(top, dens, schscale, args.overlay_floor,
                                     args.gamma, sigma, args.schlieren_overlay)
+        if args.amr_boxes:                          # maillage AMR sur le champ
+            draw_amr_boxes(top, amr_boxes(amr, bounds_of(i)),
+                           bounds_of(i), args.amr_boxes_alpha)
         if maskc:
             mask_circle(top, bounds_of(i), *maskc)
         if maskt:

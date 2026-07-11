@@ -35,15 +35,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 # ---- branding ------------------------------------------------------------
-def find_font(size):
-    """Space Grotesk Medium if installed, else DejaVu Sans Bold, else default."""
-    candidates = [
+def find_font(size, regular=False):
+    """Space Grotesk if installed, else DejaVu Sans, else default.
+    `regular` picks the lighter Regular weight (for subtitles)."""
+    heavy = [
         os.path.expanduser("~/Library/Fonts/SpaceGrotesk-Medium.otf"),
         os.path.expanduser("~/Library/Fonts/SpaceGrotesk-Bold.otf"),
         "/Library/Fonts/SpaceGrotesk-Medium.otf",
         "/System/Library/Fonts/Supplemental/DejaVuSans-Bold.ttf",
         "/Library/Fonts/DejaVuSans-Bold.ttf",
     ]
+    light = [
+        os.path.expanduser("~/Library/Fonts/SpaceGrotesk-Regular.otf"),
+        os.path.expanduser("~/Library/Fonts/SpaceGrotesk-Light.otf"),
+        "/System/Library/Fonts/Supplemental/DejaVuSans.ttf",
+    ]
+    candidates = (light + heavy) if regular else heavy
     for p in candidates:
         if os.path.exists(p):
             try:
@@ -54,6 +61,72 @@ def find_font(size):
         return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
     except Exception:
         return ImageFont.load_default()
+
+
+ACCENT = (159, 211, 255)
+
+
+def add_label(img, title, subtitle=None):
+    """Professional two-line title at the top: bold keyword line + a smaller
+    keyword-rich subtitle (SEO). Clean text with a soft halo, no box."""
+    W, H = img.size
+    over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(over)
+    y = int(H * 0.040)
+    tfont = find_font(int(H * 0.050))
+    d.text((W // 2, y), title, font=tfont, anchor="ma",
+           fill=(255, 255, 255, 245), stroke_width=max(3, H // 380),
+           stroke_fill=(0, 0, 0, 235))
+    if subtitle:
+        sfont = find_font(int(H * 0.0225), regular=True)
+        d.text((W // 2, y + int(H * 0.062)), subtitle, font=sfont,
+               anchor="ma", fill=ACCENT + (235,), stroke_width=2,
+               stroke_fill=(0, 0, 0, 210))
+    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+
+
+def add_flow_arrow(img, direction="down", opacity=0.92):
+    """Arrow marking the flow direction, with a small 'flow' caption."""
+    W, H = img.size
+    over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(over)
+    a = int(255 * opacity)
+    col = ACCENT + (a,)
+    lw = max(5, H // 220)
+    if direction in ("down", "up"):
+        x = int(W * 0.15)
+        y1, y2 = int(H * 0.135), int(H * 0.225)
+        if direction == "up":
+            y1, y2 = y2, y1
+        hw = int(H * 0.017)
+        tip = (x, y2)
+        base = y2 - hw * 1.7 if direction == "down" else y2 + hw * 1.7
+        head = [(x - hw, base), (x + hw, base), tip]
+        cap = (x, min(y1, y2) - int(H * 0.008))
+        anchor = "mb"
+    else:  # left / right
+        y = int(H * 0.15)
+        x1, x2 = int(W * 0.30), int(W * 0.70)
+        if direction == "left":
+            x1, x2 = x2, x1
+        hw = int(W * 0.03)
+        tip = (x2, y)
+        base = x2 - hw * 1.7 if direction == "right" else x2 + hw * 1.7
+        head = [(base, y - hw), (base, y + hw), tip]
+        cap = (min(x1, x2), y - int(H * 0.02))
+        anchor = "rb"
+    # dark halo underlay then the coloured stroke
+    if direction in ("down", "up"):
+        d.line([(x, y1), (x, y2)], fill=(0, 0, 0, 200), width=lw + 6)
+        d.line([(x, y1), (x, y2)], fill=col, width=lw)
+    else:
+        d.line([(x1, y), (x2, y)], fill=(0, 0, 0, 200), width=lw + 6)
+        d.line([(x1, y), (x2, y)], fill=col, width=lw)
+    d.polygon(head, fill=col)
+    font = find_font(int(H * 0.024))
+    d.text(cap, "flow", font=font, anchor=anchor, fill=(255, 255, 255, a),
+           stroke_width=2, stroke_fill=(0, 0, 0, 200))
+    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
 
 
 def add_watermark(img, text="machmallow", opacity=0.62):
@@ -71,21 +144,19 @@ def add_watermark(img, text="machmallow", opacity=0.62):
 
 
 # ---- geometry ------------------------------------------------------------
-def to_vertical(img, W=1080, H=1920, top=0.0):
-    """Rotate a horizontal wake 90° CW (flow -> top-to-bottom), scale to width
-    W, crop to HxW anchored near the top (cylinder up top). `top` (0..1) nudges
-    the crop window down to leave a margin above the body."""
+def to_vertical(img, W=1080, H=1920, top=0.5):
+    """Rotate a horizontal wake 90° CW (flow -> top-to-bottom), then scale to
+    COVER WxH and crop (no black bars): centre horizontally, anchor the
+    vertical crop with `top` (0=top .. 1=bottom, 0.5=centre)."""
     r = img.transpose(Image.ROTATE_270)          # 90° clockwise
     rw, rh = r.size
-    new_h = int(round(rh * W / rw))
-    r = r.resize((W, new_h), Image.LANCZOS)
-    y0 = int(round((new_h - H) * top)) if new_h > H else 0
-    y0 = max(0, min(y0, max(0, new_h - H)))
-    if new_h >= H:
-        return r.crop((0, y0, W, y0 + H))
-    pad = Image.new("RGB", (W, H), (0, 0, 0))    # letterbox if too short
-    pad.paste(r, (0, (H - new_h) // 2))
-    return pad
+    s = max(W / rw, H / rh)                       # cover
+    r = r.resize((max(W, round(rw * s)), max(H, round(rh * s))),
+                 Image.LANCZOS)
+    rw, rh = r.size
+    x0 = (rw - W) // 2                            # centre horizontally
+    y0 = max(0, min(int(round((rh - H) * top)), rh - H))
+    return r.crop((x0, y0, x0 + W, y0 + H))
 
 
 def to_wide(img, W=1920, H=1080):
@@ -123,6 +194,23 @@ def loop_length(frames, fps, pmin_s=0.2, slack=1.4):
     thresh = best * slack
     good = [L for L in range(pmin, n) if seam[L] <= thresh]
     return max(good) if good else (pmin + int(np.argmin(window)))
+
+
+def crossfade_loop(frames, k):
+    """Smooth the loop seam by blending the tail into the head over k frames.
+    Returns a clip of length len-k whose end->start transition is continuous —
+    essential for APERIODIC flows (e.g. the turbulent Mach-2 wake) that have no
+    exact period to cut on."""
+    n = len(frames)
+    if k <= 0 or n < 2 * k + 1:
+        return frames
+    head = []
+    for i in range(k):
+        w = 1.0 - (i + 1) / (k + 1)                 # tail weight, high->low
+        a = np.asarray(frames[i], np.float32)
+        b = np.asarray(frames[n - k + i], np.float32)
+        head.append(Image.fromarray(((1 - w) * a + w * b).astype(np.uint8)))
+    return head + frames[k:n - k]
 
 
 # ---- io ------------------------------------------------------------------
@@ -177,6 +265,15 @@ def main():
                     help="vertical crop anchor (0=top); margin above the body")
     ap.add_argument("--min-seconds", type=float, default=0.0,
                     help="tile the loop to reach at least this duration")
+    ap.add_argument("--label", default=None,
+                    help="bold title line at the top (e.g. 'Bow Shock')")
+    ap.add_argument("--sublabel", default=None,
+                    help="smaller keyword-rich subtitle under the title (SEO)")
+    ap.add_argument("--flow-arrow",
+                    choices=["down", "up", "left", "right", "none"],
+                    default="none", help="draw a flow-direction arrow")
+    ap.add_argument("--crossfade", type=int, default=0,
+                    help="blend N frames at the loop seam (aperiodic flows)")
     # rendering (with --prefix)
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--end", type=int, default=None)
@@ -203,6 +300,11 @@ def main():
               f"({L/args.fps:.2f}s base loop)")
         frames = frames[:L]
 
+    if args.crossfade > 0:
+        frames = crossfade_loop(frames, args.crossfade)
+        print(f"crossfaded seam over {args.crossfade} frames "
+              f"-> {len(frames)} frames")
+
     if args.min_seconds > 0:
         need = int(np.ceil(args.min_seconds * args.fps))
         reps = max(1, int(np.ceil(need / len(frames))))
@@ -210,6 +312,11 @@ def main():
         print(f"tiled x{reps} -> {len(frames)} frames "
               f"({len(frames)/args.fps:.1f}s)")
 
+    # overlays on every output frame
+    if args.label:
+        frames = [add_label(f, args.label, args.sublabel) for f in frames]
+    if args.flow_arrow != "none":
+        frames = [add_flow_arrow(f, args.flow_arrow) for f in frames]
     if not args.no_watermark:
         frames = [add_watermark(f) for f in frames]
 

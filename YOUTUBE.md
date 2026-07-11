@@ -69,12 +69,14 @@ viennent en appui. Croissance la plus rapide.
 ## 4. Backlog de vidéos (mappé sur ce que le solveur sait rendre)
 
 ### Shorts — boucles (priorité de production)
-- [x] **Allée de von Kármán** (cylindre, sillage subsonique visqueux) —
-  *flagship*, boucle parfaite, icefire. Cas `cases/von_karman.ini`
-  (Re~150, M~0.25), Short 9:16 produit via `tools/hero.py`.
+- [x] **Arc de choc Mach 2** (cylindre immergé, vorticité icefire +
+  overlay schlieren blanc) — **1er Short publié**, 9:16 via `tools/hero.py`
+  (titre « Bow Shock » + sous-titre SEO). Données `out/cyl_loop`.
+- [~] **Allée de von Kármán** (cylindre, sillage subsonique visqueux) — cas
+  `cases/von_karman.ini` (Re~150, M~0.25, AMR `tag_velocity`) prêt ; écarté
+  comme 1er short mais dispo pour une future boucle.
 - [ ] **Kelvin-Helmholtz** — train de volutes (déjà rapide à produire).
 - [ ] **Rayleigh-Taylor** — champignons qui descendent.
-- [ ] **Arc de choc qui respire** (cylindre/triangle Mach 2) — déjà rendu.
 - [ ] **Cellule de détonation** — motif en losanges qui pulse.
 - [ ] **Forêt de cylindres** — interférences de sillages.
 - [ ] **Bulle d'hélium + choc** (double champignon, densité bi-gaz).
