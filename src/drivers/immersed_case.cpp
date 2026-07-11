@@ -1,9 +1,9 @@
-// Gate du masque solide DÉCLARATIF : on charge cases/shock_wall.ini (qui
-// pose une paroi immergée via une section [solid]), on l'exécute via le
-// même chemin que le runner (CaseDef -> Amr2, masque threadé dans le pas
-// MUSCL de la grille de base), et on vérifie que la pression de paroi
-// après réflexion du choc atteint la valeur 1D exacte. Vérifie donc toute
-// la chaîne : parsing [solid] -> solidAt() -> step2D masque-aware.
+// Gate for the DECLARATIVE solid mask: we load cases/shock_wall.ini (which
+// places an immersed wall via a [solid] section), run it through the same
+// path as the runner (CaseDef -> Amr2, mask threaded into the MUSCL step
+// of the base grid), and check that the wall pressure after shock
+// reflection reaches the exact 1D value. This exercises the whole chain:
+// parsing [solid] -> solidAt() -> mask-aware step2D.
 
 #include "amr/Amr2.hpp"
 #include "cases/CaseDef.hpp"
@@ -25,17 +25,17 @@ int main(int argc, char** argv) {
     const Config cfg = Config::load(path);
     const CaseDef cd = CaseDef::parse(cfg);
     if (!cd.hasSolids()) {
-        std::printf("FAIL: %s ne déclare aucune région [solid]\n",
+        std::printf("FAIL: %s declares no [solid] region\n",
                     path.c_str());
         return 1;
     }
 
-    // AMR désactivé (le runner fait de même quand un solide est présent) :
-    // grille de base seule, masque threadé dans le pas MUSCL.
+    // AMR disabled (the runner does the same when a solid is present):
+    // base grid only, mask threaded into the MUSCL step.
     AmrConfig acfg;
     acfg.blockC = cfg.getInt("amr.block", 8);
     acfg.maxLevels = 2;
-    acfg.tagThreshold = Real(1e30); // pas de raffinement
+    acfg.tagThreshold = Real(1e30); // no refinement
     acfg.periodicX = cd.periodicX;
     acfg.periodicY = cd.periodicY;
 
@@ -58,14 +58,14 @@ int main(int argc, char** argv) {
         t += dt;
     }
 
-    // pression de paroi exacte (réflexion 1D, Ms = 2, gaz parfait gamma)
+    // exact wall pressure (1D reflection, Ms = 2, ideal gas gamma)
     const double G = double(GAMMA), Ms = 2.0;
     const double xi = 1.0 + 2.0 * G / (G + 1.0) * (Ms * Ms - 1.0);
     const double p1 = xi;                              // p0 = 1
     const double p2 = p1 * ((3 * G - 1) * xi - (G - 1)) /
                       ((G - 1) * xi + (G + 1));
 
-    // cellule fluide adjacente à la paroi solide (face en x = 0.7)
+    // fluid cell adjacent to the solid wall (face at x = 0.7)
     const GridRef c = amr.coarseRef();
     int iw = NG;
     while (iw < NG + c.nx &&
@@ -75,10 +75,10 @@ int main(int argc, char** argv) {
     const Prim w = toPrim(c.at(iw - 1, jm));
     const double pErr = std::fabs(double(w.p) - p2) / p2;
 
-    std::printf("Paroi immergée déclarative (%s)\n", path.c_str());
-    std::printf("  paroi : p=%.3f vs exact p_r=%.3f  (err %.2f%%, gate 5%%)"
+    std::printf("Declarative immersed wall (%s)\n", path.c_str());
+    std::printf("  wall : p=%.3f vs exact p_r=%.3f  (err %.2f%%, gate 5%%)"
                 "\n", double(w.p), p2, 100 * pErr);
-    std::printf("  non-pénétration : |u|=%.3e  (gate 1e-2)\n",
+    std::printf("  non-penetration : |u|=%.3e  (gate 1e-2)\n",
                 std::fabs(double(w.u)));
 
     const bool ok = pErr < 0.05 && std::fabs(double(w.u)) < 1e-2;

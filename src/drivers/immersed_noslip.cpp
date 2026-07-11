@@ -1,10 +1,10 @@
-// No-slip visqueux sur paroi IMMERGÉE : couche limite de Blasius sur une
-// plaque plane posée par le masque solide (et non par une BC de domaine).
-// Un écoulement bas-Mach rencontre une plaque immergée (quelques rangées
-// solides à partir du bord d'attaque) ; la paroi no-slip + les flux
-// visqueux masque-aware doivent reproduire le profil de Blasius
-// u/Ue = f'(eta), eta = y sqrt(Ue / (nu (x - x0))). Pendant du gate
-// `blasius` (BC de domaine) mais avec la plaque immergée, sur CPU.
+// Viscous no-slip on an IMMERSED wall: Blasius boundary layer on a
+// flat plate imposed by the solid mask (and not by a domain BC).
+// A low-Mach flow meets an immersed plate (a few solid rows
+// from the leading edge); the no-slip wall + the mask-aware
+// viscous fluxes must reproduce the Blasius profile
+// u/Ue = f'(eta), eta = y sqrt(Ue / (nu (x - x0))). Counterpart of the
+// `blasius` gate (domain BC) but with the immersed plate, on CPU.
 
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
@@ -25,7 +25,7 @@ constexpr Real CFL = Real(0.4);
 constexpr Real U0 = Real(0.3);   // Mach ~0.25
 constexpr Real RHO0 = Real(1), P0 = Real(1);
 constexpr Real MU = Real(1.2e-4);
-constexpr double X0 = 0.2, XM = 0.8; // bord d'attaque / station de mesure
+constexpr double X0 = 0.2, XM = 0.8; // leading edge / measurement station
 
 // f'(eta) de Blasius par RK4 (f''' + f f''/2 = 0, f''(0)=0.33206).
 struct Blasius {
@@ -63,12 +63,12 @@ struct Blasius {
 int main() {
     const int nx = 200, ny = 80;
     const double Lx = 1.0;
-    Grid g(nx, ny, 0, 0, Lx, Real(ny) * (Lx / nx)); // cellules carrées
+    Grid g(nx, ny, 0, 0, Lx, Real(ny) * (Lx / nx)); // square cells
     const double dy = double(g.dy);
-    const int plateRows = 2;            // épaisseur de la plaque immergée
-    const double ys = plateRows * dy;   // surface de la plaque
+    const int plateRows = 2;            // thickness of the immersed plate
+    const double ys = plateRows * dy;   // surface of the plate
 
-    // plaque immergée : solide pour x >= X0 et y < ys
+    // immersed plate: solid for x >= X0 and y < ys
     std::vector<std::uint8_t> solid(g.q.size(), 0);
     for (int j = 0; j < g.toty(); ++j)
         for (int i = 0; i < g.totx(); ++i)
@@ -78,8 +78,8 @@ int main() {
     const Cons fs = toCons(Prim{RHO0, U0, 0, P0});
     for (std::size_t k = 0; k < g.q.size(); ++k) g.q[k] = fs;
 
-    // BC : entrée à gauche, transmissif droite, free-stream épinglé en haut,
-    // plancher glissant en bas (sous la plaque : couvert par le masque).
+    // BC: inflow on the left, transmissive on the right, free-stream pinned at the top,
+    // slip floor at the bottom (under the plate: covered by the mask).
     const auto fillBC = [&](Grid& gg) {
         for (int j = 0; j < gg.toty(); ++j)
             for (int k = 0; k < NG; ++k) gg.at(k, j) = fs;
@@ -109,7 +109,7 @@ int main() {
         }
     }
 
-    // profil au-dessus de la plaque vs Blasius (eta mesuré depuis la surface)
+    // profile above the plate vs Blasius (eta measured from the surface)
     const Blasius bl;
     const double xp = XM - X0, nu = double(MU) / double(RHO0);
     double Ue = 0;
@@ -122,11 +122,11 @@ int main() {
         const double eta = (double(g.yc(NG + j)) - ys) * scale;
         const double u = double(toPrim(g.at(im, NG + j)).u) / Ue;
         if (eta <= 6.0) { const double d = u - bl.fpAt(eta); e2 += d * d; ++n; }
-        if (uWallRow < 0) uWallRow = j; // première rangée fluide
+        if (uWallRow < 0) uWallRow = j; // first fluid row
     }
     const double rms = std::sqrt(e2 / n);
 
-    // profil vs Blasius pour la figure vv (eta, u/Ue simulé, f' exact)
+    // profile vs Blasius for the vv figure (eta, simulated u/Ue, exact f')
     if (FILE* pf = std::fopen("out/immersed_noslip.csv", "w")) {
         std::fprintf(pf, "eta,u,fp\n");
         for (int j = plateRows; j < ny; ++j) {
@@ -139,19 +139,19 @@ int main() {
         std::fclose(pf);
     }
 
-    // glissement résiduel à la paroi (doit être ~0 : no-slip)
+    // residual slip at the wall (must be ~0: no-slip)
     const double uWall = double(toPrim(g.at(im, NG + plateRows)).u);
-    // frottement pariétal vs Cf = 0.664/sqrt(Re_x)
+    // wall skin friction vs Cf = 0.664/sqrt(Re_x)
     const double dudy = uWall / (0.5 * dy);
     const double Cf = nu * double(RHO0) * dudy / (0.5 * double(RHO0) * Ue * Ue);
     const double Rex = Ue * xp / nu;
     const double CfExact = 0.664 / std::sqrt(Rex);
 
-    std::printf("Blasius sur plaque IMMERGÉE (Re_x=%.0f, %d pas)\n", Rex,
+    std::printf("Blasius on IMMERSED plate (Re_x=%.0f, %d steps)\n", Rex,
                 steps);
-    std::printf("  profil RMS(u/Ue - f') = %.3e (gate 3e-2)\n", rms);
-    std::printf("  glissement paroi u/Ue = %.3f (gate 0.12)\n", uWall / Ue);
-    std::printf("  Cf = %.3e vs %.3e (Blasius) | écart %.0f%% (gate 25%%)\n",
+    std::printf("  profile RMS(u/Ue - f') = %.3e (gate 3e-2)\n", rms);
+    std::printf("  wall slip u/Ue = %.3f (gate 0.12)\n", uWall / Ue);
+    std::printf("  Cf = %.3e vs %.3e (Blasius) | error %.0f%% (gate 25%%)\n",
                 Cf, CfExact, 100 * std::fabs(Cf - CfExact) / CfExact);
 
     const bool ok = rms < 3e-2 && uWall / Ue < 0.12 &&

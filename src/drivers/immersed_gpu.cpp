@@ -1,9 +1,9 @@
-// Lock-step CPU↔GPU pour les corps immergés : la même configuration (grille
-// 2 niveaux, masque solide d'un cylindre Mach 2) est avancée par Amr2 (CPU,
-// référence) et AmrGpu (GPU), pas à pas avec le MÊME dt. Les champs doivent
-// coïncider à la tolérance fp32 (~1e-2, réassociation des sommes GPU). C'est
-// la porte qui verrouille le portage GPU du masque (kernels Metal + chaîne
-// AMR masque-aware).
+// Lock-step CPU↔GPU for immersed bodies: the same configuration (2-level
+// grid, solid mask of a Mach 2 cylinder) is advanced by Amr2 (CPU,
+// reference) and AmrGpu (GPU), step by step with the SAME dt. The fields must
+// match to fp32 tolerance (~1e-2, GPU sum reassociation). This is
+// the gate that locks the GPU port of the mask (Metal kernels + mask-aware
+// AMR chain).
 
 #include "amr/Amr2.hpp"
 #include "amr/AmrGpu.hpp"
@@ -108,9 +108,9 @@ bool compare(MetalContext& ctx, bool subcycle, Real mu) {
     const bool ok = maxRel < 1e-2 && !patchMismatch;
     char tag[32];
     std::snprintf(tag, sizeof(tag), "%s%s",
-                  subcycle ? "subcyclé" : "single",
-                  mu > 0 ? " +visqueux" : "");
-    std::printf("  %-18s patches CPU=%zu GPU=%zu | écart rel max %.3e  %s\n",
+                  subcycle ? "subcycled" : "single",
+                  mu > 0 ? " +viscous" : "");
+    std::printf("  %-18s patches CPU=%zu GPU=%zu | max rel diff %.3e  %s\n",
                 tag, cpu.patches.size(), gpu.patches.size(), maxRel,
                 ok ? "PASS" : "FAIL");
     return ok;
@@ -167,7 +167,7 @@ bool compareML(MetalContext& ctx, int levels) {
                                       (std::fabs(double(pa[k])) + 1e-3));
         }
     const bool ok = maxRel < 1e-2;
-    std::printf("  ML %d niveaux       | écart rel max %.3e  %s\n", levels,
+    std::printf("  ML %d levels        | max rel diff %.3e  %s\n", levels,
                 maxRel, ok ? "PASS" : "FAIL");
     return ok;
 }
@@ -177,14 +177,14 @@ int main() {
     try {
         ctx = new MetalContext();
     } catch (const std::exception& e) {
-        std::printf("pas de device Metal — gate ignoré (%s)\nPASS\n",
+        std::printf("no Metal device — gate skipped (%s)\nPASS\n",
                     e.what());
         return 0;
     }
-    std::printf("Lock-step immergé CPU/GPU (cylindre Mach 2, 96x64, 40 pas)\n");
+    std::printf("Immersed lock-step CPU/GPU (Mach 2 cylinder, 96x64, 40 steps)\n");
     const bool ok = compare(*ctx, false, 0) & compare(*ctx, true, 0) &
-                    compare(*ctx, false, Real(2e-3)) & // paroi no-slip
-                    compareML(*ctx, 3);                // multi-niveaux (AmrML)
+                    compare(*ctx, false, Real(2e-3)) & // no-slip wall
+                    compareML(*ctx, 3);                // multi-level (AmrML)
     delete ctx;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;

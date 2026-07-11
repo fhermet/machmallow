@@ -1,22 +1,21 @@
-// Corps solide immergé dans la grille cartésienne — validation du
-// traitement de paroi (masque solide + flux de paroi réfléchissante dans
-// step2D).
+// Immersed solid body in the Cartesian grid — validation of the wall
+// treatment (solid mask + reflective wall flux in step2D).
 //
-// Cas : un choc plan de Mach Ms se propage en +x dans un gaz au repos et
-// se réfléchit sur une PAROI IMMERGÉE (bloc solide, face alignée à la
-// grille). La pression de paroi après réflexion a une valeur EXACTE
-// (réflexion 1D de choc) :
+// Case: a planar shock of Mach Ms propagates in +x into a gas at rest and
+// reflects off an IMMERSED WALL (solid block, face aligned with the grid).
+// The wall pressure after reflection has an EXACT value (1D shock
+// reflection):
 //     p_r/p_i = ((3γ-1)ξ - (γ-1)) / ((γ-1)ξ + (γ+1)),   ξ = p_i/p_0
-// (limite forte (3γ-1)/(γ-1) = 8 pour γ=1.4). La face étant alignée, il
-// n'y a pas d'erreur d'escalier : c'est une vérification exacte de la
-// paroi immergée. On vérifie aussi la non-pénétration (u ≈ 0 à la paroi).
+// (strong limit (3γ-1)/(γ-1) = 8 for γ=1.4). Since the face is aligned,
+// there is no staircase error: this is an exact check of the immersed
+// wall. We also check non-penetration (u ≈ 0 at the wall).
 //
-// On teste DEUX régimes :
-//   Ms=2 : gaz post-choc SUBSONIQUE vers la paroi (M1≈0.96)
-//   Ms=3 : gaz post-choc SUPERSONIQUE vers la paroi (M1≈1.36)
-// Le cas supersonique verrouille spécifiquement le flux de paroi exact :
-// la paroi miroir + HLLC FUIT en supersonique (son estimation PVRS garde
-// SL > 0 et décentre tout le flux entrant) — d'où `wallPressure`.
+// We test TWO regimes:
+//   Ms=2 : post-shock gas SUBSONIC toward the wall (M1≈0.96)
+//   Ms=3 : post-shock gas SUPERSONIC toward the wall (M1≈1.36)
+// The supersonic case specifically locks down the exact wall flux: the
+// mirror wall + HLLC LEAKS in supersonic (its PVRS estimate keeps SL > 0
+// and upwinds all the incoming flux) — hence `wallPressure`.
 
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
@@ -32,8 +31,8 @@ using namespace mm;
 
 namespace {
 
-// Réflexion d'un choc Ms sur une paroi immergée ; renvoie l'erreur
-// relative de pression de paroi vs la valeur 1D exacte (et |u|/u_i).
+// Reflection of a shock Ms off an immersed wall; returns the relative
+// wall-pressure error vs the exact 1D value (and |u|/u_i).
 struct Result { double pErr, uRel, p, pExact, M1; };
 
 Result runReflection(double Ms, double tEnd) {
@@ -91,17 +90,17 @@ Result runReflection(double Ms, double tEnd) {
 
 int main() {
     bool ok = true;
-    // (Ms, tEnd, gate) — Ms=3 atteint la paroi plus tôt, on mesure plus tôt.
+    // (Ms, tEnd, gate) — Ms=3 reaches the wall sooner, we measure sooner.
     const struct { double Ms, tEnd, tol; } cases[] = {
         {2.0, 0.32, 0.04}, {3.0, 0.22, 0.05}};
     for (const auto& c : cases) {
         const Result r = runReflection(c.Ms, c.tEnd);
         const bool pass = r.pErr < c.tol && r.uRel < 0.05;
         ok = ok && pass;
-        std::printf("Ms=%.1f (post-choc M1=%.2f, %s vers la paroi) : "
+        std::printf("Ms=%.1f (post-shock M1=%.2f, %s toward the wall) : "
                     "p=%.3f vs %.3f exact  err %.2f%% (gate %.0f%%), "
                     "|u|/u_i=%.3f  %s\n",
-                    c.Ms, r.M1, r.M1 < 1 ? "subsonique" : "SUPERSONIQUE",
+                    c.Ms, r.M1, r.M1 < 1 ? "subsonic" : "SUPERSONIC",
                     r.p, r.pExact, 100 * r.pErr, 100 * c.tol, r.uRel,
                     pass ? "PASS" : "FAIL");
     }

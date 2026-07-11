@@ -1,10 +1,10 @@
-// Corps immergé + AMR : on rejoue la réflexion de choc de cases/shock_wall.ini
-// (paroi solide alignée) avec le RAFFINEMENT ACTIVÉ (Amr2, 2 niveaux), et on
-// vérifie que la chaîne AMR masque-aware (pas de patch, restriction, reflux,
-// prolongation, tagging de bord) préserve le résultat :
-//   1. la pression de paroi reste la valeur 1D exacte (15.0 p0, Ms=2) ;
-//   2. elle coïncide avec le run grille-de-base seule (cohérence AMR) ;
-//   3. le raffinement s'est bien produit (patches > 0, dont le bord du corps).
+// Immersed body + AMR: we replay the shock reflection of cases/shock_wall.ini
+// (aligned solid wall) with REFINEMENT ENABLED (Amr2, 2 levels), and we
+// verify that the mask-aware AMR chain (patch step, restriction, reflux,
+// prolongation, boundary tagging) preserves the result:
+//   1. the wall pressure stays the exact 1D value (15.0 p0, Ms=2);
+//   2. it matches the base-grid-only run (AMR consistency);
+//   3. refinement did occur (patches > 0, including the body boundary).
 
 #include "amr/Amr2.hpp"
 #include "amr/AmrML.hpp"
@@ -30,7 +30,7 @@ double runShockWall(const CaseDef& cd, double tEnd, bool refine,
     a.periodicY = cd.periodicY;
     a.regridEvery = 2;
     a.subcycle = subcycle;
-    a.tagThreshold = refine ? Real(0.05) : Real(1e30); // 1e30 = base seule
+    a.tagThreshold = refine ? Real(0.05) : Real(1e30); // 1e30 = base grid only
     Amr2 amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, a);
     amr.fillPhysicalGhosts = [&cd](Grid& g, double t) { cd.fillGhosts(g, t); };
     amr.fillPatchPhysical = [&cd](Grid& g, double t, unsigned s) {
@@ -49,7 +49,7 @@ double runShockWall(const CaseDef& cd, double tEnd, bool refine,
         maxPatches = std::max(maxPatches, amr.patches.size());
     }
 
-    // pression dans la cellule fluide grossière adjacente à la paroi
+    // pressure in the coarse fluid cell adjacent to the wall
     const GridRef c = amr.coarseRef();
     int iw = NG;
     while (iw < NG + c.nx &&
@@ -58,7 +58,7 @@ double runShockWall(const CaseDef& cd, double tEnd, bool refine,
     return double(toPrim(c.at(iw - 1, NG + c.ny / 2)).p);
 }
 
-// Multi-level (AmrML, profondeur `levels`) — même cas, classe N-niveaux.
+// Multi-level (AmrML, arbitrary depth `levels`) — same case, N-level class.
 double runShockWallML(const CaseDef& cd, double tEnd, int levels,
                       bool subcycle, std::size_t& maxPatches) {
     AmrConfig a;
@@ -114,20 +114,20 @@ int main(int argc, char** argv) {
     const double pBase = runShockWall(cd, tEnd, false, false, npBase);
     const double pAmr = runShockWall(cd, tEnd, true, false, npAmr);
     const double pSub = runShockWall(cd, tEnd, true, true, npSub);
-    const double pML = runShockWallML(cd, tEnd, 3, true, npML); // 3 niveaux
+    const double pML = runShockWallML(cd, tEnd, 3, true, npML); // 3 levels
 
     const double eAmr = std::fabs(pAmr - pExact) / pExact;
     const double eSub = std::fabs(pSub - pExact) / pExact;
     const double eML = std::fabs(pML - pExact) / pExact;
     const double eBase = std::fabs(pAmr - pBase) / pBase;
 
-    std::printf("Paroi immergée + AMR (%s)\n", path.c_str());
-    std::printf("  base seule        : p=%.3f (%zu patches)\n", pBase, npBase);
-    std::printf("  Amr2 2 niv.       : p=%.3f (%zu patches) err %.2f%%\n",
+    std::printf("Immersed wall + AMR (%s)\n", path.c_str());
+    std::printf("  base grid only    : p=%.3f (%zu patches)\n", pBase, npBase);
+    std::printf("  Amr2 2 lvl.       : p=%.3f (%zu patches) err %.2f%%\n",
                 pAmr, npAmr, 100 * eAmr);
-    std::printf("  Amr2 2 niv. subcyc: p=%.3f (%zu patches) err %.2f%%\n",
+    std::printf("  Amr2 2 lvl. subcyc: p=%.3f (%zu patches) err %.2f%%\n",
                 pSub, npSub, 100 * eSub);
-    std::printf("  AmrML 3 niv. subcyc: p=%.3f (%zu patches) err %.2f%%\n",
+    std::printf("  AmrML 3 lvl. subcyc: p=%.3f (%zu patches) err %.2f%%\n",
                 pML, npML, 100 * eML);
     std::printf("  exact %.3f | AMR vs base %.2f%% (gate 2%%) | "
                 "exact gate 5%%\n", pExact, 100 * eBase);
