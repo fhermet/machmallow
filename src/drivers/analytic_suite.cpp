@@ -30,7 +30,8 @@ constexpr Real CFL = Real(0.4);
 
 // ---- shared 1D-in-x runner (transmissive x, uniform y) -----------------
 double runRiemann1D(const exact::State& L, const exact::State& R,
-                    double tEnd, int n, double cflStart = 0.2) {
+                    double tEnd, int n, double cflStart = 0.2,
+                    const char* dumpCsv = nullptr) {
     Grid g(n, 8, 0, 0, 1, Real(8.0 / n));
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i) {
@@ -58,6 +59,18 @@ double runRiemann1D(const exact::State& L, const exact::State& R,
                    exact::sample(L, R, (double(g.xc(i)) - 0.5) / tEnd)
                        .rho) /
                n;
+    if (dumpCsv) { // density profile vs exact, for the vv figure
+        if (FILE* pf = std::fopen(dumpCsv, "w")) {
+            std::fprintf(pf, "x,rho,rho_exact\n");
+            for (int i = NG; i < NG + n; ++i)
+                std::fprintf(pf, "%.6g,%.6g,%.6g\n", double(g.xc(i)),
+                             double(toPrim(g.at(i, j)).rho),
+                             exact::sample(L, R,
+                                           (double(g.xc(i)) - 0.5) / tEnd)
+                                 .rho);
+            std::fclose(pf);
+        }
+    }
     return err;
 }
 
@@ -83,8 +96,11 @@ bool gate1_toroBattery() {
          8.0e-2},
     };
     bool ok = true;
+    int idx = 0;
     for (const Test& T : tests) {
-        const double e = runRiemann1D(T.L, T.R, T.t, 400);
+        char csv[48];
+        std::snprintf(csv, sizeof csv, "out/analytic_toro%d.csv", ++idx);
+        const double e = runRiemann1D(T.L, T.R, T.t, 400, 0.2, csv);
         std::printf("gate 1 — Toro %-22s L1(rho) = %.4e (gate %.1e)\n",
                     T.name, e, T.gate);
         ok = ok && e < T.gate && std::isfinite(e);

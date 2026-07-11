@@ -567,6 +567,41 @@ def plot_species(txt):
     return d
 
 
+def plot_analytic(txt):
+    """Toro's Riemann battery (tests 2-5): the four hard 1D Riemann problems
+    the single Sod case cannot exercise — near-vacuum double rarefaction, a
+    p=1000 blast, colliding strong shocks, a slowly-moving contact."""
+    titles = ["T2 · 123 / near-vacuum", "T3 · blast $p=1000$",
+              "T4 · colliding shocks", "T5 · slow contact"]
+    d = {"t2": grab(txt, r"T2 123/near-vacuum\s+L1\(rho\) = ([\d.eE+-]+)"),
+         "t3": grab(txt, r"T3 blast p=1000\s+L1\(rho\) = ([\d.eE+-]+)"),
+         "t4": grab(txt, r"T4 colliding shocks\s+L1\(rho\) = ([\d.eE+-]+)"),
+         "t5": grab(txt, r"T5 slow contact\s+L1\(rho\) = ([\d.eE+-]+)"),
+         "ac": grab(txt, r"smooth order = ([\d.]+) \(TVD"),
+         "vor": grab(txt, r"mean smooth order = ([\d.]+)"),
+         "sedov": grab(txt, r"exponent = ([\d.]+) \(theory"),
+         "rt": grab(txt, r"sigma = ([\d.]+) vs"),
+         "rt_th": grab(txt, r"vs sqrt\(Agk\) = ([\d.]+)")}
+    paths = [os.path.join(OUT, f"analytic_toro{i}.csv") for i in (1, 2, 3, 4)]
+    if not all(os.path.exists(p) for p in paths):
+        return d
+    fig, axes = plt.subplots(2, 2, figsize=(8.2, 6.2))
+    for ax, p, ti in zip(axes.flat, paths, titles):
+        rows = read_csv(p)
+        x = [float(r["x"]) for r in rows]
+        ax.plot(x, [float(r["rho_exact"]) for r in rows], "-",
+                color="black", lw=1.8, label="exact")
+        ax.plot(x, [float(r["rho"]) for r in rows], "o", color=CYAN, ms=2.6,
+                label="machmallow")
+        ax.set_title(ti, fontsize=10)
+        ax.set_xlabel("x"); ax.set_ylabel(r"$\rho$")
+        ax.legend(fontsize=8, loc="best")
+    fig.suptitle("Toro Riemann battery (N=400) — density vs exact", y=1.0)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "analytic.png"))
+    plt.close(fig)
+    return d
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -580,13 +615,14 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
                  sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None,
-                 species=None):
+                 species=None, analytic=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
     rea = rea or {}
     weno = weno or {}
     species = species or {}
+    analytic = analytic or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -795,6 +831,49 @@ generalized exact Riemann solution (each side keeping its own γ across the
 contact) both on a uniform grid and through the refluxed 3-level AMR, and
 species mass is conserved to the float32 floor. The same two-gas path is
 re-exercised under WENO5 in the [WENO5 suite](weno.md) (gates 7–8).""")
+
+    # ---- fiche 1f: analytic suite (verification + validation) ----------
+    fiche("analytic.md", f"""# Analytic suite — *verification & validation*
+
+**Objective.** Exercise the solver against exact/theoretical references the
+single Sod case cannot: (1) **Toro's Riemann battery** (tests 2–5) — the hard
+1D problems: near-vacuum double rarefaction, a p = 1000 blast, colliding strong
+shocks, a slowly-moving contact — vs the exact Riemann solver; (2) a smooth
+**acoustic wave** returning onto its IC after one period (smooth-regime order);
+(3) the **isentropic vortex** (Yee) advected one period (canonical smooth 2D
+Euler); (4) **Sedov** self-similar blast exponent ($r\\sim t^{{1/2}}$); (5)
+**Rayleigh–Taylor** linear growth rate vs $\\sqrt{{Agk}}$.
+
+## Numerical setup
+> MUSCL-Hancock + HLLC, CFL 0.4, uniform grids. Riemann battery: N = 400,
+> transmissive, reduced start-up CFL for the sharp IC. Acoustic/vortex:
+> periodic, order from grid refinement. Sedov: 256², point energy in 3 cells.
+> RT: seeded single mode, growth from a least-squares fit of $\\ln a(t)$.
+> Driver: `analytic_suite`. float32.
+
+## Results
+![Toro Riemann battery — density vs exact](../figures/analytic.png)
+
+| Gate | Test | Result |
+|---|---|---|
+| 1 | Toro T2 near-vacuum / T3 blast | L1 {analytic.get('t2', '—')} / {analytic.get('t3', '—')} |
+| 1 | Toro T4 colliding / T5 slow contact | L1 {analytic.get('t4', '—')} / {analytic.get('t5', '—')} |
+| 2 | acoustic wave, smooth order | {analytic.get('ac', '—')} (TVD-extremum theory 4/3) |
+| 3 | isentropic vortex, mean order | {analytic.get('vor', '—')} (gate > 1.5) |
+| 4 | Sedov 2D front exponent | {analytic.get('sedov', '—')} (theory 0.5, ±0.03) |
+| 5 | Rayleigh–Taylor growth σ | {analytic.get('rt', '—')} vs √(Agk) {analytic.get('rt_th', '—')} (±15 %) |
+
+## Discussion
+The four Toro tests are the standard robustness gauntlet: the solver survives
+the **near-vacuum** double rarefaction (positivity), the **p = 1000 blast** and
+the **colliding-shock** problem (strong-shock stability), and resolves the
+**slowly-moving contact** — all within their exact-solution error gates and
+with no NaNs. The acoustic order sits at the TVD **4/3** ceiling (limiters clip
+the smooth sine crests — the documented motivation for WENO5, see
+[the WENO suite](weno.md)), while the vortex — error-dominated away from
+extrema — reaches ~2. Sedov recovers the self-similar **½** exponent and RT
+matches the linear dispersion relation $\\sqrt{{Agk}}$ to within a few percent.
+Together these pin the scheme's accuracy **and** its nonlinear robustness.""")
 
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
@@ -1087,6 +1166,7 @@ python3 vv/generate.py
 | [WENO5 scheme suite](cases/weno.md) | verification | WENO5 {weno.get('ratio', '—')}× less dissipative than MUSCL (vortex); bit-exact on AMR | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
 | [Multi-species two-gas](cases/species.md) | validation · exact | Abgrall interface (p, u flat); two-gas Riemann (uniform + AMR) | ✅ PASS |
+| [Analytic suite](cases/analytic.md) | verification · validation | Toro battery, acoustic/vortex order, Sedov ½, Rayleigh–Taylor | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
 | [Diagonal 2D Sod](cases/sod2d.md) | validation · exact | 2D field collapses onto 1D Riemann (isotropy) | ✅ PASS |
@@ -1111,6 +1191,7 @@ def main():
 
     conv_txt = sod_txt = bla_txt = det_txt = ""
     sod2d_txt = samr_txt = mms_txt = rea_txt = weno_txt = spec_txt = ""
+    ana_txt = ""
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
@@ -1121,15 +1202,17 @@ def main():
         rea_txt = run_driver("reactor")
         weno_txt = run_driver("weno_suite")
         spec_txt = run_driver("species_suite")
+        ana_txt = run_driver("analytic_suite")
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
         (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, weno_txt,
-         spec_txt, bla_txt, det_txt) = (
+         spec_txt, ana_txt, bla_txt, det_txt) = (
              cached("convergence"), cached("sod1d"), cached("sod2d"),
              cached("sod_amr"), cached("mms"), cached("reactor"),
-             cached("weno_suite"), cached("species_suite"), cached("blasius"),
+             cached("weno_suite"), cached("species_suite"),
+             cached("analytic_suite"), cached("blasius"),
              cached("detonation"))
 
     print("plotting…")
@@ -1141,6 +1224,7 @@ def main():
     rea = plot_reactor(rea_txt)
     weno = plot_weno(weno_txt)
     species = plot_species(spec_txt)
+    analytic = plot_analytic(ana_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -1155,13 +1239,15 @@ def main():
             "sod2d_exact.csv", "sod_amr_profile.csv", "mms.csv",
             "reactor_isothermal.csv", "detonation_front.csv",
             "weno_vortex_weno.csv", "weno_vortex_muscl.csv",
-            "species_interface.csv", "vv_conservation_log.csv"}
+            "species_interface.csv", "analytic_toro1.csv",
+            "analytic_toro2.csv", "analytic_toro3.csv", "analytic_toro4.csv",
+            "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
-                 sod2d_txt, samr_txt, mms, rea, weno, species)
+                 sod2d_txt, samr_txt, mms, rea, weno, species, analytic)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 
