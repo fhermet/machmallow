@@ -146,7 +146,13 @@ def plot_blasius():
     ax.plot([float(r["blasius"]) for r in rows], eta, "-", color="black",
             lw=2, label="Blasius $f'(\\eta)$")
     ax.plot([float(r["u_computed"]) for r in rows], eta, "o", color=CYAN,
-            ms=5, label="machmallow")
+            ms=5, label="MUSCL")
+    wp = os.path.join(OUT, "blasius_profile_weno.csv")
+    if os.path.exists(wp):
+        w = read_csv(wp)
+        ax.plot([float(r["u_computed"]) for r in w],
+                [float(r["eta"]) for r in w], "s", color=EMBER, ms=5,
+                mfc="none", label="WENO5")
     ax.set_xlabel("$u/U_e$"); ax.set_ylabel("$\\eta = y\\,\\sqrt{U_e/\\nu x}$")
     ax.set_title("Blasius boundary layer — profile vs similarity")
     ax.legend(fontsize=9, loc="lower right")
@@ -165,7 +171,13 @@ def plot_blasius_cf():
     fig, ax = plt.subplots(figsize=(6.2, 4.8))
     ax.loglog(rex, cfx, "-", color="black", lw=2,
               label="Blasius $0.664/\\sqrt{Re_x}$")
-    ax.loglog(rex, cf, "o", color=CYAN, ms=6, label="machmallow")
+    ax.loglog(rex, cf, "o", color=CYAN, ms=6, label="MUSCL")
+    wp = os.path.join(OUT, "blasius_cf_weno.csv")
+    if os.path.exists(wp):
+        w = read_csv(wp)
+        rw = np.array([float(r["Rex"]) for r in w]); ow = np.argsort(rw)
+        ax.loglog(rw[ow], np.array([float(r["Cf"]) for r in w])[ow], "s",
+                  color=EMBER, ms=6, mfc="none", label="WENO5")
     ax.set_xlabel("$Re_x$"); ax.set_ylabel("skin friction $C_f$")
     ax.set_title("Skin friction along the plate vs Blasius")
     ax.legend(fontsize=9)
@@ -266,14 +278,21 @@ A low-Mach viscous flow over a flat plate. At the measurement station
 (Re_x = {rex}) the steady velocity profile must collapse onto the Blasius
 similarity solution $u/U_e = f'(\\eta)$.
 
-> **Numerical setup** — MUSCL-Hancock + HLLC, **single uniform grid 320×256**
-> (dx = dy ≈ 3.9e-3, **no AMR**), GPU (`hybrid` backend), Navier–Stokes
-> μ = 8e-5, CFL 0.4, free stream U = 0.3 (**M ≈ 0.25**). BCs: inflow (left),
-> zero-gradient (right), **pinned free stream** on top (zero pressure
-> gradient), and an **aligned bottom wall** — slip ahead of the leading edge
-> (x < 0.15), **no-slip** on the plate. Marched to steady state. float32.
+> **Numerical setup** — **MUSCL-Hancock and WENO5**, both with HLLC, on a
+> **single uniform grid 320×256** (dx = dy ≈ 3.9e-3, **no AMR**), GPU
+> (`hybrid` backend), Navier–Stokes μ = 8e-5, CFL 0.4, free stream U = 0.3
+> (**M ≈ 0.25**). BCs: inflow (left), zero-gradient (right), **pinned free
+> stream** on top (zero pressure gradient), and an **aligned bottom wall** —
+> slip ahead of the leading edge (x < 0.15), **no-slip** on the plate. Marched
+> to steady state. float32.
 
 ![Blasius profile vs similarity](figures/blasius.png)
+
+MUSCL and WENO5 land essentially on top of each other here — expected for a
+**smooth steady** boundary layer (the viscous flux operator is shared and
+there are no discontinuities for WENO5 to sharpen). That agreement is itself
+a useful cross-scheme consistency check; the gated metrics below are from the
+MUSCL run.
 
 The skin friction measured at several stations along the plate, against the
 Blasius law $C_f = 0.664/\\sqrt{{Re_x}}$:
@@ -346,6 +365,7 @@ def main():
 
     # copy source data for provenance
     keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv",
+            "blasius_profile_weno.csv", "blasius_cf_weno.csv",
             "sod_muscl_400.csv", "sod_weno_400.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):

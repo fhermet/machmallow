@@ -77,14 +77,21 @@ A low-Mach viscous flow over a flat plate. At the measurement station
 (Re_x = 2732) the steady velocity profile must collapse onto the Blasius
 similarity solution $u/U_e = f'(\eta)$.
 
-> **Numerical setup** — MUSCL-Hancock + HLLC, **single uniform grid 320×256**
-> (dx = dy ≈ 3.9e-3, **no AMR**), GPU (`hybrid` backend), Navier–Stokes
-> μ = 8e-5, CFL 0.4, free stream U = 0.3 (**M ≈ 0.25**). BCs: inflow (left),
-> zero-gradient (right), **pinned free stream** on top (zero pressure
-> gradient), and an **aligned bottom wall** — slip ahead of the leading edge
-> (x < 0.15), **no-slip** on the plate. Marched to steady state. float32.
+> **Numerical setup** — **MUSCL-Hancock and WENO5**, both with HLLC, on a
+> **single uniform grid 320×256** (dx = dy ≈ 3.9e-3, **no AMR**), GPU
+> (`hybrid` backend), Navier–Stokes μ = 8e-5, CFL 0.4, free stream U = 0.3
+> (**M ≈ 0.25**). BCs: inflow (left), zero-gradient (right), **pinned free
+> stream** on top (zero pressure gradient), and an **aligned bottom wall** —
+> slip ahead of the leading edge (x < 0.15), **no-slip** on the plate. Marched
+> to steady state. float32.
 
 ![Blasius profile vs similarity](figures/blasius.png)
+
+MUSCL and WENO5 land essentially on top of each other here — expected for a
+**smooth steady** boundary layer (the viscous flux operator is shared and
+there are no discontinuities for WENO5 to sharpen). That agreement is itself
+a useful cross-scheme consistency check; the gated metrics below are from the
+MUSCL run.
 
 The skin friction measured at several stations along the plate, against the
 Blasius law $C_f = 0.664/\sqrt{Re_x}$:

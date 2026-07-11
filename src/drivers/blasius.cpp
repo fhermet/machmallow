@@ -232,6 +232,73 @@ int main() {
         std::fclose(cf);
     }
 
+    // ---- second pass in WENO5, for the scheme-comparison figures (vv/) ----
+    // Same viscous case run with scheme = weno5; on a smooth steady boundary
+    // layer the profiles nearly coincide with MUSCL (the viscous operator is
+    // shared, no discontinuities to sharpen) — a useful consistency check.
+    {
+        Euler2DGpu gw(ctx, nx, ny, dx, dy);
+        gw.enableWeno();
+        gw.setViscosity(MU);
+        GridRef gg = gw.ref(0, 0);
+        for (int j = 0; j < gg.toty(); ++j)
+            for (int i = 0; i < gg.totx(); ++i) gg.at(i, j) = init;
+        std::vector<double> pv(ny, 0);
+        for (int s = 0; s < MAXSTEPS; ++s) {
+            fillBC(gg);
+            gw.step(gw.maxStableDt(CFL));
+            if (s % 500 == 0 && s > 0) {
+                double dm = 0;
+                for (int j = 0; j < ny; ++j) {
+                    const double u = toPrim(gg.at(im, NG + j)).u;
+                    dm = std::max(dm, std::fabs(u - pv[j])); pv[j] = u;
+                }
+                if (dm / U0 < 2e-4) break;
+            }
+        }
+        double Ue2 = 0;
+        for (int j = 0; j < ny; ++j)
+            Ue2 = std::max(Ue2, double(toPrim(gg.at(im, NG + j)).u));
+        const double sc2 = std::sqrt(Ue2 / (nu * xp));
+        if (FILE* pf = std::fopen("out/blasius_profile_weno.csv", "w")) {
+            std::fprintf(pf, "eta,u_computed,blasius\n");
+            for (int j = 0; j < ny; ++j) {
+                const double eta = double(gg.yc(NG + j)) * sc2;
+                if (eta > 6.0) break;
+                std::fprintf(pf, "%.6g,%.6g,%.6g\n", eta,
+                             double(toPrim(gg.at(im, NG + j)).u) / Ue2,
+                             bl.fpAt(eta));
+            }
+            std::fclose(pf);
+        }
+        if (FILE* cf = std::fopen("out/blasius_cf_weno.csv", "w")) {
+            std::fprintf(cf, "x,Rex,Cf,Cf_exact,d99,d99_exact\n");
+            for (double xs = 0.30; xs <= 1.10 + 1e-9; xs += 0.05) {
+                const int ii = NG + int(xs / Lx * nx);
+                const double xps = double(gg.xc(ii)) - X0;
+                if (ii < NG || ii >= NG + nx || xps <= 0) continue;
+                double Ues = 0;
+                for (int j = 0; j < ny; ++j)
+                    Ues = std::max(Ues, double(toPrim(gg.at(ii, NG + j)).u));
+                const double scs = std::sqrt(Ues / (nu * xps));
+                double d99s = -1;
+                for (int j = 0; j < ny; ++j)
+                    if (double(toPrim(gg.at(ii, NG + j)).u) / Ues >= 0.99) {
+                        d99s = double(gg.yc(NG + j)); break;
+                    }
+                const double dudy =
+                    double(toPrim(gg.at(ii, NG)).u) / double(dy * 0.5);
+                const double Cfs =
+                    (nu * RHO0 * dudy) / (0.5 * RHO0 * Ues * Ues);
+                const double Rexs = Ues * xps / nu;
+                std::fprintf(cf, "%.5g,%.6g,%.6g,%.6g,%.6g,%.6g\n",
+                             double(gg.xc(ii)), Rexs, Cfs,
+                             0.664 / std::sqrt(Rexs), d99s, 4.91 / scs);
+            }
+            std::fclose(cf);
+        }
+    }
+
     const bool ok = rms < 3e-2 && std::fabs(d99 / d99Exact - 1) < 0.15 &&
                     std::fabs(Cf / CfExact - 1) < 0.20;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
