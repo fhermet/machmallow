@@ -124,7 +124,7 @@ double runAmr(const Reaction& r, const GasPair& gas, double q, double L,
     cfg.reaction = r;
     cfg.tagThreshold = Real(0.10); // the shock's density jump tags it
     cfg.regridEvery = 2;           // track the fast-moving front
-    const int nb = 512, ny = 8;
+    const int nb = int(64 * L), ny = 8; // coarse cells scale with L
     AmrML amr(nb, ny, 0, 0, L, Real(ny) * (L / nb), cfg);
     amr.fillPhysicalGhosts = [](Grid& g, double) {
         fillReflectiveLeft(g);
@@ -153,7 +153,7 @@ double runAmr(const Reaction& r, const GasPair& gas, double q, double L,
     };
     double t = 0;
     std::vector<double> ts, xs;
-    const double tEnd = 1.5;
+    const double tEnd = 0.1875 * L; // front reaches ~0.9 L (= 1.5 at L=8)
     while (t < tEnd) {
         const Real dt = std::min(amr.maxStableDtAll(CFL), Real(tEnd - t));
         amr.step(dt, t);
@@ -177,7 +177,7 @@ double runAmrGpu(MetalContext& ctx, const Reaction& r, const GasPair& gas,
     cfg.reaction = r;
     cfg.tagThreshold = Real(0.10);
     cfg.regridEvery = 2;
-    const int nb = 512, ny = 8;
+    const int nb = int(64 * L), ny = 8; // coarse cells scale with L
     AmrGpuML amr(ctx, nb, ny, 0, 0, L, Real(ny) * (L / nb), cfg);
     amr.fillPhysicalGhosts = [](GridRef& g, double) {
         fillReflectiveLeft(g);
@@ -206,8 +206,9 @@ double runAmrGpu(MetalContext& ctx, const Reaction& r, const GasPair& gas,
     };
     double t = 0;
     std::vector<double> ts, xs;
-    while (t < 1.5) {
-        const Real dt = std::min(amr.maxStableDtAll(CFL), Real(1.5 - t));
+    const double tEnd = 0.1875 * L; // front reaches ~0.9 L (= 1.5 at L=8)
+    while (t < tEnd) {
+        const Real dt = std::min(amr.maxStableDtAll(CFL), Real(tEnd - t));
         amr.step(dt, t);
         t += dt;
         ts.push_back(t);
@@ -219,7 +220,7 @@ double runAmrGpu(MetalContext& ctx, const Reaction& r, const GasPair& gas,
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     const double q = 10.0;
     const double Dcj = cjSpeed(q, GAM, RHO0, P0);
     const double c0 = std::sqrt(double(GAM) * P0 / RHO0);
@@ -230,8 +231,10 @@ int main() {
                      /*Tign*/ Real(2.5)};
     const GasPair gas{GAM, GAM}; // single gas: Gamma constant
 
-    const int nx = 2000, ny = 4;
-    const double L = 8.0;
+    // optional tube length (`detonation <L> [tEnd]`, default 8 -> CI/gate
+    // unchanged) to test that a longer domain lets D relax closer to D_CJ.
+    const double L = (argc > 1) ? std::atof(argv[1]) : 8.0;
+    const int nx = int(250 * L), ny = 4; // dx = const
     Grid g(nx, ny, 0, 0, L, Real(ny) * (L / nx));
     std::vector<Real> phi(g.q.size()), gm(g.q.size(), Real(1 / (GAM - 1)));
 
@@ -256,7 +259,7 @@ int main() {
 
     double t = 0;
     std::vector<double> ts, xs;
-    const double tEnd = 1.5; // front travels ~0.85 L at D_CJ
+    const double tEnd = (argc > 2) ? std::atof(argv[2]) : 0.1875 * L;
     while (t < tEnd) {
         const Real dt = std::min(maxStableDtY(g, gm, CFL), Real(tEnd - t));
         reactGrid(g, phi, dt / 2, r);

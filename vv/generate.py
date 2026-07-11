@@ -51,12 +51,12 @@ def sh(cmd):
     return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
 
 
-def run_driver(exe):
+def run_driver(exe, *args):
     path = os.path.join(ROOT, "build", exe)
     if not os.path.exists(path):
         sys.exit(f"missing ./build/{exe} — build first: cmake --build build -j")
-    print(f"  running {exe} …")
-    r = sh([path])
+    print(f"  running {exe} {' '.join(args)}…")
+    r = sh([path, *args])
     if r.returncode != 0:
         print(r.stdout)
         sys.exit(f"{exe} FAILED (exit {r.returncode})")
@@ -483,10 +483,11 @@ must settle at the exact **Chapman–Jouguet speed** $D_{{CJ}}$.
 ## Numerical setup
 > Reactive Euler — single-step Arrhenius reaction (q = 10) + heat release,
 > MUSCL-Hancock + HLLC, **Strang split** $R(\\tfrac{{dt}}{{2}})\\,\\mathcal{{H}}(dt)\\,R(\\tfrac{{dt}}{{2}})$,
-> CFL 0.4, **closed tube** (reflecting walls, hot ignition). Run **uniform**
-> and on a **3-level AMR** hierarchy (CPU *and* GPU, refining the reaction
-> zone). $D_{{CJ}}$ solved exactly from Rankine–Hugoniot + the CJ tangency
-> condition. Driver: `detonation`.
+> CFL 0.4, **closed tube of length L = 16** (reflecting walls, hot ignition) —
+> long enough for the overdrive to relax to CJ (see discussion). Run
+> **uniform** and on a **3-level AMR** hierarchy (CPU *and* GPU, refining the
+> reaction zone). $D_{{CJ}}$ solved exactly from Rankine–Hugoniot + the CJ
+> tangency condition. Driver: `detonation <L>` (default L = 8 in CI).
 
 ## Results
 ![CJ detonation relaxation](../figures/detonation.png)
@@ -499,12 +500,16 @@ must settle at the exact **Chapman–Jouguet speed** $D_{{CJ}}$.
 | 3-level AMR (GPU) | {det.get('gpu', '—')} | {det.get('gpu_pct', '—')} % (lock-step) |
 
 ## Discussion
-The overdriven ignition decays toward $D_{{CJ}}$ through the Taylor
-rarefaction — the measured front speed relaxes onto the dashed line. AMR
-refines the reaction zone and *tightens* the agreement (+0.8 % vs +1.3 %
-uniform); the GPU path is bit-for-bit with the CPU. A transmissive boundary
-would act as an infinite reservoir and keep the detonation permanently
-overdriven — hence the closed tube.""")
+The strong ignition is **overdriven**: the front starts faster than CJ and
+**relaxes asymptotically** toward $D_{{CJ}}$ as the trailing Taylor
+rarefaction drains its support (the measured speed decays onto the dashed
+line). The decay is slow, so the tube must be **long enough** — at **L = 16**
+the uniform speed is within **+0.4 %** and the AMR within **−0.2 %** of
+$D_{{CJ}}$, whereas a short L = 8 tube still reads +1.3 %. AMR further helps by
+resolving the thin reaction zone (a sharper von Neumann spike); its GPU path
+is bit-for-bit with the CPU. A transmissive boundary would act as an infinite
+reservoir and keep the detonation permanently overdriven — hence the closed
+tube.""")
 
     # ---- fiche 5: oblique shock theta-beta-M (validation vs theory) -----
     fiche("wedge.md", f"""# Oblique shock — *validation vs θ-β-M*
@@ -590,7 +595,7 @@ python3 vv/generate.py
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
-| [CJ detonation](cases/detonation.md) | validation · exact | D → D_CJ (+0.8 % on AMR, CPU/GPU lock-step) | ✅ PASS |
+| [CJ detonation](cases/detonation.md) | validation · exact | D relaxes to D_CJ (+0.4 % uniform, −0.2 % AMR, long tube) | ✅ PASS |
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS {rms} vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
 | [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
 
@@ -615,7 +620,7 @@ def main():
         conv_txt = run_driver("convergence")
         sod_txt = run_driver("sod1d")
         bla_txt = run_driver("blasius")
-        det_txt = run_driver("detonation")
+        det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         run_case("vv/conservation.ini")
 
     print("plotting…")
