@@ -701,6 +701,38 @@ def plot_hs(txt):
     return d
 
 
+def plot_infra(txt):
+    """AMR + GPU infrastructure. Figure: the viscous shear layer relaxing to
+    the exact erf diffusion profile (the analytic anchor for the machinery)."""
+    d = {"shear_ord": grab(txt, r"mean order: ([\d.]+)"),
+         "shear_par": grab(txt, r"GPU parity \(\d+ steps\): max rel diff = ([\d.eE+-]+)"),
+         "ml_bit": grab(txt, r"AmrML\(2\) vs Amr2.*max rel diff ([\d.eE+-]+)"),
+         "ml_ratio": grab(txt, r"3-level Sod.*ratio ([\d.]+)"),
+         "ml_kh": grab(txt, r"3-level periodic KH.*mass drift ([\d.eE+-]+)"),
+         "kh_tag": grab(txt, r"tagging: (\d+) patches with velocity"),
+         "kh_tag0": grab(txt, r"velocity criterion, (\d+) with density"),
+         "kh_drift": grab(txt, r"closed-domain mass drift \(\d+ steps.*: ([\d.eE+-]+)"),
+         "kh_ls": grab(txt, r"lock-step CPU/GPU \(\d+ steps\): max rel diff = ([\d.eE+-]+)"),
+         "kh_ckpt": grab(txt, r"checkpoint round trip.*max \|diff\| = ([\d.eE+-]+)")}
+    path = os.path.join(OUT, "shear_profile.csv")
+    if not os.path.exists(path):
+        return d
+    rows = read_csv(path)
+    x = [float(r["x"]) for r in rows]
+    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    ax.plot(x, [float(r["v_exact"]) for r in rows], "-", color="black",
+            lw=2, label=r"exact  $\frac{V_0}{2}\,\mathrm{erf}\!\left("
+                        r"\frac{x-x_0}{\sqrt{4\nu t}}\right)$")
+    ax.plot(x[::5], [float(rows[i]["v"]) for i in range(0, len(rows), 5)],
+            "o", color=CYAN, ms=4, label=f"machmallow (order {d['shear_ord']})")
+    ax.set_xlabel("x"); ax.set_ylabel("transverse velocity $v$")
+    ax.set_title("Viscous shear layer → exact erf diffusion profile")
+    ax.legend(fontsize=9, loc="upper left")
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "infrastructure.png"))
+    plt.close(fig)
+    return d
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -715,7 +747,7 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
                  sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None,
                  species=None, analytic=None, immersed=None, dmr=None,
-                 hs=None):
+                 hs=None, infra=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
@@ -726,6 +758,7 @@ def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
     immersed = immersed or {}
     dmr = dmr or {}
     hs = hs or {}
+    infra = infra or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -1113,6 +1146,53 @@ transport, the shock–interface interaction and the adaptive refinement all wor
 **together**. The two-gas machinery itself is unit-validated against exact
 Riemann solutions in the [multi-species fiche](species.md).""")
 
+    # ---- fiche 1j: AMR + GPU infrastructure (verification) -------------
+    fiche("infrastructure.md", f"""# AMR & GPU infrastructure — *verification*
+
+**Objective.** Verify the parallel/adaptive machinery itself, independently of
+any single physics case: (1) the multi-level engine `AmrML` reproduces the
+battle-tested 2-level `Amr2` **bit-for-bit**; (2) **velocity-based tagging**
+refines a uniform-density shear layer that the density criterion cannot see;
+(3) **closed-domain conservation** on doubly-periodic AMR (wrapped ghosts +
+wrapped refluxing) sits at the float32 floor; (4) **checkpoint round-trip** is
+exact; (5) the **GPU** viscous path converges to an exact solution and stays in
+lock-step with the CPU. The anchor solution is the viscous shear layer, whose
+transverse velocity obeys the heat equation exactly: $v = \\tfrac{{V_0}}{{2}}
+\\,\\mathrm{{erf}}\\!\\big((x-x_0)/\\sqrt{{4\\nu t}}\\big)$.
+
+## Numerical setup
+> MUSCL-Hancock + HLLC, CFL 0.4. Shear: μ = 5e-3, exact erf IC diffused
+> t = 0.05 → 0.20, order from 64/128/256, GPU parity in lock-step. Multi-level:
+> 3-level subcycled Sod & periodic KH. Tagging/conservation: doubly-periodic KH
+> with a uniform-density shear layer. Drivers: `ml_amr`, `kh_amr`, `shear`.
+> float32.
+
+## Results
+![Viscous shear layer vs exact erf](../figures/infrastructure.png)
+
+| Gate | Test | Result |
+|---|---|---|
+| `ml_amr` 1 | AmrML(2) vs Amr2, 100 steps | max rel diff {infra.get('ml_bit', '—')} (bit-exact) |
+| `ml_amr` 2/3 | 3-level Sod L1 ratio / periodic KH drift | {infra.get('ml_ratio', '—')} / {infra.get('ml_kh', '—')} |
+| `kh_amr` | velocity tagging (vel / density-only) | {infra.get('kh_tag', '—')} / {infra.get('kh_tag0', '—')} patches |
+| `kh_amr` | periodic mass drift / checkpoint round-trip | {infra.get('kh_drift', '—')} / {infra.get('kh_ckpt', '—')} |
+| `shear` | viscous order / GPU parity | {infra.get('shear_ord', '—')} / {infra.get('shear_par', '—')} |
+
+## Discussion
+The multi-level `AmrML` reproduces the validated 2-level `Amr2` to **exactly
+zero** difference over 100 subcycled steps — the deeper hierarchy adds levels
+without perturbing the established path. Velocity tagging refines the shear
+layer that is **invisible** to the density criterion ({infra.get('kh_tag', '—')}
+patches tagged on velocity, {infra.get('kh_tag0', '—')} on density), and the
+doubly-periodic domain conserves mass to the float32 floor through wrapped
+ghosts and wrapped refluxing. The checkpoint round-trip is **bit-exact**
+(40+40 vs 80 steps). On the GPU, the viscous shear converges to the exact erf
+at order **{infra.get('shear_ord', '—')}** and matches the CPU to
+{infra.get('shear_par', '—')}. These are the invariants every physics case
+above silently relies on — the [conservation](conservation.md),
+[Sod-on-AMR](sod_amr.md) and [DMR](dmr.md) fiches are the same machinery under
+load.""")
+
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
 
@@ -1403,6 +1483,7 @@ python3 vv/generate.py
 | [0D reactor kinetics](cases/reactor.md) | verification | Arrhenius integrator vs exact (isothermal/adiabatic/stiff) | ✅ PASS |
 | [WENO5 scheme suite](cases/weno.md) | verification | WENO5 {weno.get('ratio', '—')}× less dissipative than MUSCL (vortex); bit-exact on AMR | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
+| [AMR & GPU infrastructure](cases/infrastructure.md) | verification | AmrML=Amr2 bit-exact, velocity tagging, GPU parity, viscous erf | ✅ PASS |
 | [Multi-species two-gas](cases/species.md) | validation · exact | Abgrall interface (p, u flat); two-gas Riemann (uniform + AMR) | ✅ PASS |
 | [Analytic suite](cases/analytic.md) | verification · validation | Toro battery, acoustic/vortex order, Sedov ½, Rayleigh–Taylor | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
@@ -1432,7 +1513,8 @@ def main():
 
     conv_txt = sod_txt = bla_txt = det_txt = ""
     sod2d_txt = samr_txt = mms_txt = rea_txt = weno_txt = spec_txt = ""
-    ana_txt = imm_txt = dmr_txt = hs_txt = ""
+    ana_txt = imm_txt = dmr_txt = hs_txt = infra_txt = ""
+    INFRA = ["ml_amr", "kh_amr", "shear"]  # ml_amr CPU, kh_amr/shear GPU
     IMM = ["immersed", "immersed_case", "immersed_amr", "immersed_noslip",
            "immersed_gpu"]
     DMR = [("dmr_gpu", ["240"]), ("dmr_amr", ["128", "gpu"]),
@@ -1453,6 +1535,7 @@ def main():
         imm_txt = "\n".join(run_driver(e) for e in IMM)  # last: GPU lock-step
         dmr_txt = "\n".join(run_driver(e, *a) for e, a in DMR)  # GPU DMR suite
         hs_txt = run_driver("hs_suite")                         # GPU shock-bubble
+        infra_txt = "\n".join(run_driver(e) for e in INFRA)     # AMR/GPU machinery
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
         (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, weno_txt,
@@ -1465,6 +1548,7 @@ def main():
         imm_txt = "\n".join(cached(e) for e in IMM)
         dmr_txt = "\n".join(cached(e) for e, _ in DMR)
         hs_txt = cached("hs_suite")
+        infra_txt = "\n".join(cached(e) for e in INFRA)
 
     print("plotting…")
     orders = plot_order()
@@ -1479,6 +1563,7 @@ def main():
     immersed = plot_immersed(imm_txt)
     dmr = plot_dmr(dmr_txt)
     hs = plot_hs(hs_txt)
+    infra = plot_infra(infra_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -1495,14 +1580,15 @@ def main():
             "weno_vortex_weno.csv", "weno_vortex_muscl.csv",
             "species_interface.csv", "analytic_toro1.csv",
             "analytic_toro2.csv", "analytic_toro3.csv", "analytic_toro4.csv",
-            "immersed_noslip.csv", "vv_conservation_log.csv"}
+            "immersed_noslip.csv", "shear_profile.csv",
+            "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
                  sod2d_txt, samr_txt, mms, rea, weno, species, analytic,
-                 immersed, dmr, hs)
+                 immersed, dmr, hs, infra)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 

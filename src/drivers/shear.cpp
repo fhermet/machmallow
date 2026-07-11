@@ -64,6 +64,16 @@ double runCpu(int nx) {
         err += std::fabs(double(toPrim(g.at(i, j)).v) -
                          exactV(g.xc(i), T1)) *
                g.dx;
+    if (nx == 256) { // transverse velocity profile vs exact erf (vv figure)
+        if (FILE* pf = std::fopen("out/shear_profile.csv", "w")) {
+            std::fprintf(pf, "x,v,v_exact\n");
+            for (int i = NG; i < NG + nx; ++i)
+                std::fprintf(pf, "%.6g,%.6g,%.6g\n", double(g.xc(i)),
+                             double(toPrim(g.at(i, j)).v),
+                             exactV(g.xc(i), T1));
+            std::fclose(pf);
+        }
+    }
     return err;
 }
 
