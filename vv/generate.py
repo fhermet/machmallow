@@ -486,15 +486,18 @@ def plot_mms(txt):
 
 
 def plot_weno(txt):
-    """Isentropic-vortex core: density slice through the advected centre at
-    t=2. WENO5 tracks the exact dip; MUSCL-Hancock over-diffuses it. This is
-    the head-to-head dissipation the suite gates (weno < muscl/4)."""
+    """Three panels for the WENO5 suite: (a) the head-to-head vortex-core
+    dissipation vs MUSCL, (b) the smooth entropy-wave high-order convergence,
+    (c) the Sod tube — no spurious over/undershoot beyond the exact extrema."""
     pw = os.path.join(OUT, "weno_vortex_weno.csv")
     pm = os.path.join(OUT, "weno_vortex_muscl.csv")
+    sw_p = os.path.join(OUT, "weno_sod_weno.csv")
+    sm_p = os.path.join(OUT, "weno_sod_muscl.csv")
     d = {"ent_ord": grab(txt, r"entropy wave:.*order ([\d.]+) \(gate >= 4"),
          "ent_sp": grab(txt, r"spatial-only 8->16: ([\d.]+)"),
          "sod_w": grab(txt, r"Sod 400: L1 weno ([\d.eE+-]+)"),
          "sod_m": grab(txt, r"Sod 400: L1 weno [\d.eE+-]+ vs muscl ([\d.eE+-]+)"),
+         "sod_rmax": grab(txt, r"rho in \[[\d.]+, ([\d.]+)\]"),
          "vor_ord": grab(txt, r"vortex t=2: order ([\d.]+)"),
          "vor_w": grab(txt, r"vortex t=2:.*L1 weno ([\d.eE+-]+)"),
          "vor_m": grab(txt, r"vortex t=2:.*vs muscl ([\d.eE+-]+)"),
@@ -509,24 +512,55 @@ def plot_weno(txt):
         d["ratio"] = f"{float(d['vor_m']) / float(d['vor_w']):.1f}"
     except (ValueError, ZeroDivisionError):
         d["ratio"] = "—"
-    if not (os.path.exists(pw) and os.path.exists(pm)):
+    ent = re.search(r"entropy wave: L1 ([\d.eE+-]+) -> ([\d.eE+-]+) -> "
+                    r"([\d.eE+-]+)", txt)
+    if not all(os.path.exists(p) for p in (pw, pm, sw_p, sm_p)) or not ent:
         return d
+    fig, ax = plt.subplots(1, 3, figsize=(13.2, 4.2))
+
+    # (a) vortex core dissipation
     w = read_csv(pw); m = read_csv(pm)
-    xw = [float(r["x"]) for r in w]; rw = [float(r["rho"]) for r in w]
-    rex = [float(r["rho_exact"]) for r in w]
-    xm = [float(r["x"]) for r in m]; rm = [float(r["rho"]) for r in m]
-    fig, ax = plt.subplots(figsize=(6.4, 4.4))
-    ax.plot(xw, rex, "-", color="black", lw=2, label="exact (shifted IC)")
-    ax.plot(xw, rw, "o-", color=CYAN, ms=4, lw=1.2,
-            label=f"WENO5  ($L_1$={d['vor_w']})")
-    ax.plot(xm, rm, "s--", color=EMBER, ms=4, lw=1.2,
-            label=f"MUSCL-Hancock  ($L_1$={d['vor_m']})")
-    ax.set_xlim(4, 10)
-    ax.set_xlabel("x  (through the advected core, $y=7$)")
-    ax.set_ylabel(r"density $\rho$")
-    ax.set_title(f"Isentropic vortex at $t=2$, $64^2$ — WENO5 is "
-                 f"{d['ratio']}× less dissipative")
-    ax.legend(fontsize=9, loc="lower left")
+    a = ax[0]
+    a.plot([float(r["x"]) for r in w], [float(r["rho_exact"]) for r in w],
+           "-", color="black", lw=2, label="exact")
+    a.plot([float(r["x"]) for r in w], [float(r["rho"]) for r in w], "o-",
+           color=CYAN, ms=3, lw=1, label=f"WENO5 ($L_1$={d['vor_w']})")
+    a.plot([float(r["x"]) for r in m], [float(r["rho"]) for r in m], "s--",
+           color=EMBER, ms=3, lw=1, label=f"MUSCL ($L_1$={d['vor_m']})")
+    a.set_xlim(4, 10); a.set_xlabel("x (core, y=7)"); a.set_ylabel(r"$\rho$")
+    a.set_title(f"(a) vortex core — WENO5 {d['ratio']}× less dissipative",
+                fontsize=10)
+    a.legend(fontsize=8, loc="lower left")
+
+    # (b) entropy-wave convergence (spatial regime, high order)
+    N = np.array([16.0, 32.0, 64.0])
+    L = np.array([float(ent.group(1)), float(ent.group(2)),
+                  float(ent.group(3))])
+    a = ax[1]
+    a.loglog(N, L, "o-", color=CYAN, ms=6, label="WENO5 entropy wave")
+    a.loglog(N[:2], L[0] * (N[:2] / N[0]) ** -5, "--", color="gray", lw=1)
+    a.text(20, L[0] * (20 / 16.) ** -5 * 1.3, "slope 5", fontsize=8,
+           color="gray")
+    a.set_xlabel("N"); a.set_ylabel("$L_1$ error (density)")
+    a.set_title(f"(b) entropy wave — spatial order {d['ent_sp']}", fontsize=10)
+    a.legend(fontsize=8)
+
+    # (c) Sod boundedness
+    sw = read_csv(sw_p); sm = read_csv(sm_p)
+    a = ax[2]
+    a.plot([float(r["x"]) for r in sw], [float(r["rho_exact"]) for r in sw],
+           "-", color="black", lw=1.6, label="exact")
+    a.plot([float(r["x"]) for r in sw], [float(r["rho"]) for r in sw], ".",
+           color=CYAN, ms=2.6, label=f"WENO5 ($L_1$={d['sod_w']})")
+    a.plot([float(r["x"]) for r in sm], [float(r["rho"]) for r in sm], ".",
+           color=EMBER, ms=2.0, alpha=0.5, label=f"MUSCL ($L_1$={d['sod_m']})")
+    a.axhline(1.0, ls=":", color="gray", lw=0.9)
+    a.set_xlabel("x"); a.set_ylabel(r"$\rho$")
+    a.set_title(f"(c) Sod — bounded, ρmax={d['sod_rmax']} (no overshoot)",
+                fontsize=10)
+    a.legend(fontsize=8, loc="upper right")
+
+    fig.suptitle("WENO5 + SSP-RK3 suite", y=1.0)
     fig.tight_layout(); fig.savefig(os.path.join(FIG, "weno.png"))
     plt.close(fig)
     return d
@@ -995,11 +1029,18 @@ stage-ghost machinery.
 > `erf` (viscous shear). Driver: `weno_suite`. float32.
 
 ## Results
-![Isentropic vortex core — WENO5 vs MUSCL vs exact](../figures/weno.png)
+Three of the eight gates are illustrated (the rest are lock-step / conservation
+numbers in the table): **(a)** the vortex-core dissipation vs MUSCL, **(b)** the
+smooth entropy-wave high-order convergence, **(c)** the Sod tube boundedness.
 
-At $64^2$ the vortex core is resolved by WENO5 down to the exact density dip,
-while MUSCL-Hancock over-diffuses it — an $L_1$ dissipation ratio of
-**{weno.get('ratio', '—')}×** (gate: WENO < MUSCL/4).
+![WENO5 suite — dissipation, order, boundedness](../figures/weno.png)
+
+In **(a)**, at $64^2$ the vortex core is resolved by WENO5 down to the exact
+density dip while MUSCL-Hancock over-diffuses it — an $L_1$ dissipation ratio of
+**{weno.get('ratio', '—')}×** (gate: WENO < MUSCL/4). In **(b)** the entropy
+wave converges along the **slope-5** guide in the spatial-limited regime
+(before RK3 floors the total). In **(c)** the Sod density stays inside the exact
+extrema (ρmax {weno.get('sod_rmax', '—')}) — no spurious over/undershoot.
 
 | Gate | Test | Result |
 |---|---|---|
@@ -1705,6 +1746,7 @@ def main():
             "sod2d_exact.csv", "sod_amr_profile.csv", "mms.csv",
             "reactor_isothermal.csv", "detonation_front.csv",
             "weno_vortex_weno.csv", "weno_vortex_muscl.csv",
+            "weno_sod_weno.csv", "weno_sod_muscl.csv",
             "species_interface.csv", "species_sod.csv",
             "species_sod_amr.csv", "species_mass.csv", "analytic_toro1.csv",
             "analytic_toro2.csv", "analytic_toro3.csv", "analytic_toro4.csv",

@@ -15,11 +15,18 @@ stage-ghost machinery.
 > `erf` (viscous shear). Driver: `weno_suite`. float32.
 
 ## Results
-![Isentropic vortex core — WENO5 vs MUSCL vs exact](../figures/weno.png)
+Three of the eight gates are illustrated (the rest are lock-step / conservation
+numbers in the table): **(a)** the vortex-core dissipation vs MUSCL, **(b)** the
+smooth entropy-wave high-order convergence, **(c)** the Sod tube boundedness.
 
-At $64^2$ the vortex core is resolved by WENO5 down to the exact density dip,
-while MUSCL-Hancock over-diffuses it — an $L_1$ dissipation ratio of
-**6.0×** (gate: WENO < MUSCL/4).
+![WENO5 suite — dissipation, order, boundedness](../figures/weno.png)
+
+In **(a)**, at $64^2$ the vortex core is resolved by WENO5 down to the exact
+density dip while MUSCL-Hancock over-diffuses it — an $L_1$ dissipation ratio of
+**6.0×** (gate: WENO < MUSCL/4). In **(b)** the entropy
+wave converges along the **slope-5** guide in the spatial-limited regime
+(before RK3 floors the total). In **(c)** the Sod density stays inside the exact
+extrema (ρmax 1.0001) — no spurious over/undershoot.
 
 | Gate | Test | Result |
 |---|---|---|
