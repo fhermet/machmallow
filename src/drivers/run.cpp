@@ -123,16 +123,16 @@ int runCase(AMR& amr, const CaseDef& cd, const Config& cfg) {
             const Real hi = Real(cfg.getReal("render.rho_max", 0));
             view = std::make_unique<LiveView>(
                 /*ctx*/ amr.context(), amr,
-                cfg.getInt("render.scale", 4), "machmallow — espace: pause, q: quitter",
+                cfg.getInt("render.scale", 4), "machmallow — space: pause, q: quit",
                 lo, hi, cfg.getBool("render.grid", true));
             if (!view->ok()) {
-                std::printf("note: pas de serveur de fenetres — vue "
-                            "live desactivee\n");
+                std::printf("note: no window server — live view "
+                            "disabled\n");
                 view.reset();
             }
         }
     } else if (wantLive) {
-        std::printf("note: render.live demande backend = hybrid\n");
+        std::printf("note: render.live requires backend = hybrid\n");
     }
 
     std::vector<Cons> prevBase; // base snapshot for the residuals
@@ -261,7 +261,7 @@ void preflight(const CaseDef& cd, const AmrConfig& acfg, double tEnd,
                     s.name.c_str(), double(s.w.rho), double(s.w.u),
                     double(s.w.v), double(s.w.p));
         if (s.shockSpeed != 0)
-            std::printf("  (front RH, vitesse %.5g)",
+            std::printf("  (RH front, speed %.5g)",
                         double(s.shockSpeed));
         std::printf("\n");
     }
@@ -288,19 +288,19 @@ void preflight(const CaseDef& cd, const AmrConfig& acfg, double tEnd,
     for (int l = 1; l <= depth; ++l)
         work += 0.25 * cells * std::pow(4.0, l) * steps *
                 (acfg.subcycle ? double(1 << l) : 1.0);
-    std::printf("  finest 1/%g | ~%.0f pas de base | ~%.1f Gcell-steps "
-                "(si ~25%% raffiné) | ~%.0f s à 150 Mcell/s\n",
+    std::printf("  finest 1/%g | ~%.0f base steps | ~%.1f Gcell-steps "
+                "(if ~25%% refined) | ~%.0f s at 150 Mcell/s\n",
                 1.0 / dxFine, steps, work / 1e9, work / 150e6);
 }
 
 int usage() {
     std::fprintf(stderr,
-                 "usage: run <case.ini>            lancer le cas\n"
-                 "       run --check <case.ini>    config effective + "
-                 "pré-vol, sans calculer\n"
-                 "       run --preview <case.ini>  écrire l'IC en .vti "
-                 "(vérif géométrie)\n"
-                 "       run --list                grammaire des cas\n");
+                 "usage: run <case.ini>            run the case\n"
+                 "       run --check <case.ini>    effective config + "
+                 "preflight, no compute\n"
+                 "       run --preview <case.ini>  write the IC to .vti "
+                 "(geometry check)\n"
+                 "       run --list                case-file grammar\n");
     return EXIT_FAILURE;
 }
 
@@ -316,7 +316,7 @@ int preview(const CaseDef& cd, const Config& cfg) {
             g.at(i, j) = cd.state(g.xc(i), g.yc(j), 0);
     const std::string path = prefix + "_ic.vti";
     writeVti(path, g);
-    std::printf("IC écrite dans %s\n", path.c_str());
+    std::printf("IC written to %s\n", path.c_str());
     return EXIT_SUCCESS;
 }
 
@@ -335,36 +335,36 @@ int list() {
         "             perturb.N = u|v|rho|p sin periods amp\n"
         "                         | u|v|rho|p erf x0 width amp\n"
         "                         | u|v|rho|p sing per amp yc sigma\n"
-        "                         | p hydro yref (hydrostatique)\n"
+        "                         | p hydro yref (hydrostatic)\n"
         "  [solid]    region.N  = rect|circle|halfplane|band|sinex ...\n"
-        "             (corps immergé : meme grammaire geometrique que\n"
-        "              [ic], sans etat ; paroi reflechissante. backend\n"
-        "              cpu + muscl mono-gaz ; grille de base seule)\n"
+        "             (immersed body: same geometric grammar as [ic],\n"
+        "              no state ; reflective wall. backend cpu + muscl\n"
+        "              single-gas ; base grid only)\n"
         "  [bc]       x|y = periodic\n"
         "             left|right|bottom|top = transmissive | reflective\n"
         "                 | analytic | inflow X\n"
-        "                 | reservoir X (entree a conditions d'arret :\n"
-        "                   X = etat d'arret, non-reflechissant)\n"
-        "                 | backpressure p0 p1 t0 t1 (pression de sortie\n"
-        "                   rampee de p0 a p1 sur [t0,t1] ; transitoire)\n"
+        "                 | reservoir X (stagnation-condition inlet:\n"
+        "                   X = stagnation state, non-reflecting)\n"
+        "                 | backpressure p0 p1 t0 t1 (outlet pressure\n"
+        "                   ramped from p0 to p1 over [t0,t1] ; transient)\n"
         "                 [if x|y < val else <spec>]\n"
         "             ('analytic' evaluates the time-dependent region\n"
         "              stack at the ghosts: exact moving-shock BCs)\n"
         "  top level  t_end cfl mu backend=cpu|hybrid restart=<ck>\n"
-        "  [physics]  gravity = gx gy (source splittée ; murs\n"
-        "             reflective hydrostatiques)\n"
+        "  [physics]  gravity = gx gy (split source ; reflective walls\n"
+        "             become hydrostatic)\n"
         "  [amr]      enabled levels block tag_threshold tag_velocity\n"
-        "             regrid_every subcycle max_patches (cap du pool\n"
-        "             GPU ; 0 = auto selon la memoire du device)\n"
+        "             regrid_every subcycle max_patches (GPU pool cap ;\n"
+        "             0 = auto from device memory)\n"
         "  [output]   frames prefix checkpoint max_steps\n"
-        "             every (1 frame tous les K pas ; prioritaire sur\n"
-        "             frames, ex. every = 1 = chaque iteration)\n"
-        "  [render]   live scale every grid rho_min rho_max (vue\n"
-        "             temps reel Metal, backend hybrid ; espace = pause,\n"
-        "             q = quitter)\n"
-        "  [diagnostics]  every (pas de base, 0 = off) file (csv :\n"
-        "             step t dt cells patches extrema masse energies\n"
-        "             enstrophie perf)\n");
+        "             every (1 frame every K steps ; overrides frames,\n"
+        "             e.g. every = 1 = every iteration)\n"
+        "  [render]   live scale every grid rho_min rho_max (real-time\n"
+        "             Metal view, backend hybrid ; space = pause,\n"
+        "             q = quit)\n"
+        "  [diagnostics]  every (base steps, 0 = off) file (csv:\n"
+        "             step t dt cells patches extrema mass energies\n"
+        "             enstrophy perf)\n");
     return EXIT_SUCCESS;
 }
 
@@ -419,8 +419,8 @@ int main(int argc, char** argv) {
         if (cd.hasSolids()) {
             if (acfg.species || acfg.weno)
                 throw std::runtime_error(
-                    "solides immergés : scheme = muscl mono-gaz requis "
-                    "(bi-gaz / WENO à venir)");
+                    "immersed solids: scheme = muscl single-gas required "
+                    "(two-gas / WENO coming)");
         }
 
         std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "
