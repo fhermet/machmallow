@@ -9,6 +9,7 @@ out/
 *.mp4
 *.mov
 *.gif
+!docs/hero.gif           # README hero (committed on purpose)
 
 # private channel/brand notes (not part of the public repo)
 BRAND.md
