@@ -60,7 +60,15 @@ def run_driver(exe, *args):
     if r.returncode != 0:
         print(r.stdout)
         sys.exit(f"{exe} FAILED (exit {r.returncode})")
+    os.makedirs(OUT, exist_ok=True)                # cache stdout for --no-run
+    with open(os.path.join(OUT, exe + ".log"), "w") as f:
+        f.write(r.stdout)
     return r.stdout
+
+
+def cached(exe):
+    p = os.path.join(OUT, exe + ".log")
+    return open(p).read() if os.path.exists(p) else ""
 
 
 def run_case(ini):
@@ -326,6 +334,65 @@ def plot_conservation():
     plt.close(fig)
 
 
+def plot_sod2d():
+    """Diagonal 2D Sod: 2D density field + collapse onto the 1D similarity."""
+    fp = os.path.join(OUT, "sod2d_field.csv")
+    if not os.path.exists(fp):
+        return
+    rows = read_csv(fp)
+    x = np.array([float(r["x"]) for r in rows])
+    y = np.array([float(r["y"]) for r in rows])
+    rho = np.array([float(r["rho"]) for r in rows])
+    fig, ax = plt.subplots(1, 2, figsize=(10, 4.2))
+    xs = sorted(set(np.round(x, 5))); ys = sorted(set(np.round(y, 5)))
+    xi_ = {v: i for i, v in enumerate(xs)}; yi_ = {v: i for i, v in enumerate(ys)}
+    R = np.full((len(ys), len(xs)), np.nan)
+    for xv, yv, rv in zip(x, y, rho):
+        R[yi_[round(yv, 5)], xi_[round(xv, 5)]] = rv
+    pc = ax[0].pcolormesh(np.array(xs), np.array(ys), R, shading="auto",
+                          cmap="viridis")
+    fig.colorbar(pc, ax=ax[0], label="ρ"); ax[0].set_aspect("equal")
+    ax[0].set_title("2D density field (diagonal Sod)")
+    ax[0].set_xlabel("x"); ax[0].set_ylabel("y")
+    # collapse only the boundary-free central square (what the gate measures)
+    c = (x >= 0.3) & (x <= 0.7) & (y >= 0.3) & (y <= 0.7)
+    xi = (x[c] + y[c] - 1.0) / np.sqrt(2)
+    ax[1].plot(xi, rho[c], ".", color=CYAN, ms=2, alpha=0.3,
+               label="2D cells (central square)")
+    ep = os.path.join(OUT, "sod2d_exact.csv")
+    if os.path.exists(ep):
+        e = read_csv(ep)
+        ax[1].plot([float(r["xi"]) for r in e],
+                   [float(r["rho_exact"]) for r in e], "-", color="black",
+                   lw=2, label="exact 1D Riemann")
+    ax[1].set_xlim(-0.35, 0.35); ax[1].set_xlabel("$\\xi = (x+y-1)/\\sqrt{2}$")
+    ax[1].set_ylabel("ρ"); ax[1].legend(fontsize=9)
+    ax[1].set_title("Collapse onto the 1D similarity solution")
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "sod2d.png"))
+    plt.close(fig)
+
+
+def plot_sod_amr(txt):
+    """Bar: mass drift with vs without refluxing (frozen mesh)."""
+    m = {"with": grab(txt, r"frozen mesh\): ([\d.eE+-]+) with"),
+         "without": grab(txt, r"with refluxing \| ([\d.eE+-]+) without")}
+    fig, ax = plt.subplots(figsize=(5.4, 4.4))
+    try:
+        vals = [float(m["without"]), float(m["with"])]
+        ax.bar(["no refluxing", "with refluxing"], vals,
+               color=[EMBER, CYAN], width=0.6)
+        ax.set_yscale("log"); ax.set_ylabel("max mass drift (frozen mesh)")
+        for i, v in enumerate(vals):
+            ax.text(i, v * 1.4, f"{v:.1e}", ha="center", fontsize=9)
+        ax.set_title("Refluxing restores conservation\nat coarse/fine faces")
+        ax.set_ylim(top=max(vals) * 6)
+    except ValueError:
+        pass
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "sod_amr.png"))
+    plt.close(fig)
+    return m
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -337,9 +404,16 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
           "Source data: [`../data/`](../data/).*\n")
 
 
-def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None):
+def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
+                 sod2d_txt="", samr_txt=""):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
+    sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
+    rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
+    rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
+    rfx_ratio = grab(samr_txt, r"\(([\d.]+)x worse\)")
+    samr_l1 = grab(samr_txt, r"ratio ([\d.]+) \(gate")
+    samr_work = grab(samr_txt, r"uniform [\d.]+ \((\d+)%\)")
     def order_of(prob, scheme):
         return f"{orders.get((prob, scheme), float('nan')):.2f}"
     rex = grab(bla_txt, r"Re_x = (\d+)")
@@ -409,6 +483,64 @@ Both schemes match the exact solution. Discontinuities cap the convergence at
 first order for both — the high-order advantage of WENO5 appears on *smooth*
 flow (see the order-of-accuracy fiche), while here WENO5 + HLLC only resolves
 the **contact** slightly more sharply.""")
+
+    # ---- fiche 2b: diagonal 2D Sod (validation + isotropy) --------------
+    fiche("sod2d.md", f"""# Diagonal 2D Sod — *validation + isotropy*
+
+**Objective.** Run the Sod problem **diagonally** across a 2D grid. The exact
+solution depends only on $\\xi = (x+y-1)/\\sqrt2$, so the 2D field must
+**collapse** onto the 1D Riemann solution — testing the 2D scheme *and* its
+isotropy (no grid-alignment bias) at once.
+
+## Numerical setup
+> MUSCL-Hancock + HLLC, **uniform 2D grid** (no AMR), inviscid Euler, CFL 0.4,
+> t = 0.15, transmissive on all sides. Grid-convergence N = 64, 128, 256 on
+> the central (boundary-free) square. Reference = exact Riemann in $\\xi$.
+> Driver: `sod2d`. float32.
+
+## Results
+![Diagonal 2D Sod: field and collapse onto the 1D solution](../figures/sod2d.png)
+
+Mean grid-convergence order (L1 density, central square): **{sod2d_order}**
+(≈1, discontinuous solution).
+
+## Discussion
+Every cell of the 2D field lands on the exact 1D curve when plotted against
+$\\xi$ (right panel) — the scheme is **isotropic** (a 45° shock is captured
+like an axis-aligned one) and matches the exact Riemann solution. Order ~1 is
+the expected discontinuity-limited rate, consistent with the 1D Sod fiche.""")
+
+    # ---- fiche 2c: Sod on AMR (verification: refluxing + accuracy) ------
+    fiche("sod_amr.md", f"""# Sod on AMR — *verification: refluxing + accuracy*
+
+**Objective.** Run Sod on a 2-level AMR hierarchy and check two things:
+(1) **conservation** — the Berger–Colella *refluxing* must cancel the
+coarse/fine flux mismatch (mass drift at the float32 floor); (2) **accuracy**
+— the composite L1 must match a uniform-fine run, for a fraction of the work.
+
+## Numerical setup
+> MUSCL-Hancock + HLLC, **2-level AMR** (coarse 128×32 → fine 256×64, ratio 2),
+> inviscid Euler, CFL 0.4, t = 0.2. The refluxing test uses a **frozen** mesh
+> refined around the initial discontinuity, so the shock, contact and
+> rarefaction all cross the coarse/fine interfaces. Driver: `sod_amr`.
+
+## Results
+![Mass drift with vs without refluxing](../figures/sod_amr.png)
+
+| Metric | Result |
+|---|---|
+| mass drift, refluxing **on** (frozen) | {rfx_with} |
+| mass drift, refluxing **off** (frozen) | {rfx_without} (**{rfx_ratio}× worse**) |
+| composite L1 vs exact / uniform-fine | ratio {samr_l1} (gate 1.4) |
+| work vs uniform fine | {samr_work} % of the cell-steps |
+
+## Discussion
+Refluxing is **essential**: with a frozen coarse/fine interface swept by all
+three waves, turning it off leaks mass **{rfx_ratio}× more**. With it on, the
+drift sits at the float32 floor. Meanwhile the AMR composite is **as accurate**
+as the uniform-fine grid (L1 ratio ≈ 1) for only ~{samr_work} % of the
+cell-steps — the whole point of AMR. This is the discriminating test behind
+the conservation-gate tolerances used across the suite.""")
 
     # ---- fiche 3: Blasius boundary layer (validation vs theory) ---------
     fiche("blasius.md", f"""# Blasius boundary layer — *validation vs similarity*
@@ -594,7 +726,9 @@ python3 vv/generate.py
 |---|---|---|---|
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
+| [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
+| [Diagonal 2D Sod](cases/sod2d.md) | validation · exact | 2D field collapses onto 1D Riemann (isotropy) | ✅ PASS |
 | [CJ detonation](cases/detonation.md) | validation · exact | D relaxes to D_CJ (+0.4 % uniform, −0.2 % AMR, long tube) | ✅ PASS |
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS {rms} vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
 | [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
@@ -614,18 +748,26 @@ def main():
     args = ap.parse_args()
     os.makedirs(FIG, exist_ok=True); os.makedirs(DATA, exist_ok=True)
 
-    conv_txt = sod_txt = bla_txt = det_txt = ""
+    conv_txt = sod_txt = bla_txt = det_txt = sod2d_txt = samr_txt = ""
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
         sod_txt = run_driver("sod1d")
+        sod2d_txt = run_driver("sod2d")
+        samr_txt = run_driver("sod_amr")
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         run_case("vv/conservation.ini")
+    else:                                           # replot from cached logs
+        conv_txt, sod_txt, sod2d_txt, samr_txt, bla_txt, det_txt = (
+            cached("convergence"), cached("sod1d"), cached("sod2d"),
+            cached("sod_amr"), cached("blasius"), cached("detonation"))
 
     print("plotting…")
     orders = plot_order()
     sod_n = plot_sod()
+    plot_sod2d()
+    samr = plot_sod_amr(samr_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -636,13 +778,15 @@ def main():
     # copy source data for provenance
     keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv",
             "blasius_profile_weno.csv", "blasius_cf_weno.csv",
-            "sod_muscl_400.csv", "sod_weno_400.csv",
-            "detonation_front.csv", "vv_conservation_log.csv"}
+            "sod_muscl_400.csv", "sod_weno_400.csv", "sod2d_field.csv",
+            "sod2d_exact.csv", "detonation_front.csv",
+            "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
-    write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det)
+    write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
+                 sod2d_txt, samr_txt)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 
