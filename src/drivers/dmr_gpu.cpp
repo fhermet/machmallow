@@ -109,6 +109,16 @@ BenchResult benchGpu(MetalContext& ctx, int ny, bool writeOutput) {
     if (writeOutput) {
         std::filesystem::create_directories("out");
         writeVti("out/dmr_gpu_" + std::to_string(ny) + ".vti", g);
+        // subsampled density field (x,y,rho) for the vv figure
+        if (FILE* pf = std::fopen("out/dmr_field.csv", "w")) {
+            const int stride = std::max(1, ny / 200);
+            std::fprintf(pf, "x,y,rho\n");
+            for (int j = NG; j < NG + ny; j += stride)
+                for (int i = NG; i < NG + nx; i += stride)
+                    std::fprintf(pf, "%.5g,%.5g,%.5g\n", double(g.xc(i)),
+                                 double(g.yc(j)), double(g.at(i, j).rho));
+            std::fclose(pf);
+        }
     }
     return {wall, steps};
 }

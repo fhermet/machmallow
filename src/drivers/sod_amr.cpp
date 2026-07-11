@@ -137,6 +137,31 @@ int main() {
                           p.grid.dx * p.grid.dy;
     errAmr /= 0.25;
 
+    // composite profile (finest available per cell) along a mid-row, vs the
+    // exact solution, for the vv figure. level 0 = coarse, 1 = fine patch.
+    if (FILE* pf = std::fopen("out/sod_amr_profile.csv", "w")) {
+        std::fprintf(pf, "x,rho,rho_exact,level\n");
+        const Grid& g = amr.coarse;
+        const int jm = NYC / 2;
+        for (int i = 0; i < NXC; ++i)
+            if (!amr.covered(i / 8, jm / 8)) {
+                const double x = double(g.xc(NG + i));
+                std::fprintf(pf, "%.6g,%.6g,%.6g,0\n", x,
+                             double(toPrim(g.at(NG + i, NG + jm)).rho),
+                             exactRho(x));
+            }
+        for (const auto& p : amr.patches) {
+            const int pjm = NG + p.grid.ny / 2;
+            for (int i = NG; i < NG + p.grid.nx; ++i) {
+                const double x = double(p.grid.xc(i));
+                std::fprintf(pf, "%.6g,%.6g,%.6g,1\n", x,
+                             double(toPrim(p.grid.at(i, pjm)).rho),
+                             exactRho(x));
+            }
+        }
+        std::fclose(pf);
+    }
+
     // Uniform fine reference (256 x 64), same metric.
     Grid uni(2 * NXC, 2 * NYC, 0, 0, 1, Real(0.25));
     for (int j = NG; j < NG + uni.ny; ++j)

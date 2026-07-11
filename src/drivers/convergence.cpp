@@ -120,6 +120,24 @@ double sodL1(int N, bool weno) {
                                     ? Prim{1, 0, 0, 1}
                                     : Prim{Real(0.125), 0, 0, Real(0.1)});
     advance(g, tEnd, weno, fillSodBC);
+    // dump the profile (both schemes, same solver) for the V&V figure (vv/)
+    if (N == 400) {
+        char path[64];
+        std::snprintf(path, sizeof path, "out/sod_%s_400.csv",
+                      weno ? "weno" : "muscl");
+        if (FILE* pf = std::fopen(path, "w")) {
+            std::fprintf(pf, "x,rho,u,p,rho_exact,u_exact,p_exact\n");
+            for (int i = NG; i < NG + g.nx; ++i) {
+                const double xc = double(g.xc(i));
+                const Prim w = toPrim(g.at(i, NG + 1));
+                const exact::State ex = exact::sample(L, R, (xc - 0.5) / tEnd);
+                std::fprintf(pf, "%.8g,%.8g,%.8g,%.8g,%.8g,%.8g,%.8g\n", xc,
+                             double(w.rho), double(w.u), double(w.p),
+                             ex.rho, ex.u, ex.p);
+            }
+            std::fclose(pf);
+        }
+    }
     double e = 0;
     for (int i = NG; i < NG + g.nx; ++i)
         e += std::fabs(

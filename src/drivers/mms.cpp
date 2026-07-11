@@ -141,6 +141,10 @@ double orderStudy(double mu, double tEnd, bool weno,
     std::vector<double> errs;
     std::printf("  %s, mu = %.3g%s :\n", weno ? "WENO5" : "MUSCL", mu,
                 (gx != 0 || gy != 0) ? ", gravite" : "");
+    char lab[40];
+    std::snprintf(lab, sizeof lab, "%s %s%s", mu > 0 ? "viscous" : "inviscid",
+                  weno ? "WENO5" : "MUSCL",
+                  (gx != 0 || gy != 0) ? "+gravity" : "");
     const auto periodic = [](Grid& gg) {
         fillPeriodicX(gg);
         fillPeriodicY(gg);
@@ -182,6 +186,10 @@ double orderStudy(double mu, double tEnd, bool weno,
                 e += std::fabs(double(g.at(i, j).rho) -
                                mfg(g.xc(i), g.yc(j)).rho);
         e /= double(N) * N;
+        if (FILE* mf = std::fopen("out/mms.csv", "a")) { // vv dump
+            std::fprintf(mf, "%s,%d,%.6g\n", lab, N, e);
+            std::fclose(mf);
+        }
         const double ord =
             errs.empty() ? 0.0 : std::log2(errs.back() / e);
         errs.push_back(e);
@@ -212,6 +220,10 @@ int main() {
     // Visqueux : c'est ce que la MMS verifie (aucune autre porte ne couvre
     // l'ordre de l'operateur Navier-Stokes). Le flux visqueux est central
     // 2e ordre, commun aux deux schemas -> les deux doivent donner ~2.
+    if (FILE* mf = std::fopen("out/mms.csv", "w")) { // vv dump (truncate)
+        std::fprintf(mf, "label,N,L1\n");
+        std::fclose(mf);
+    }
     std::printf("== Operateur visqueux (gate ~2) ==\n");
     const double vMuscl = orderStudy(0.01, 0.5, false);
     const double vWeno = orderStudy(0.01, 0.5, true);

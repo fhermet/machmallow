@@ -31,6 +31,20 @@ bool gate1_isothermal() {
     std::printf("gate 1 — isothermal reactor: lambda %.6f vs exact "
                 "%.6f, err %.3e (gate 1e-5)\n",
                 double(lam), exact, err);
+    // dump lambda(t) marched in small steps vs the exact exponential (vv)
+    if (FILE* pf = std::fopen("out/reactor_isothermal.csv", "w")) {
+        std::fprintf(pf, "t,lambda,lambda_exact\n");
+        Real e2 = T0 / (GAMMA - 1), l2 = lam0;
+        const int nt = 100;
+        const Real dt = tEnd / nt;
+        for (int k = 0; k <= nt; ++k) {
+            const double tt = k * double(dt);
+            const double ex = 1 - (1 - double(lam0)) * std::exp(-double(K) * tt);
+            std::fprintf(pf, "%.5g,%.6g,%.6g\n", tt, double(l2), ex);
+            react(e2, l2, dt, r);
+        }
+        std::fclose(pf);
+    }
     return err < 1e-5;
 }
 

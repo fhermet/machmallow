@@ -86,7 +86,7 @@ bool gate2_sod() {
     const double tEnd = 0.2;
     const int N = 400;
 
-    const auto runSod = [&](bool weno) {
+    const auto runSod = [&](bool weno, const char* csv = nullptr) {
         Grid g(N, 4, 0, 0, 1, Real(4.0) / N);
         for (int j = 0; j < g.toty(); ++j)
             for (int i = 0; i < g.totx(); ++i)
@@ -122,10 +122,22 @@ bool gate2_sod() {
             rmin = std::min(rmin, r);
             rmax = std::max(rmax, r);
         }
+        if (csv) { // density profile vs exact, for the vv boundedness figure
+            if (FILE* pf = std::fopen(csv, "w")) {
+                std::fprintf(pf, "x,rho,rho_exact\n");
+                for (int i = NG; i < NG + g.nx; ++i) {
+                    const double x = double(g.xc(i));
+                    std::fprintf(pf, "%.6g,%.6g,%.6g\n", x,
+                                 double(g.at(i, NG + 1).rho),
+                                 exact::sample(L, R, (x - 0.5) / tEnd).rho);
+                }
+                std::fclose(pf);
+            }
+        }
         return std::tuple{e / N, rmin, rmax};
     };
-    const auto [eW, rminW, rmaxW] = runSod(true);
-    const auto [eM, rminM, rmaxM] = runSod(false);
+    const auto [eW, rminW, rmaxW] = runSod(true, "out/weno_sod_weno.csv");
+    const auto [eM, rminM, rmaxM] = runSod(false, "out/weno_sod_muscl.csv");
     const bool bounded = rmaxW < 1.0 + 1e-3 && rminW > 0.125 - 1e-3;
     std::printf("gate 2 — Sod 400: L1 weno %.4e vs muscl %.4e (gate < "
                 "1.1x; HLLC faces beat MUSCL here), rho in [%.4f, %.4f] "
@@ -149,7 +161,7 @@ Cons vortexState(Real x, Real y, Real cx, Real cy) {
                    rho * T});
 }
 
-double vortexError(int N, bool weno) {
+double vortexError(int N, bool weno, const char* sliceCsv = nullptr) {
     Grid g(N, N, 0, 0, 10, 10);
     for (int j = 0; j < g.toty(); ++j)
         for (int i = 0; i < g.totx(); ++i)
@@ -175,13 +187,31 @@ double vortexError(int N, bool weno) {
             e += std::fabs(
                 double(g.at(i, j).rho) -
                 double(vortexState(g.xc(i), g.yc(j), 7, 7).rho));
+    // center-row density slice (through the advected core at y = 7) vs
+    // exact, for the vv dissipation figure
+    if (sliceCsv) {
+        int jc = NG;
+        for (int j = NG; j < NG + g.ny; ++j)
+            if (std::fabs(double(g.yc(j)) - 7) <
+                std::fabs(double(g.yc(jc)) - 7))
+                jc = j;
+        if (FILE* pf = std::fopen(sliceCsv, "w")) {
+            std::fprintf(pf, "x,rho,rho_exact\n");
+            for (int i = NG; i < NG + g.nx; ++i)
+                std::fprintf(pf, "%.6g,%.6g,%.6g\n", double(g.xc(i)),
+                             double(g.at(i, jc).rho),
+                             double(vortexState(g.xc(i), g.yc(jc), 7, 7)
+                                        .rho));
+            std::fclose(pf);
+        }
+    }
     return e / (double(N) * N);
 }
 
 bool gate3_vortex() {
     const double w32 = vortexError(32, true);
-    const double w64 = vortexError(64, true);
-    const double m64 = vortexError(64, false);
+    const double w64 = vortexError(64, true, "out/weno_vortex_weno.csv");
+    const double m64 = vortexError(64, false, "out/weno_vortex_muscl.csv");
     const double ord = std::log2(w32 / w64);
     // genuinely-2D smooth flow: the dimension-by-dimension midpoint
     // face flux caps the formal order near 2 (the 5th-order

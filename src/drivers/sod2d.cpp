@@ -63,6 +63,27 @@ double runDiagonalSod(int n, bool writeOutput) {
     if (writeOutput) {
         std::filesystem::create_directories("out");
         writeVti("out/sod2d_" + std::to_string(n) + ".vti", g);
+        // V&V dump: the 2D field (subsampled) + the exact 1D Riemann curve
+        // vs the similarity variable xi -> shows the 2D solution collapses
+        // onto the 1D solution (isotropy) and matches the exact Riemann.
+        if (FILE* ff = std::fopen("out/sod2d_field.csv", "w")) {
+            std::fprintf(ff, "x,y,rho\n");
+            for (int j = NG; j < NG + n; j += 2)
+                for (int i = NG; i < NG + n; i += 2)
+                    std::fprintf(ff, "%.5g,%.5g,%.6g\n", double(g.xc(i)),
+                                 double(g.yc(j)),
+                                 double(toPrim(g.at(i, j)).rho));
+            std::fclose(ff);
+        }
+        if (FILE* ef = std::fopen("out/sod2d_exact.csv", "w")) {
+            std::fprintf(ef, "xi,rho_exact\n");
+            for (int k = 0; k <= 400; ++k) {
+                const double xi = -0.35 + 0.70 * k / 400.0;
+                std::fprintf(ef, "%.6g,%.6g\n", xi,
+                             exact::sample(SOD_L, SOD_R, xi / TEND).rho);
+            }
+            std::fclose(ef);
+        }
     }
     return err;
 }

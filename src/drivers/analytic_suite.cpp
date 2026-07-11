@@ -30,7 +30,8 @@ constexpr Real CFL = Real(0.4);
 
 // ---- shared 1D-in-x runner (transmissive x, uniform y) -----------------
 double runRiemann1D(const exact::State& L, const exact::State& R,
-                    double tEnd, int n, double cflStart = 0.2) {
+                    double tEnd, int n, double cflStart = 0.2,
+                    const char* dumpCsv = nullptr) {
     Grid g(n, 8, 0, 0, 1, Real(8.0 / n));
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i) {
@@ -58,6 +59,18 @@ double runRiemann1D(const exact::State& L, const exact::State& R,
                    exact::sample(L, R, (double(g.xc(i)) - 0.5) / tEnd)
                        .rho) /
                n;
+    if (dumpCsv) { // density profile vs exact, for the vv figure
+        if (FILE* pf = std::fopen(dumpCsv, "w")) {
+            std::fprintf(pf, "x,rho,rho_exact\n");
+            for (int i = NG; i < NG + n; ++i)
+                std::fprintf(pf, "%.6g,%.6g,%.6g\n", double(g.xc(i)),
+                             double(toPrim(g.at(i, j)).rho),
+                             exact::sample(L, R,
+                                           (double(g.xc(i)) - 0.5) / tEnd)
+                                 .rho);
+            std::fclose(pf);
+        }
+    }
     return err;
 }
 
@@ -83,8 +96,11 @@ bool gate1_toroBattery() {
          8.0e-2},
     };
     bool ok = true;
+    int idx = 0;
     for (const Test& T : tests) {
-        const double e = runRiemann1D(T.L, T.R, T.t, 400);
+        char csv[48];
+        std::snprintf(csv, sizeof csv, "out/analytic_toro%d.csv", ++idx);
+        const double e = runRiemann1D(T.L, T.R, T.t, 400, 0.2, csv);
         std::printf("gate 1 — Toro %-22s L1(rho) = %.4e (gate %.1e)\n",
                     T.name, e, T.gate);
         ok = ok && e < T.gate && std::isfinite(e);
@@ -252,6 +268,17 @@ bool gate4_sedov() {
     }
     const double r2 = sedovFront(g, n);
     const double expo = std::log(r2 / r1) / std::log(tEnd / t1);
+    // radial density scatter at tEnd — the self-similar blast (vv figure)
+    if (FILE* pf = std::fopen("out/analytic_sedov.csv", "w")) {
+        std::fprintf(pf, "r,rho\n");
+        for (int j = NG; j < NG + n; j += 3)
+            for (int i = NG; i < NG + n; i += 3) {
+                const double x = double(g.xc(i)), y = double(g.yc(j));
+                std::fprintf(pf, "%.5g,%.5g\n", std::sqrt(x * x + y * y),
+                             double(toPrim(g.at(i, j)).rho));
+            }
+        std::fclose(pf);
+    }
     std::printf("gate 4 — Sedov 2D front: r(%.3f) = %.4f, r(%.2f) = "
                 "%.4f, exponent = %.3f (theory 0.5, gate ±0.03)\n",
                 t1, r1, tEnd, r2, expo);
@@ -319,19 +346,30 @@ bool gate5_rtGrowth() {
     int n = 0;
     double st = 0, sa = 0, stt = 0, sta = 0; // fit accumulators
     int np = 0;
+    std::vector<double> rt_t, rt_a; // full trajectory (vv figure)
     while (t < 3.0) {
         bc(g);
         const Real dt = maxStableDt(g, Real(0.4));
         step2D(g, dt, s, 0, 0, gy);
         t += dt;
-        if (++n % 50 == 0 && t > 1.8) {
-            const double la = std::log(modeAmp(g));
-            st += t; sa += la; stt += t * t; sta += t * la;
-            ++np;
+        if (++n % 50 == 0) {
+            const double amp = modeAmp(g);
+            rt_t.push_back(t); rt_a.push_back(amp);
+            if (t > 1.8) {
+                const double la = std::log(amp);
+                st += t; sa += la; stt += t * t; sta += t * la;
+                ++np;
+            }
         }
     }
     const double sigma =
         (np * sta - st * sa) / (np * stt - st * st); // LSQ slope
+    if (FILE* pf = std::fopen("out/analytic_rt.csv", "w")) {
+        std::fprintf(pf, "t,amp\n");
+        for (std::size_t k = 0; k < rt_t.size(); ++k)
+            std::fprintf(pf, "%.5g,%.6e\n", rt_t[k], rt_a[k]);
+        std::fclose(pf);
+    }
     std::printf("gate 5 — RT linear growth: sigma = %.3f vs sqrt(Agk) = "
                 "%.3f (%.0f%%, gate ±15%%)\n",
                 sigma, sigmaTh, 100 * (sigma / sigmaTh - 1));
