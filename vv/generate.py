@@ -644,6 +644,59 @@ def plot_analytic(txt):
     fig.suptitle("Toro Riemann battery (N=400) — density vs exact", y=1.0)
     fig.tight_layout(); fig.savefig(os.path.join(FIG, "analytic.png"))
     plt.close(fig)
+
+    # ---- second figure: smooth-order / Sedov / Rayleigh–Taylor ----------
+    def conv_points(block):
+        return [(float(n), float(e)) for n, e in
+                re.findall(r"N =\s*(\d+)\s+L1\(rho\) = ([\d.eE+-]+)", block)]
+    ac_blk = txt.split("acoustic wave")[-1].split("gate 3")[0]
+    vo_blk = txt.split("isentropic vortex")[-1].split("gate 4")[0]
+    ac = conv_points(ac_blk); vo = conv_points(vo_blk)
+    ps = os.path.join(OUT, "analytic_sedov.csv")
+    pr = os.path.join(OUT, "analytic_rt.csv")
+    if ac and vo and os.path.exists(ps) and os.path.exists(pr):
+        fig2, ax2 = plt.subplots(1, 3, figsize=(12.6, 3.9))
+        # (2/3) convergence
+        for pts, col, mk, lab in [(ac, CYAN, "o", "acoustic (TVD ~4/3)"),
+                                  (vo, EMBER, "s", "isentropic vortex (~2)")]:
+            N = np.array([p[0] for p in pts]); L = np.array([p[1] for p in pts])
+            sl = -np.polyfit(np.log(N), np.log(L), 1)[0]
+            ax2[0].loglog(N, L, mk + "-", color=col, ms=6,
+                          label=f"{lab}  p={sl:.2f}")
+        ax2[0].set_xlabel("N"); ax2[0].set_ylabel("$L_1$ error (density)")
+        ax2[0].set_title("smooth-regime order (gates 2–3)", fontsize=10)
+        ax2[0].legend(fontsize=8)
+        # (4) Sedov radial density scatter
+        r = read_csv(ps)
+        ax2[1].plot([float(v["r"]) for v in r], [float(v["rho"]) for v in r],
+                    ".", color=PURPLE, ms=1.5, alpha=0.35)
+        ax2[1].set_xlabel("radius r"); ax2[1].set_ylabel(r"$\rho$")
+        ax2[1].set_title(f"Sedov blast (exp {d['sedov']}, theory ½)",
+                         fontsize=10)
+        # (5) RT growth
+        rt = read_csv(pr)
+        tt = np.array([float(v["t"]) for v in rt])
+        aa = np.array([float(v["amp"]) for v in rt])
+        ax2[2].semilogy(tt, aa, "o", color=CYAN, ms=3, label="mode amplitude")
+        m = tt > 1.8
+        if m.sum() >= 2:
+            b, c = np.polyfit(tt[m], np.log(aa[m]), 1)
+            ax2[2].semilogy(tt[m], np.exp(c + b * tt[m]), "-", color=EMBER,
+                            lw=1.8, label=f"fit σ={d.get('rt', '—')}")
+            try:
+                sth = float(d["rt_th"])
+                a0 = np.exp(c + b * tt[m][0])
+                ax2[2].semilogy(tt[m], a0 * np.exp(sth * (tt[m] - tt[m][0])),
+                                "--", color="black", lw=1.2,
+                                label=f"theory √(Agk)={d['rt_th']}")
+            except (ValueError, KeyError):
+                pass
+        ax2[2].set_xlabel("time t"); ax2[2].set_ylabel("seeded-mode amplitude")
+        ax2[2].set_title("Rayleigh–Taylor linear growth (gate 5)", fontsize=10)
+        ax2[2].legend(fontsize=8, loc="lower right")
+        fig2.tight_layout()
+        fig2.savefig(os.path.join(FIG, "analytic_extra.png"))
+        plt.close(fig2)
     return d
 
 
@@ -1057,16 +1110,21 @@ Euler); (4) **Sedov** self-similar blast exponent ($r\\sim t^{{1/2}}$); (5)
 > Driver: `analytic_suite`. float32.
 
 ## Results
+**Gate 1 — Toro battery** (density vs the exact Riemann solution):
+
 ![Toro Riemann battery — density vs exact](../figures/analytic.png)
 
-| Gate | Test | Result |
-|---|---|---|
-| 1 | Toro T2 near-vacuum / T3 blast | L1 {analytic.get('t2', '—')} / {analytic.get('t3', '—')} |
-| 1 | Toro T4 colliding / T5 slow contact | L1 {analytic.get('t4', '—')} / {analytic.get('t5', '—')} |
-| 2 | acoustic wave, smooth order | {analytic.get('ac', '—')} (TVD-extremum theory 4/3) |
-| 3 | isentropic vortex, mean order | {analytic.get('vor', '—')} (gate > 1.5) |
-| 4 | Sedov 2D front exponent | {analytic.get('sedov', '—')} (theory 0.5, ±0.03) |
-| 5 | Rayleigh–Taylor growth σ | {analytic.get('rt', '—')} vs √(Agk) {analytic.get('rt_th', '—')} (±15 %) |
+**Gates 2–5 — smooth order, Sedov blast, Rayleigh–Taylor growth:**
+
+![Smooth order, Sedov, Rayleigh–Taylor](../figures/analytic_extra.png)
+
+| Gate | Test | What the panel shows | Result |
+|---|---|---|---|
+| 1 | Toro T2–T5 | 4 hard Riemann problems on the exact solution | L1 {analytic.get('t2', '—')} / {analytic.get('t3', '—')} / {analytic.get('t4', '—')} / {analytic.get('t5', '—')} |
+| 2 | acoustic wave order | left panel, cyan — L1 vs N | {analytic.get('ac', '—')} (TVD-extremum theory 4/3) |
+| 3 | isentropic vortex order | left panel, ember — L1 vs N | {analytic.get('vor', '—')} (gate > 1.5) |
+| 4 | Sedov 2D blast | middle panel — radial density collapse | exponent {analytic.get('sedov', '—')} (theory ½, ±0.03) |
+| 5 | Rayleigh–Taylor growth | right panel — mode amplitude vs time | σ {analytic.get('rt', '—')} vs √(Agk) {analytic.get('rt_th', '—')} (±15 %) |
 
 ## Discussion
 The four Toro tests are the standard robustness gauntlet: the solver survives
@@ -1650,6 +1708,7 @@ def main():
             "species_interface.csv", "species_sod.csv",
             "species_sod_amr.csv", "species_mass.csv", "analytic_toro1.csv",
             "analytic_toro2.csv", "analytic_toro3.csv", "analytic_toro4.csv",
+            "analytic_sedov.csv", "analytic_rt.csv",
             "immersed_noslip.csv", "shear_profile.csv",
             "vv_conservation_log.csv"}
     for f in os.listdir(OUT):

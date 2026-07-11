@@ -17,16 +17,21 @@ Euler); (4) **Sedov** self-similar blast exponent ($r\sim t^{1/2}$); (5)
 > Driver: `analytic_suite`. float32.
 
 ## Results
+**Gate 1 — Toro battery** (density vs the exact Riemann solution):
+
 ![Toro Riemann battery — density vs exact](../figures/analytic.png)
 
-| Gate | Test | Result |
-|---|---|---|
-| 1 | Toro T2 near-vacuum / T3 blast | L1 3.7171e-03 / 3.4866e-02 |
-| 1 | Toro T4 colliding / T5 slow contact | L1 1.2314e-01 / 4.4213e-03 |
-| 2 | acoustic wave, smooth order | 1.31 (TVD-extremum theory 4/3) |
-| 3 | isentropic vortex, mean order | 2.35 (gate > 1.5) |
-| 4 | Sedov 2D front exponent | 0.490 (theory 0.5, ±0.03) |
-| 5 | Rayleigh–Taylor growth σ | 1.440 vs √(Agk) 1.447 (±15 %) |
+**Gates 2–5 — smooth order, Sedov blast, Rayleigh–Taylor growth:**
+
+![Smooth order, Sedov, Rayleigh–Taylor](../figures/analytic_extra.png)
+
+| Gate | Test | What the panel shows | Result |
+|---|---|---|---|
+| 1 | Toro T2–T5 | 4 hard Riemann problems on the exact solution | L1 3.7171e-03 / 3.4866e-02 / 1.2314e-01 / 4.4213e-03 |
+| 2 | acoustic wave order | left panel, cyan — L1 vs N | 1.31 (TVD-extremum theory 4/3) |
+| 3 | isentropic vortex order | left panel, ember — L1 vs N | 2.35 (gate > 1.5) |
+| 4 | Sedov 2D blast | middle panel — radial density collapse | exponent 0.490 (theory ½, ±0.03) |
+| 5 | Rayleigh–Taylor growth | right panel — mode amplitude vs time | σ 1.440 vs √(Agk) 1.447 (±15 %) |
 
 ## Discussion
 The four Toro tests are the standard robustness gauntlet: the solver survives

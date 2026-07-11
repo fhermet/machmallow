@@ -268,6 +268,17 @@ bool gate4_sedov() {
     }
     const double r2 = sedovFront(g, n);
     const double expo = std::log(r2 / r1) / std::log(tEnd / t1);
+    // radial density scatter at tEnd — the self-similar blast (vv figure)
+    if (FILE* pf = std::fopen("out/analytic_sedov.csv", "w")) {
+        std::fprintf(pf, "r,rho\n");
+        for (int j = NG; j < NG + n; j += 3)
+            for (int i = NG; i < NG + n; i += 3) {
+                const double x = double(g.xc(i)), y = double(g.yc(j));
+                std::fprintf(pf, "%.5g,%.5g\n", std::sqrt(x * x + y * y),
+                             double(toPrim(g.at(i, j)).rho));
+            }
+        std::fclose(pf);
+    }
     std::printf("gate 4 — Sedov 2D front: r(%.3f) = %.4f, r(%.2f) = "
                 "%.4f, exponent = %.3f (theory 0.5, gate ±0.03)\n",
                 t1, r1, tEnd, r2, expo);
@@ -335,19 +346,30 @@ bool gate5_rtGrowth() {
     int n = 0;
     double st = 0, sa = 0, stt = 0, sta = 0; // fit accumulators
     int np = 0;
+    std::vector<double> rt_t, rt_a; // full trajectory (vv figure)
     while (t < 3.0) {
         bc(g);
         const Real dt = maxStableDt(g, Real(0.4));
         step2D(g, dt, s, 0, 0, gy);
         t += dt;
-        if (++n % 50 == 0 && t > 1.8) {
-            const double la = std::log(modeAmp(g));
-            st += t; sa += la; stt += t * t; sta += t * la;
-            ++np;
+        if (++n % 50 == 0) {
+            const double amp = modeAmp(g);
+            rt_t.push_back(t); rt_a.push_back(amp);
+            if (t > 1.8) {
+                const double la = std::log(amp);
+                st += t; sa += la; stt += t * t; sta += t * la;
+                ++np;
+            }
         }
     }
     const double sigma =
         (np * sta - st * sa) / (np * stt - st * st); // LSQ slope
+    if (FILE* pf = std::fopen("out/analytic_rt.csv", "w")) {
+        std::fprintf(pf, "t,amp\n");
+        for (std::size_t k = 0; k < rt_t.size(); ++k)
+            std::fprintf(pf, "%.5g,%.6e\n", rt_t[k], rt_a[k]);
+        std::fclose(pf);
+    }
     std::printf("gate 5 — RT linear growth: sigma = %.3f vs sqrt(Agk) = "
                 "%.3f (%.0f%%, gate ±15%%)\n",
                 sigma, sigmaTh, 100 * (sigma / sigmaTh - 1));
