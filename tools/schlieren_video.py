@@ -247,15 +247,18 @@ def annotate_dmr(rgb, rho, bounds, title, out):
     ax.imshow(rgb)
     ax.set_axis_off()
     s = H / 640.0                          # echelle des polices vs reference
-    halo = [pe.withStroke(linewidth=3 * s, foreground="white")]
+    # texte + fleches en BLANC ; halo sombre pour rester lisible la ou une
+    # ligne de choc claire passe sous le label.
+    halo = [pe.withStroke(linewidth=3 * s, foreground="#111")]
 
     def lab(text, anchor, text_xy, ha="center"):
         ax.annotate(
             text, xy=px(*anchor), xytext=px(*text_xy), ha=ha,
-            va="center", fontsize=7 * s, color="#1a1a1a",
+            va="center", fontsize=7 * s, color="white",
             path_effects=halo, fontweight="bold",
-            arrowprops=dict(arrowstyle="-", color="#1a1a1a", lw=0.8 * s,
-                            shrinkA=0, shrinkB=2 * s))
+            arrowprops=dict(arrowstyle="-", color="white", lw=0.8 * s,
+                            shrinkA=0, shrinkB=2 * s,
+                            path_effects=halo))
 
     # textes : structures de droite -> labels a droite ; le reste a gauche
     # (dans la zone blanche), ordonnes par hauteur d'ancre -> pas de
@@ -264,22 +267,22 @@ def annotate_dmr(rgb, rho, bounds, title, out):
     # texte hors des ondes. Droite : features de droite ; au-dessus de
     # l'arc : chocs reflechis + T2 ; bas-gauche : glissement / jet.
     # droite : structures de droite
-    lab("Choc incident", A["inc"], P(0.18, 0.70), ha="left")
-    lab("Point triple primaire", A["t1"], P(0.18, 0.50), ha="left")
-    lab("Pied de Mach primaire", A["stem1"], P(0.18, 0.26), ha="left")
+    lab("Incident shock", A["inc"], P(0.18, 0.70), ha="left")
+    lab("Primary triple point", A["t1"], P(0.18, 0.50), ha="left")
+    lab("Primary Mach stem", A["stem1"], P(0.18, 0.26), ha="left")
     # au-dessus de l'arc : T2 et les structures secondaires hautes
-    lab("Choc réfléchi primaire", A["ref1"], P(-0.31, 0.58), ha="center")
-    lab("Point triple secondaire", A["t2"], P(-0.69, 0.50), ha="center")
-    lab("Pied de Mach secondaire", A["stem2"], P(-1.12, 0.58), ha="right")
+    lab("Primary reflected shock", A["ref1"], P(-0.31, 0.58), ha="center")
+    lab("Secondary triple point", A["t2"], P(-0.69, 0.50), ha="center")
+    lab("Secondary Mach stem", A["stem2"], P(-1.12, 0.58), ha="right")
     # gauche-bas : choc reflechi secondaire, glissement, jet
-    lab("Choc réfléchi secondaire", A["ref2"], P(-0.99, 0.34), ha="right")
-    lab("Ligne de glissement\n(Kelvin-Helmholtz)", A["kh"],
+    lab("Secondary reflected shock", A["ref2"], P(-0.99, 0.34), ha="right")
+    lab("Slip line\n(Kelvin–Helmholtz)", A["kh"],
         P(-0.99, 0.18), ha="right")
     lab("Jet", A["jet"], P(-0.99, 0.02), ha="right")
 
     if title:
         ax.text(0.5, 0.97, title, transform=ax.transAxes, ha="center",
-                va="top", fontsize=10 * s, fontweight="bold", color="#111",
+                va="top", fontsize=10 * s, fontweight="bold", color="white",
                 path_effects=halo)
     fig.savefig(out, dpi=200)         # plein cadre exact (pas de bbox tight)
     plt.close(fig)
@@ -463,7 +466,7 @@ def main():
     ap.add_argument("--annotate", action="store_true",
                     help="surcouche pedagogique : legende les structures du "
                          "DMR (avec --still)")
-    ap.add_argument("--title", default=r"Réflexion de Mach double — "
+    ap.add_argument("--title", default=r"Double Mach reflection — "
                     r"$M_s = 10$ (WENO5 + AMR)",
                     help="titre de la figure annotée (mathtext supporte)")
     ap.add_argument("--gamma", type=float, default=0.6,
@@ -497,6 +500,11 @@ def main():
     ap.add_argument("--amr-panel", action="store_true",
                     help="empiler sous le schlieren un panneau densite + "
                          "blocs AMR (montre le raffinement evoluer)")
+    ap.add_argument("--panel-at-end", action="store_true",
+                    help="le schlieren occupe TOUT le cadre pendant la video ; "
+                         "le panneau densite+AMR est ajoute comme UNE image "
+                         "seule a la toute fin (apres le freeze annote). "
+                         "Necessite --freeze.")
     ap.add_argument("--amr-bg", default="light", choices=["light", "dark"],
                     help="fond du panneau densite : light (blanc->teinte, "
                          "maillage chaud) ou dark (colormap saturee)")
@@ -672,6 +680,8 @@ def main():
             bot = density_panel(rho, dlo, dhi, args.amr_cmap,
                                 amr_boxes(amr, bounds_of(i)), bounds_of(i), light_bg)
             top = np.vstack([top, bot])
+        # --panel-at-end : le schlieren occupe tout le cadre ; le panneau
+        # AMR est ajoute comme UNE image separee a la fin (voir freeze)
         img = Image.fromarray(top)
         for _ in range(hold):                       # ralenti : K copies
             img.save(os.path.join(tmp, f"f_{oi:04d}.png"))
@@ -698,6 +708,18 @@ def main():
             oi += 1
         os.remove(fz)
         print(f"  fige annote : {nfz} frames ({args.freeze:.1f} s)")
+        if args.panel_at_end:                       # image finale : panneau densite + AMR seul
+            bot = density_panel(rho, dlo, dhi, args.amr_cmap,
+                                amr_boxes(amr, bounds_of(last)), bounds_of(last),
+                                light_bg)
+            pz = os.path.join(tmp, "_panel.png")
+            Image.fromarray(bot).save(pz)
+            for _ in range(nfz):
+                shutil.copyfile(pz, os.path.join(tmp, f"f_{oi:04d}.png"))
+                oi += 1
+            os.remove(pz)
+            print(f"  image panneau AMR finale : {nfz} frames "
+                  f"({args.freeze:.1f} s)")
 
     out = args.out or f"{args.prefix}_{args.style}.mp4"
     cmd = ["ffmpeg", "-y", "-framerate", str(args.fps),
