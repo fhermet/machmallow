@@ -485,6 +485,53 @@ def plot_mms(txt):
             "vgrav": grab(txt, r"visqueux\+gravite ([\d.]+)")}
 
 
+def plot_weno(txt):
+    """Isentropic-vortex core: density slice through the advected centre at
+    t=2. WENO5 tracks the exact dip; MUSCL-Hancock over-diffuses it. This is
+    the head-to-head dissipation the suite gates (weno < muscl/4)."""
+    pw = os.path.join(OUT, "weno_vortex_weno.csv")
+    pm = os.path.join(OUT, "weno_vortex_muscl.csv")
+    d = {"ent_ord": grab(txt, r"entropy wave:.*order ([\d.]+) \(gate >= 4"),
+         "ent_sp": grab(txt, r"spatial-only 8->16: ([\d.]+)"),
+         "sod_w": grab(txt, r"Sod 400: L1 weno ([\d.eE+-]+)"),
+         "sod_m": grab(txt, r"Sod 400: L1 weno [\d.eE+-]+ vs muscl ([\d.eE+-]+)"),
+         "vor_ord": grab(txt, r"vortex t=2: order ([\d.]+)"),
+         "vor_w": grab(txt, r"vortex t=2:.*L1 weno ([\d.eE+-]+)"),
+         "vor_m": grab(txt, r"vortex t=2:.*vs muscl ([\d.eE+-]+)"),
+         "bit": grab(txt, r"all-refined.*: (\d+) differing"),
+         "shear_ord": grab(txt, r"viscous shear.*order ([\d.]+)"),
+         "tg_u": grab(txt, r"two-gas Sod \(uniform WENO5\): L1 = ([\d.eE+-]+)"),
+         "tg_a": grab(txt, r"3-level AMR: L1 = ([\d.eE+-]+)"),
+         "tg_drift": grab(txt, r"species mass drift = ([\d.eE+-]+)"),
+         "samr_w": grab(txt, r"Sod on 3-level AMR: L1 weno ([\d.eE+-]+)"),
+         "samr_m": grab(txt, r"Sod on 3-level AMR: L1 weno [\d.eE+-]+ vs muscl ([\d.eE+-]+)")}
+    try:
+        d["ratio"] = f"{float(d['vor_m']) / float(d['vor_w']):.1f}"
+    except (ValueError, ZeroDivisionError):
+        d["ratio"] = "—"
+    if not (os.path.exists(pw) and os.path.exists(pm)):
+        return d
+    w = read_csv(pw); m = read_csv(pm)
+    xw = [float(r["x"]) for r in w]; rw = [float(r["rho"]) for r in w]
+    rex = [float(r["rho_exact"]) for r in w]
+    xm = [float(r["x"]) for r in m]; rm = [float(r["rho"]) for r in m]
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    ax.plot(xw, rex, "-", color="black", lw=2, label="exact (shifted IC)")
+    ax.plot(xw, rw, "o-", color=CYAN, ms=4, lw=1.2,
+            label=f"WENO5  ($L_1$={d['vor_w']})")
+    ax.plot(xm, rm, "s--", color=EMBER, ms=4, lw=1.2,
+            label=f"MUSCL-Hancock  ($L_1$={d['vor_m']})")
+    ax.set_xlim(4, 10)
+    ax.set_xlabel("x  (through the advected core, $y=7$)")
+    ax.set_ylabel(r"density $\rho$")
+    ax.set_title(f"Isentropic vortex at $t=2$, $64^2$ — WENO5 is "
+                 f"{d['ratio']}× less dissipative")
+    ax.legend(fontsize=9, loc="lower left")
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "weno.png"))
+    plt.close(fig)
+    return d
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -497,11 +544,12 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 
 
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
-                 sod2d_txt="", samr_txt="", mms=None, rea=None):
+                 sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
     rea = rea or {}
+    weno = weno or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -621,6 +669,57 @@ integrator conservative by construction. The stiff case (A=1e4 in a single
 coarse step) stays bounded and equilibrates, showing the adaptive subcycling
 handles stiffness. This 0D validation underpins the coupled
 [CJ detonation](detonation.md) case.""")
+
+    # ---- fiche 1d: WENO5 scheme suite (verification) --------------------
+    fiche("weno.md", f"""# WENO5 scheme suite — *verification*
+
+**Objective.** Validate the fifth-order WENO5 + SSP-RK3 scheme end to end and
+quantify what it buys over the default MUSCL-Hancock: smooth-flow order, the
+absence of spurious oscillations on the Sod shock, the **head-to-head
+dissipation** on an isentropic vortex, the viscous flux against an exact `erf`
+diffusion layer, two-gas Riemann, and bit-exact behaviour through the AMR
+stage-ghost machinery.
+
+## Numerical setup
+> **WENO5 reconstruction + 3-stage SSP-RK3**, LLF/HLLC faces, CFL 0.4, on
+> uniform grids and (gates 4/5/8) the multi-level AMR. Each smooth test is run
+> head-to-head against **MUSCL-Hancock** on the identical grid. References:
+> exact advection (entropy wave, vortex), exact Riemann (Sod, two-gas), exact
+> `erf` (viscous shear). Driver: `weno_suite`. float32.
+
+## Results
+![Isentropic vortex core — WENO5 vs MUSCL vs exact](../figures/weno.png)
+
+At $64^2$ the vortex core is resolved by WENO5 down to the exact density dip,
+while MUSCL-Hancock over-diffuses it — an $L_1$ dissipation ratio of
+**{weno.get('ratio', '—')}×** (gate: WENO < MUSCL/4).
+
+| Gate | Test | Result |
+|---|---|---|
+| 1 | smooth entropy wave, spatial order | {weno.get('ent_ord', '—')} (spatial 8→16: {weno.get('ent_sp', '—')}; gate ≥ 4) |
+| 2 | Sod tube, L1 vs exact + boundedness | WENO {weno.get('sod_w', '—')} vs MUSCL {weno.get('sod_m', '—')}; no over/undershoot |
+| 3 | **isentropic vortex, dissipation vs MUSCL** | WENO {weno.get('vor_w', '—')} vs MUSCL {weno.get('vor_m', '—')} (**{weno.get('ratio', '—')}×**, order {weno.get('vor_ord', '—')}) |
+| 4 | all-refined 2-level = uniform, bit-exact | {weno.get('bit', '—')} differing values (gate 0) |
+| 5 | Sod on 3-level AMR vs MUSCL | WENO {weno.get('samr_w', '—')} vs MUSCL {weno.get('samr_m', '—')} (gate < 2×) |
+| 6 | viscous shear (erf) order | {weno.get('shear_ord', '—')} (gate ≥ 1.8) |
+| 7 | two-gas Sod (uniform) L1 | {weno.get('tg_u', '—')} (gate 4e-3) |
+| 8 | two-gas Sod on 3-level AMR | L1 {weno.get('tg_a', '—')}, species drift {weno.get('tg_drift', '—')} |
+
+## Discussion
+The entropy wave recovers the design order (~5) in the spatial-limited regime
+before the RK3 temporal error floors the total — the expected behaviour at
+fixed CFL. On the genuinely-2D vortex the dimension-by-dimension midpoint
+quadrature caps the **formal** order near 2, but the error **constant** is what
+matters: WENO5 is **{weno.get('ratio', '—')}× less dissipative** than
+MUSCL-Hancock at the same resolution, which is exactly the payoff on smooth
+turbulent structures. On the Sod shock WENO5 stays in MUSCL's error class with
+no spurious extrema (HLLC faces are hard to beat on a single discontinuity).
+Gate 4 is the strongest correctness check: a fully-refined non-subcycled
+hierarchy reproduces the uniform fine grid **bit for bit**, proving the
+per-stage ghost machinery is exact. Two-gas Riemann (uniform and 3-level AMR)
+and the exact-`erf` viscous layer close the loop on the species and viscous
+paths. WENO5 is single-gas-per-cell and **incompatible with immersed solids**
+(hard error), by design.""")
 
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
@@ -910,6 +1009,7 @@ python3 vv/generate.py
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
 | [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes) | ✅ PASS |
 | [0D reactor kinetics](cases/reactor.md) | verification | Arrhenius integrator vs exact (isothermal/adiabatic/stiff) | ✅ PASS |
+| [WENO5 scheme suite](cases/weno.md) | verification | WENO5 {weno.get('ratio', '—')}× less dissipative than MUSCL (vortex); bit-exact on AMR | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
@@ -934,7 +1034,7 @@ def main():
     os.makedirs(FIG, exist_ok=True); os.makedirs(DATA, exist_ok=True)
 
     conv_txt = sod_txt = bla_txt = det_txt = ""
-    sod2d_txt = samr_txt = mms_txt = rea_txt = ""
+    sod2d_txt = samr_txt = mms_txt = rea_txt = weno_txt = ""
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
@@ -943,14 +1043,16 @@ def main():
         samr_txt = run_driver("sod_amr")
         mms_txt = run_driver("mms")
         rea_txt = run_driver("reactor")
+        weno_txt = run_driver("weno_suite")
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
-        (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, bla_txt,
-         det_txt) = (cached("convergence"), cached("sod1d"), cached("sod2d"),
-                     cached("sod_amr"), cached("mms"), cached("reactor"),
-                     cached("blasius"), cached("detonation"))
+        (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, weno_txt,
+         bla_txt, det_txt) = (
+             cached("convergence"), cached("sod1d"), cached("sod2d"),
+             cached("sod_amr"), cached("mms"), cached("reactor"),
+             cached("weno_suite"), cached("blasius"), cached("detonation"))
 
     print("plotting…")
     orders = plot_order()
@@ -959,6 +1061,7 @@ def main():
     samr = plot_sod_amr(samr_txt)
     mms = plot_mms(mms_txt)
     rea = plot_reactor(rea_txt)
+    weno = plot_weno(weno_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -972,13 +1075,14 @@ def main():
             "sod_muscl_400.csv", "sod_weno_400.csv", "sod2d_field.csv",
             "sod2d_exact.csv", "sod_amr_profile.csv", "mms.csv",
             "reactor_isothermal.csv", "detonation_front.csv",
+            "weno_vortex_weno.csv", "weno_vortex_muscl.csv",
             "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
-                 sod2d_txt, samr_txt, mms, rea)
+                 sod2d_txt, samr_txt, mms, rea, weno)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 
