@@ -59,8 +59,12 @@ characteristic non-reflecting BC remains in the backlog.
   Remaining: log plotting. Without depending on ParaView for daily use.
   **V&V figure dossier** (`vv/`): `vv/generate.py` runs the V&V drivers and
   turns their output into committed comparison figures (computed vs
-  exact/theory) + a self-contained report — first batch: order of accuracy,
-  Sod vs exact Riemann, Blasius vs similarity.
+  exact/theory) + one illustrated fiche per case (`vv/cases/`) — now covering
+  **every CI case** (17 fiches): order of accuracy, MMS, 0D reactor, WENO5
+  suite, multi-species, analytic (Toro/Sedov/RT), conservation, Sod (1D/2D/AMR),
+  CJ detonation, Blasius, oblique-shock wedge, immersed boundaries, double Mach
+  reflection, Haas–Sturtevant shock–bubble (vs experiment), and the AMR/GPU
+  infrastructure.
 - [~] Systematically actionable error messages (file:line, suggested fix) —
   started: GPU slot-pool exhaustion (AmrGpuML) now reported by a clear error
   (patch count, KB/patch, pool MB, and the levers: `amr.levels`,
