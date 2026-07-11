@@ -1,79 +1,79 @@
-# Guide utilisateur
+# User guide
 
-Ce guide t'amène d'une installation à une simulation exploitée, en partant
-de zéro. Il est volontairement pratique et orienté exemple.
+This guide takes you from a fresh install to an exploited simulation, from
+scratch. It is deliberately practical and example-driven.
 
-- Vue d'ensemble du projet → [`README.md`](../README.md)
-- Architecture interne du code → [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)
-- Grammaire complète des fichiers de cas → `./build/run --list`
+- Project overview → [`README.md`](../README.md)
+- Internal code architecture → [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)
+- Full case-file grammar → `./build/run --list`
 
-> Le solveur est **entièrement piloté par un fichier de cas `.ini`** :
-> aucun C++ à écrire pour un nouveau cas.
+> The solver is **entirely driven by a `.ini` case file**: no C++ to write for
+> a new case.
 
 ---
 
-## 1. Installer (une fois)
+## 1. Install (once)
 
-Prérequis : macOS 15+, Command Line Tools, CMake ≥ 3.24 (Apple Silicon).
+Requirements: macOS 15+, Command Line Tools, CMake ≥ 3.24 (Apple Silicon).
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-Vérifie que tout marche :
+Check that everything works:
 
 ```sh
-./build/run cases/sod.ini      # tube à choc de Sod (rapide)
+./build/run cases/sod.ini      # Sod shock tube (fast)
 ```
 
 ---
 
-## 2. Lancer un cas existant
+## 2. Run an existing case
 
-Les cas livrés sont dans `cases/`. Deux façons de lancer :
+The bundled cases live in `cases/`. Two ways to run:
 
 ```sh
-# headless : calcule et écrit les sorties VTK
+# headless: compute and write the VTK output
 ./build/run cases/dmr.ini
 
-# temps réel : fenêtre Metal (si [render] live = true dans le cas)
+# real-time: Metal window (if [render] live = true in the case)
 ./build/run cases/bubble.ini
 ```
 
-Dans la fenêtre live : **espace** = pause, **q** ou fermeture = quitter.
+In the live window: **space** = pause, **q** or close = quit.
 
-### Les 4 commandes de `run`
+### The 4 `run` commands
 
-| Commande | Effet |
+| Command | Effect |
 |---|---|
-| `run cas.ini` | lance la simulation |
-| `run --check cas.ini` | parse + affiche la config effective, l'estimation de coût, et **signale les clés inconnues** (fautes de frappe) — sans calculer |
-| `run --preview cas.ini` | écrit la **condition initiale** en `.vti` (visualisable avant de lancer) |
-| `run --list` | aide-mémoire de la grammaire des cas |
+| `run case.ini` | runs the simulation |
+| `run --check case.ini` | parses + prints the effective config, the cost estimate, and **flags unknown keys** (typos) — without computing |
+| `run --preview case.ini` | writes the **initial condition** as `.vti` (viewable before running) |
+| `run --list` | case-grammar cheat sheet |
 
-Prends le réflexe de `--check` avant tout run : il attrape les coquilles et
-te donne le pas de temps / le nombre d'étapes attendus.
+Make `--check` a reflex before every run: it catches typos and gives you the
+expected time step / step count.
 
 ---
 
-## 3. Poser son propre cas en 10 minutes
+## 3. Author your own case in 10 minutes
 
-On va construire un **choc qui percute une bulle légère**. Copie le modèle
-commenté et édite-le :
+Let's build a **shock hitting a light bubble**. Copy the commented template
+and edit it:
 
 ```sh
-cp cases/TEMPLATE.ini cases/moncas.ini
+cp cases/TEMPLATE.ini cases/mycase.ini
 ```
 
-On remplit section par section (vérifie avec `--check` à chaque étape).
+Fill it section by section (check with `--check` at each step).
 
-**a) Réglages globaux + domaine + grille**
+**a) Global settings + domain + grid**
 ```ini
-backend = hybrid     # cpu (référence) | hybrid (GPU Metal)
+backend = hybrid     # cpu (reference) | hybrid (Metal GPU)
 t_end   = 0.4
 cfl     = 0.4
-mu      = 0          # > 0 -> Navier-Stokes (visqueux)
+mu      = 0          # > 0 -> Navier-Stokes (viscous)
 
 [domain]
 x0 = 0
@@ -82,160 +82,159 @@ y0 = 0
 y1 = 1
 
 [grid]
-nx = 256             # cellules CARRÉES : nx/ny = (x1-x0)/(y1-y0)
+nx = 256             # SQUARE cells: nx/ny = (x1-x0)/(y1-y0)
 ny = 128
 ```
 
-**b) Bi-gaz + états primitifs nommés**
+**b) Two-gas + named primitive states**
 ```ini
-[species]            # optionnel : deux gamma pour un cas bi-gaz
+[species]            # optional: two gammas for a two-gas case
 gamma1 = 1.4         # air
-gamma2 = 1.667       # gaz léger
+gamma2 = 1.667       # light gas
 
 [state.air]
 rho = 1.4
 p   = 1.0
 
-[state.bulle]
-rho = 0.2            # bulle légère
+[state.bubble]
+rho = 0.2            # light bubble
 p   = 1.0
-gas = 2             # rattache l'état au second gaz
+gas = 2             # attach the state to the second gas
 
-[state.choc]
-shock = air mach 1.5 +x   # post-choc Rankine-Hugoniot calculé pour toi
+[state.shock]
+shock = air mach 1.5 +x   # Rankine-Hugoniot post-shock computed for you
 ```
 
-**c) Condition initiale (régions empilées : la dernière l'emporte)**
+**c) Initial condition (stacked regions: the last one wins)**
 ```ini
 [ic]
 default  = air
-region.1 = circle 0.6 0.5 0.2 : bulle             # bulle au centre
-region.2 = halfplane 1 0 0.3 speed auto : choc    # front à x=0.3, vitesse RH
+region.1 = circle 0.6 0.5 0.2 : bubble            # bubble at the center
+region.2 = halfplane 1 0 0.3 speed auto : shock   # front at x=0.3, RH speed
 ```
-Formes : `halfplane a b c [speed s]`, `band x|y lo hi`, `rect x0 x1 y0 y1`,
-`circle cx cy r`, `sinex x0 amp lambda`. `speed auto` fait avancer le front
-à la vitesse du choc Rankine-Hugoniot.
+Shapes: `halfplane a b c [speed s]`, `band x|y lo hi`, `rect x0 x1 y0 y1`,
+`circle cx cy r`, `sinex x0 amp lambda`. `speed auto` advances the front at
+the Rankine-Hugoniot shock speed.
 
-**d) Conditions aux limites (par côté)**
+**d) Boundary conditions (per side)**
 ```ini
 [bc]
-left   = analytic    # le front mobile fournit l'inflow exact
+left   = analytic    # the moving front provides the exact inflow
 right  = transmissive
 bottom = reflective
 top    = reflective
 ```
-Types : `transmissive`, `reflective`, `noslip` (paroi visqueuse, `mu>0`),
-`analytic` (réévalue les régions au temps t — BC exacte d'un choc mobile),
-`inflow X`. Segmentable : `... if x < val else ...`. Ou `x|y = periodic`.
+Types: `transmissive`, `reflective`, `noslip` (viscous wall, `mu>0`),
+`analytic` (re-evaluates the regions at time t — exact moving-shock BC),
+`inflow X`. Segmentable: `... if x < val else ...`. Or `x|y = periodic`.
 
-**e) AMR + sorties + vue live**
+**e) AMR + output + live view**
 ```ini
 [amr]
 enabled       = true
 block         = 8
-levels        = 3        # 3 niveaux -> finest = base/2^2
-tag_threshold = 0.05     # raffine où |grad rho| dépasse ce seuil
+levels        = 3        # 3 levels -> finest = base/2^2
+tag_threshold = 0.05     # refine where |grad rho| exceeds this
 regrid_every  = 4
 subcycle      = true
 
 [output]
-frames = 20              # 20 images VTK espacées dans le temps
-prefix = out/moncas      # -> out/moncas_0001.vthb …
+frames = 20              # 20 VTK images spaced in time
+prefix = out/mycase      # -> out/mycase_0001.vthb …
 
 [render]
 live  = true
-scale = 4                # pixels par cellule de base
-grid  = true             # contours des patchs AMR
+scale = 4                # pixels per base cell
+grid  = true             # AMR patch outlines
 ```
 
-Vérifie puis lance :
+Check then run:
 ```sh
-./build/run --check cases/moncas.ini    # config OK ? coût ?
-./build/run cases/moncas.ini
+./build/run --check cases/mycase.ini    # config OK? cost?
+./build/run cases/mycase.ini
 ```
 
-C'est tout — pas de code. Pour la grammaire exhaustive : `run --list`.
+That's all — no code. For the exhaustive grammar: `run --list`.
 
 ---
 
-## 4. Lire le journal
+## 4. Reading the log
 
-Active le journal CSV dans le cas :
+Enable the CSV log in the case:
 ```ini
 [diagnostics]
-every = 50                    # une ligne tous les 50 pas de base (0 = off)
-file  = out/moncas_log.csv    # défaut : <prefix>_log.csv
+every = 50                    # one line every 50 base steps (0 = off)
+file  = out/mycase_log.csv    # default: <prefix>_log.csv
 ```
 
-Colonnes :
+Columns:
 
-| Colonne | Sens |
+| Column | Meaning |
 |---|---|
-| `step, t, dt` | itération, temps physique, pas de temps |
-| `res_mass, res_momx, res_momy, res_energy` | **résidus** (variation L1 par pas) — chutent vers 0 quand l'écoulement se stationnarise |
-| `cells, patches` | nombre de cellules actives et de patchs AMR (suit le raffinement) |
-| `rho_min/max, p_min/max` | extrema — surveille la **positivité** (rho, p > 0) |
-| `mass` | masse totale — sa **dérive** mesure la conservation (≈ plancher fp32 sur domaine fermé ; non nulle si bords ouverts) |
-| `kinetic_energy, total_energy` | bilans d'énergie |
-| `enstrophy` | ∫ω²/2 — intensité tourbillonnaire (KH, RT…) |
-| `species_mass` | masse du gaz 2 (cas bi-gaz) — doit se conserver |
-| `wall_s, mcells_per_s` | temps mural et débit (Mcell-steps/s) |
+| `step, t, dt` | iteration, physical time, time step |
+| `res_mass, res_momx, res_momy, res_energy` | **residuals** (L1 change per step) — drop toward 0 as the flow reaches steady state |
+| `cells, patches` | number of active cells and AMR patches (tracks refinement) |
+| `rho_min/max, p_min/max` | extrema — watch **positivity** (rho, p > 0) |
+| `mass` | total mass — its **drift** measures conservation (≈ fp32 floor on a closed domain; nonzero with open boundaries) |
+| `kinetic_energy, total_energy` | energy budgets |
+| `enstrophy` | ∫ω²/2 — vortical intensity (KH, RT…) |
+| `species_mass` | mass of gas 2 (two-gas case) — must be conserved |
+| `wall_s, mcells_per_s` | wall-clock time and throughput (Mcell-steps/s) |
 
-À regarder : **résidus** (convergence), **dérive de masse** (conservation),
-**extrema** (positivité/stabilité), **patches** (le raffinement suit-il les
-structures), **mcells_per_s** (perf).
+What to watch: **residuals** (convergence), **mass drift** (conservation),
+**extrema** (positivity/stability), **patches** (is refinement tracking the
+structures), **mcells_per_s** (performance).
 
 ---
 
-## 5. Exploiter les sorties
+## 5. Working with the output
 
-### ParaView (champ complet, tous niveaux AMR)
-Les `.vthb` (vtkOverlappingAMR) s'ouvrent directement dans **ParaView** :
-hiérarchie AMR complète, contours de patchs, toutes les variables
-(`rho, u, v, p`, et `Y` en bi-gaz).
+### ParaView (full field, all AMR levels)
+The `.vthb` files (vtkOverlappingAMR) open directly in **ParaView**: full AMR
+hierarchy, patch outlines, all variables (`rho, u, v, p`, and `Y` in two-gas).
 
-### Vue temps réel
-`[render] live = true` (backend `hybrid`) : fenêtre Metal zéro-copie pendant
-le calcul, échelle de couleur auto. Idéal pour itérer sur un cas.
+### Real-time view
+`[render] live = true` (backend `hybrid`): zero-copy Metal window during the
+computation, auto color scale. Ideal for iterating on a case.
 
-### Vidéo / schlieren (post-traitement fourni)
-`tools/schlieren_video.py` transforme les `.vthb` en vidéo qui « claque »
-(schlieren numérique |∇ρ|, sans ParaView) :
+### Video / schlieren (bundled post-processing)
+`tools/schlieren_video.py` turns the `.vthb` files into a punchy video
+(numerical schlieren |∇ρ|, no ParaView):
 ```sh
-python3 tools/schlieren_video.py --prefix out/moncas --full \
+python3 tools/schlieren_video.py --prefix out/mycase --full \
     --style light --cmap magma_r \
-    --frames-dir out/moncas_frames --out out/moncas.mp4
+    --frames-dir out/mycase_frames --out out/mycase.mp4
 ```
-Options utiles : `--amr-panel` (panneau densité + blocs AMR sous le
-schlieren), `--annotate` + `--still last` (figure annotée), `--fps`,
-`--freeze SEC` (figé final), `--start/--end` (sous-séquence). Dépendances :
+Useful options: `--amr-panel` (density + AMR blocks panel under the
+schlieren), `--annotate` + `--still last` (annotated figure), `--fps`,
+`--freeze SEC` (final freeze), `--start/--end` (subsequence). Dependencies:
 `vtk`, `matplotlib`, `ffmpeg`.
 
-### Courbes
-`tools/plot_convergence.py`, `tools/plot_benchmark.py` (depuis les drivers
-`convergence` / `benchmark`).
+### Curves
+`tools/plot_convergence.py`, `tools/plot_benchmark.py` (from the
+`convergence` / `benchmark` drivers).
 
 ---
 
-## 6. Réglages courants & dépannage
+## 6. Common settings & troubleshooting
 
-| Symptôme / besoin | Levier |
+| Symptom / need | Lever |
 |---|---|
-| Instable / NaN | baisser `cfl` (0.4 → 0.3) ; vérifier les extrema dans le journal |
-| Trop lent | `backend = hybrid` (GPU) ; baisser `levels` ; `tag_threshold` plus haut |
-| Pas assez de détail | `levels` plus haut ou `tag_threshold` plus bas |
-| « AMR GPU slot pool exhausted » | trop de patchs : baisser `levels`, raffiner moins, ou monter `amr.max_patches` (cf. message) |
-| Comparer CPU vs GPU | même cas en `backend = cpu` puis `hybrid` (résultats bit-identiques attendus) |
-| Ordre élevé en régime lisse | `scheme = weno5` |
-| Vérifier la config | `run --check` (signale les clés inconnues) |
+| Unstable / NaN | lower `cfl` (0.4 → 0.3); check the extrema in the log |
+| Too slow | `backend = hybrid` (GPU); lower `levels`; raise `tag_threshold` |
+| Not enough detail | higher `levels` or lower `tag_threshold` |
+| "AMR GPU slot pool exhausted" | too many patches: lower `levels`, refine less, or raise `amr.max_patches` (see the message) |
+| Compare CPU vs GPU | same case in `backend = cpu` then `hybrid` (bit-identical results expected) |
+| High order in smooth regions | `scheme = weno5` |
+| Check the config | `run --check` (flags unknown keys) |
 
-Notes :
-- **Cellules carrées** : garde `nx/ny = (x1-x0)/(y1-y0)`, sinon précision
-  anisotrope (`--check` le signale).
-- `grid.nx`, `grid.ny` doivent être **multiples de `amr.block`**.
-- `#` **et** `;` démarrent un commentaire — une clé par ligne.
+Notes:
+- **Square cells**: keep `nx/ny = (x1-x0)/(y1-y0)`, otherwise anisotropic
+  accuracy (`--check` flags it).
+- `grid.nx`, `grid.ny` must be **multiples of `amr.block`**.
+- `#` **and** `;` start a comment — one key per line.
 
 ---
 
-*Pour aller plus loin : [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (interne),
-[`ROADMAP.md`](../ROADMAP.md) (jalons et choix de conception).*
+*Going further: [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (internals),
+[`ROADMAP.md`](../ROADMAP.md) (milestones and design choices).*

@@ -1,234 +1,230 @@
-# Référence du format de cas `.ini`
+# `.ini` case-file reference
 
-Référence exhaustive du fichier de cas (`CaseDef` + `AmrConfig`). Pour un
-tutoriel pas-à-pas, voir [`docs/GUIDE.md`](GUIDE.md) ; pour l'aide-mémoire
-rapide : `./build/run --list`.
+Exhaustive reference for the case file (`CaseDef` + `AmrConfig`). For a
+step-by-step tutorial see [`docs/GUIDE.md`](GUIDE.md); for a quick cheat
+sheet: `./build/run --list`.
 
-Conventions du fichier : format INI ; `#` **et** `;` démarrent un
-commentaire ; **une clé par ligne**. Les clés inconnues sont signalées par
-`./build/run --check`.
+File conventions: INI format; `#` **and** `;` start a comment; **one key per
+line**. Unknown keys are flagged by `./build/run --check`.
 
 ---
 
-## Clés de premier niveau (hors section)
+## Top-level keys (no section)
 
-| Clé | Défaut | Sens |
+| Key | Default | Meaning |
 |---|---|---|
-| `t_end` | 0.2 | temps physique final |
-| `cfl` | 0.4 | nombre CFL |
-| `mu` | 0 | viscosité dynamique ; `> 0` → Navier-Stokes (incompatible bi-gaz) |
-| `backend` | `hybrid` | `cpu` (référence) \| `hybrid` (GPU Metal) |
-| `scheme` | `muscl` | `muscl` (MUSCL-Hancock) \| `weno5` (WENO5 + RK3 ; mono-gaz) |
-| `restart` | — | chemin d'un checkpoint pour reprendre |
+| `t_end` | 0.2 | final physical time |
+| `cfl` | 0.4 | CFL number |
+| `mu` | 0 | dynamic viscosity; `> 0` → Navier–Stokes (incompatible with two-gas) |
+| `backend` | `hybrid` | `cpu` (reference) \| `hybrid` (Metal GPU) |
+| `scheme` | `muscl` | `muscl` (MUSCL-Hancock) \| `weno5` (WENO5 + RK3; single-gas) |
+| `restart` | — | path to a checkpoint to resume from |
 
 ---
 
-## `[domain]` — domaine physique
+## `[domain]` — physical domain
 
-| Clé | Sens |
+| Key | Meaning |
 |---|---|
-| `x0, x1, y0, y1` | bornes du rectangle |
+| `x0, x1, y0, y1` | rectangle bounds |
 
-## `[grid]` — résolution de base
+## `[grid]` — base resolution
 
-| Clé | Sens |
+| Key | Meaning |
 |---|---|
-| `nx, ny` | cellules de base (**multiples de `amr.block`**) |
+| `nx, ny` | base cells (**multiples of `amr.block`**) |
 
-> Garder des **cellules carrées** : `nx/ny = (x1-x0)/(y1-y0)`, sinon
-> précision anisotrope (`--check` propose la valeur).
+> Keep **square cells**: `nx/ny = (x1-x0)/(y1-y0)`, otherwise anisotropic
+> accuracy (`--check` suggests the value).
 
 ## `[physics]` — sources
 
-| Clé | Sens |
+| Key | Meaning |
 |---|---|
-| `gravity = gx gy` | gravité (source splittée) ; les murs `reflective` deviennent hydrostatiques |
+| `gravity = gx gy` | gravity (split source); `reflective` walls become hydrostatic |
 
 ---
 
-## `[species]` — bi-gaz (optionnel)
+## `[species]` — two-gas (optional)
 
-Active le modèle deux-gaz (transport de la fraction massique `Y` via
-`phi = rho·Y`, fermeture `Gamma` quasi-conservative). Incompatible `mu > 0`.
+Enables the two-gas model (mass-fraction `Y` transport via `phi = rho·Y`,
+quasi-conservative `Gamma` closure). Incompatible with `mu > 0`.
 
-| Clé | Défaut | Sens |
+| Key | Default | Meaning |
 |---|---|---|
-| `gamma1` | 1.4 | γ du gaz 1 (défaut des états) |
-| `gamma2` | 1.4 | γ du gaz 2 (états avec `gas = 2`) |
+| `gamma1` | 1.4 | γ of gas 1 (default for states) |
+| `gamma2` | 1.4 | γ of gas 2 (states with `gas = 2`) |
 
-## `[reaction]` — combustion (optionnel)
+## `[reaction]` — combustion (optional)
 
-Source Arrhenius mono-étape sur la variable de progrès λ (implique
-`species`, avec `gamma1 = gamma2 = gamma`). Strang-split autour de l'hydro.
+Single-step Arrhenius source on the progress variable λ (implies `species`,
+with `gamma1 = gamma2 = gamma`). Strang-split around the hydrodynamics.
 
-| Clé | Sens |
+| Key | Meaning |
 |---|---|
-| `A` | facteur pré-exponentiel |
-| `Ea` | énergie d'activation |
-| `q` | dégagement de chaleur |
-| `Tign` | température d'ignition (cutoff) |
-| `gamma` | γ commun (défaut 1.4) |
+| `A` | pre-exponential factor |
+| `Ea` | activation energy |
+| `q` | heat release |
+| `Tign` | ignition temperature (cutoff) |
+| `gamma` | shared γ (default 1.4) |
 
 ---
 
-## `[state.NOM]` — états primitifs nommés
+## `[state.NAME]` — named primitive states
 
-Un état par section `[state.<nom>]`. Référencé par les régions de l'IC, les
-BC `inflow`, et `ic.default`.
+One state per `[state.<name>]` section. Referenced by IC regions, `inflow`
+BCs, and `ic.default`.
 
-| Clé | Défaut | Sens |
+| Key | Default | Meaning |
 |---|---|---|
-| `rho` | 1 | masse volumique |
-| `u, v` | 0 | vitesse |
-| `p` | 1 | pression |
-| `gas` | 1 | 1 ou 2 (cas bi-gaz ; `gas = 2` nécessite `[species]`) |
-| `shock` | — | **état dérivé** Rankine-Hugoniot (voir ci-dessous) |
+| `rho` | 1 | density |
+| `u, v` | 0 | velocity |
+| `p` | 1 | pressure |
+| `gas` | 1 | 1 or 2 (two-gas case; `gas = 2` requires `[species]`) |
+| `shock` | — | **derived state** Rankine–Hugoniot (see below) |
 
-**État post-choc dérivé** : `shock = <amont> mach <Ms> [+x|-x|+y|-y]`
-calcule l'état post-choc R-H pour un choc de Mach `Ms` (> 1) se propageant
-dans l'état `<amont>` (non dérivé), direction par défaut `+x`. Le solveur
-mémorise la vitesse lab du front (utilisée par `speed auto`).
+**Derived post-shock state**: `shock = <upstream> mach <Ms> [+x|-x|+y|-y]`
+computes the post-shock R-H state for a shock of Mach `Ms` (> 1) propagating
+into the (non-derived) state `<upstream>`, default direction `+x`. The solver
+records the lab-frame front speed (used by `speed auto`).
 
 ---
 
-## `[ic]` — condition initiale
+## `[ic]` — initial condition
 
 ```ini
-default = NOM            # état partout, avant les régions
-region.N = <forme> : NOM # régions empilées (N=1..99, la DERNIÈRE l'emporte)
+default = NAME           # state everywhere, before the regions
+region.N = <shape> : NAME # stacked regions (N=1..99, the LAST one wins)
 perturb.N = <perturbation>
 ```
 
-### Formes de région
+### Region shapes
 
-| Forme | Sémantique |
+| Shape | Semantics |
 |---|---|
-| `halfplane a b c [speed s]` | demi-plan `a·x + b·y < c` ; `speed s` fait avancer le front à la vitesse normale `s` ; `speed auto` = vitesse R-H de l'état (état `shock=`) |
-| `band x lo hi` / `band y lo hi` | bande `lo < x < hi` (ou en y) |
+| `halfplane a b c [speed s]` | half-plane `a·x + b·y < c`; `speed s` advances the front at normal speed `s`; `speed auto` = R-H speed of the state (a `shock=` state) |
+| `band x lo hi` / `band y lo hi` | band `lo < x < hi` (or in y) |
 | `rect x0 x1 y0 y1` | rectangle |
-| `circle cx cy r` | disque de centre (cx,cy), rayon r |
-| `sinex x0 amp lambda` | interface en cosinus : `x < x0 + amp·cos(2π y/lambda)` |
+| `circle cx cy r` | disk centered at (cx,cy), radius r |
+| `sinex x0 amp lambda` | cosine interface: `x < x0 + amp·cos(2π y/lambda)` |
 
-### Perturbations (appliquées après les régions)
+### Perturbations (applied after the regions)
 
-| Forme | Effet sur la variable `var ∈ {u,v,rho,p}` |
+| Shape | Effect on variable `var ∈ {u,v,rho,p}` |
 |---|---|
 | `var sin periods amp` | `+ amp·sin(2π·periods·(x-x0)/lx)` |
 | `var erf x0 width amp` | `+ amp·erf((x-x0)/width)` |
-| `var sing periods amp yc sigma` | sinus en x × enveloppe gaussienne en y (centre yc, σ) |
-| `p hydro yref` | pression hydrostatique : `p += rho·gy·(y-yref)` |
+| `var sing periods amp yc sigma` | sine in x × Gaussian envelope in y (center yc, σ) |
+| `p hydro yref` | hydrostatic pressure: `p += rho·gy·(y-yref)` |
 
 ---
 
-## `[solid]` — corps immergés (optionnel)
+## `[solid]` — immersed bodies (optional)
 
 ```ini
-region.N = <forme>       # bloc solide (N=1..99 ; même grammaire que [ic],
-                         # SANS état ni mouvement)
+region.N = <shape>       # solid block (N=1..99; same grammar as [ic],
+                         # WITHOUT a state or motion)
 ```
 
-Les cellules dont le centre tombe dans une région `[solid]` sont retirées
-de l'écoulement ; les faces fluide↔solide deviennent des **murs
-réfléchissants glissants** (vitesse normale miroir), ou **adhérents
-(no-slip)** dès que `mu > 0` (les flux visqueux imposent une vitesse de
-paroi nulle — validé Blasius, gate `immersed_noslip`). Les formes sont
-celles des régions d'IC — `rect`, `circle`, `halfplane`, `band`, `sinex` —
-plus **`triangle x1 y1 x2 y2 x3 y3`** (trois sommets, ordre quelconque),
-sans le `: NOM` (un solide n'a pas d'état) ni `speed` (statique).
+Cells whose center falls inside a `[solid]` region are removed from the flow;
+fluid↔solid faces become **reflective slip walls** (mirrored normal
+velocity), or **no-slip (adherent)** walls as soon as `mu > 0` (the viscous
+fluxes impose zero wall velocity — validated on Blasius, gate
+`immersed_noslip`). The shapes are the IC region shapes — `rect`, `circle`,
+`halfplane`, `band`, `sinex` — plus **`triangle x1 y1 x2 y2 x3 y3`** (three
+vertices, any order), without the `: NAME` (a solid has no state) or `speed`
+(static).
 
 ```ini
 [solid]
-region.1 = rect 0.7 1.01 -0.01 0.03   # bloc / paroi alignée
-region.2 = circle 0.5 0.5 0.1         # cylindre (escalier)
+region.1 = rect 0.7 1.01 -0.01 0.03   # block / aligned wall
+region.2 = circle 0.5 0.5 0.1         # cylinder (staircased)
 ```
 
-L'**AMR raffine automatiquement le bord du corps** (les cellules de
-fluide au contact d'un solide sont taguées) en plus des chocs — utile pour
-lisser l'escalier ; règle `[amr]` standard (`levels`, `tag_threshold`,
-`subcycle`…). Voir `cases/cylinder_bowshock.ini` et `cases/wc_step.ini`.
+The **AMR automatically refines the body boundary** (fluid cells touching a
+solid are tagged) in addition to shocks — useful to smooth the staircase;
+standard `[amr]` rules (`levels`, `tag_threshold`, `subcycle`…). See
+`cases/cylinder_bowshock.ini` and `cases/wc_step.ini`.
 
-> **Limites actuelles** (v1.6) : `backend = cpu` **ou `hybrid`** (GPU,
-> lock-step CPU/GPU vérifié — AMR profondeur arbitraire et no-slip visqueux
-> sur les deux), `scheme = muscl` mono-gaz. Reste à faire : cut-cells (pour
-> lisser l'escalier). Voir la [feuille de route](../ROADMAP.md).
-> Le multi-niveaux (profondeur > 2) et le no-slip visqueux sont sur la
-> [feuille de route](../ROADMAP.md). Cas de référence :
-> `cases/shock_wall.ini` (gates `immersed_case`, `immersed_amr`,
-> `immersed_gpu`).
+> **Current limits** (v1.6): `backend = cpu` **or `hybrid`** (GPU, verified
+> CPU/GPU lock-step — arbitrary AMR depth and viscous no-slip on both),
+> `scheme = muscl` single-gas. TODO: cut-cells (to smooth the staircase). See
+> the [roadmap](../ROADMAP.md). Reference case: `cases/shock_wall.ini` (gates
+> `immersed_case`, `immersed_amr`, `immersed_gpu`).
 
 ---
 
-## `[bc]` — conditions aux limites
+## `[bc]` — boundary conditions
 
 ```ini
-x = periodic            # ou y = periodic (sinon, par côté)
+x = periodic            # or y = periodic (otherwise, per side)
 left|right|bottom|top = <spec>
 ```
 
-| Type | Effet |
+| Type | Effect |
 |---|---|
-| `transmissive` | gradient nul (sortie) |
-| `reflective` | mur glissant (composante normale miroir ; hydrostatique sous gravité) |
-| `noslip` | mur visqueux adhérent (les deux composantes miroir ; `mu > 0`) |
-| `analytic` | réévalue la pile de régions au temps `t` dans les ghosts → **BC exacte d'un choc mobile** (haut du DMR) |
-| `inflow NOM` | impose l'état primitif `NOM` |
-| `reservoir NOM` | **entrée à conditions d'arrêt** : `NOM` donne (ρ0, p0) d'arrêt ; la pression statique vient de l'intérieur, l'état est isentropique et la vitesse normale s'ajuste (M déduit de p0/p) → non-réfléchissant, alimentation stable (chambre de tuyère) |
-| `backpressure t0 p0 t1 p1 ...` | **pression de sortie programmée** : sortie subsonique → impose une pression statique suivant un **schedule linéaire par morceaux** (paires temps-pression, ≥2, croissantes en `t` ; constante avant `t0` et après le dernier nœud) ; sortie supersonique → transmissif. ρ,u,v extrapolés. Des **plateaux** (`… t1 p t2 p …`) font PAUSER l'écoulement sur chaque régime ; piloter un balayage de régimes (tuyère, `cases/nozzle.ini`) |
+| `transmissive` | zero gradient (outflow) |
+| `reflective` | slip wall (mirrored normal component; hydrostatic under gravity) |
+| `noslip` | adherent viscous wall (both components mirrored; `mu > 0`) |
+| `analytic` | re-evaluates the region stack at time `t` in the ghosts → **exact moving-shock BC** (top of the DMR) |
+| `inflow NAME` | imposes the primitive state `NAME` |
+| `reservoir NAME` | **stagnation-condition inlet**: `NAME` gives stagnation (ρ0, p0); static pressure comes from the interior, the state is isentropic and the normal velocity adjusts (M deduced from p0/p) → non-reflecting, stable feed (nozzle chamber) |
+| `backpressure t0 p0 t1 p1 ...` | **scheduled outlet pressure**: subsonic outflow → imposes a static pressure following a **piecewise-linear schedule** (time-pressure pairs, ≥2, increasing in `t`; constant before `t0` and after the last node); supersonic outflow → transmissive. ρ,u,v extrapolated. **Plateaus** (`… t1 p t2 p …`) PAUSE the flow on each regime; drives a regime sweep (nozzle, `cases/nozzle.ini`) |
 
-**Côté segmenté** : `<specA> if x < val else <specB>` (ou `if y < val`) —
-ex. le bas du DMR : `analytic if x < 0.1667 else reflective`.
+**Segmented side**: `<specA> if x < val else <specB>` (or `if y < val`) —
+e.g. the bottom of the DMR: `analytic if x < 0.1667 else reflective`.
 
 ---
 
-## `[amr]` — raffinement adaptatif
+## `[amr]` — adaptive mesh refinement
 
-| Clé | Défaut | Sens |
+| Key | Default | Meaning |
 |---|---|---|
-| `enabled` | true | si `false`, grille de base seule |
-| `block` | 8 | taille de bloc (cellules grossières) |
-| `levels` | 2 | nombre total de niveaux (base + raffinements) |
-| `tag_threshold` | 0.08 | seuil de raffinement sur `|grad rho|` relatif |
-| `tag_velocity` | 0 | seuil sur le saut de vitesse / vitesse du son (0 = off) |
-| `regrid_every` | 4 | re-tag tous les K pas de base |
-| `subcycle` | false | true = subcycling Berger-Colella (fin à dt/2) |
-| `max_patches` | 0 | cap du pool de slots GPU (0 = auto ~1/8 du working set) |
+| `enabled` | true | if `false`, base grid only |
+| `block` | 8 | block size (coarse cells) |
+| `levels` | 2 | total number of levels (base + refinements) |
+| `tag_threshold` | 0.08 | refinement threshold on relative `|grad rho|` |
+| `tag_velocity` | 0 | threshold on velocity jump / sound speed (0 = off) |
+| `regrid_every` | 4 | re-tag every K base steps |
+| `subcycle` | false | true = Berger–Colella subcycling (fine at dt/2) |
+| `max_patches` | 0 | GPU slot-pool cap (0 = auto ~1/8 of the working set) |
 
-## `[output]` — sorties VTK / checkpoint
+## `[output]` — VTK / checkpoint output
 
-| Clé | Défaut | Sens |
+| Key | Default | Meaning |
 |---|---|---|
-| `frames` | 4 | nombre d'images VTK espacées dans le temps |
-| `every` | 0 | une image tous les K pas (prioritaire sur `frames` si > 0) |
-| `prefix` | — | préfixe des fichiers (`<prefix>_0001.vthb`…) |
-| `checkpoint` | — | préfixe de checkpoint |
-| `max_steps` | 0 | arrêt après N pas (0 = illimité) |
+| `frames` | 4 | number of VTK images spaced in time |
+| `every` | 0 | one image every K steps (takes precedence over `frames` if > 0) |
+| `prefix` | — | file prefix (`<prefix>_0001.vthb`…) |
+| `checkpoint` | — | checkpoint prefix |
+| `max_steps` | 0 | stop after N steps (0 = unlimited) |
 
-## `[render]` — vue temps réel (backend `hybrid`)
+## `[render]` — real-time view (backend `hybrid`)
 
-| Clé | Défaut | Sens |
+| Key | Default | Meaning |
 |---|---|---|
-| `live` | false | ouvrir la fenêtre Metal |
-| `scale` | 4 | pixels par cellule de base |
-| `every` | 2 | rafraîchir tous les K pas de base |
-| `grid` | true | dessiner les contours des patchs AMR |
-| `rho_min, rho_max` | 0, 0 | plage de couleur (0/0 = auto-échelle) |
+| `live` | false | open the Metal window |
+| `scale` | 4 | pixels per base cell |
+| `every` | 2 | refresh every K base steps |
+| `grid` | true | draw the AMR patch outlines |
+| `rho_min, rho_max` | 0, 0 | color range (0/0 = auto-scale) |
 
-Contrôles fenêtre : **espace** = pause, **q** / fermeture = quitter.
+Window controls: **space** = pause, **q** / close = quit.
 
-## `[diagnostics]` — journal CSV
+## `[diagnostics]` — CSV log
 
-| Clé | Défaut | Sens |
+| Key | Default | Meaning |
 |---|---|---|
-| `every` | 0 | une ligne tous les K pas de base (0 = off) |
-| `file` | `<prefix>_log.csv` | chemin du CSV |
+| `every` | 0 | one line every K base steps (0 = off) |
+| `file` | `<prefix>_log.csv` | CSV path |
 
-Colonnes : `step, t, dt, res_{mass,momx,momy,energy}, cells, patches,
+Columns: `step, t, dt, res_{mass,momx,momy,energy}, cells, patches,
 rho_min/max, p_min/max, mass, kinetic_energy, total_energy, enstrophy,
-species_mass, wall_s, mcells_per_s` (détail dans [`GUIDE.md`](GUIDE.md#4-lire-le-journal)).
+species_mass, wall_s, mcells_per_s` (details in [`GUIDE.md`](GUIDE.md#4-reading-the-log)).
 
 ---
 
-## Exemple minimal (Sod)
+## Minimal example (Sod)
 
 ```ini
 backend = cpu
@@ -239,17 +235,17 @@ x1 = 1
 y0 = 0
 y1 = 0.25
 [grid]
-nx = 128          # multiples de amr.block (8)
+nx = 128          # multiples of amr.block (8)
 ny = 32
-[state.gauche]
+[state.left]
 rho = 1
 p = 1
-[state.droite]
+[state.right]
 rho = 0.125
 p = 0.1
 [ic]
-default = droite
-region.1 = halfplane 1 0 0.5 : gauche
+default = right
+region.1 = halfplane 1 0 0.5 : left
 [bc]
 left = transmissive
 right = transmissive
@@ -259,5 +255,5 @@ frames = 1
 prefix = out/sod
 ```
 
-Voir `cases/` pour des exemples complets (DMR, bulle, RM, détonation,
-déflagration, Blasius…) et `cases/TEMPLATE.ini` (modèle commenté).
+See `cases/` for complete examples (DMR, bubble, RM, detonation,
+deflagration, Blasius…) and `cases/TEMPLATE.ini` (commented template).
