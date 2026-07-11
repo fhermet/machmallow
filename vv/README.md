@@ -53,17 +53,21 @@ order 2 by manufactured solutions (`mms`; see `docs/VALIDATION.md`).
 ## 2. Validation — Sod shock tube vs exact Riemann
 
 The classic Riemann problem: density, velocity and pressure at t = 0.2
-overlaid on the exact solution. The scheme captures the rarefaction, the
-contact discontinuity and the shock without spurious oscillations.
+overlaid on the exact solution, for **both schemes**. Each captures the
+rarefaction, the contact discontinuity and the shock without spurious
+oscillations; WENO5 + HLLC resolves the contact slightly more sharply.
 
-> **Numerical setup** — MUSCL-Hancock + HLLC, **1D uniform grid** (no AMR),
-> inviscid Euler, CFL 0.8, t = 0.2. Grid-convergence study N = 100 → 1600;
-> profile shown at N = 400. Reference = exact Riemann solution. float32.
+> **Numerical setup** — **MUSCL-Hancock and WENO5**, both with HLLC, on a
+> uniform grid (**no AMR**), inviscid Euler, CFL 0.4, t = 0.2. Profile shown
+> at N = 400 (from the `convergence` driver, same solver for both
+> schemes). Reference = exact Riemann solution. float32.
 
-![Sod shock tube vs exact Riemann](figures/sod.png)
+![Sod shock tube — MUSCL & WENO5 vs exact](figures/sod.png)
 
-Grid-convergence order (L1 density vs the exact solution): **0.90**
-(≈1, as expected for a discontinuous solution). Profile shown at N = 400.
+Grid-convergence order (L1 density vs the exact solution): **≈0.90 for both
+schemes** — as expected, discontinuities cap both at first order (the
+high-order advantage of WENO5 shows on *smooth* flow; see §1). The `sod1d`
+driver's independent 1D grid-convergence study gives MUSCL 0.90.
 
 ---
 

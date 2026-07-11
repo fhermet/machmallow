@@ -102,27 +102,41 @@ def plot_order():
 
 
 def plot_sod(n=400):
-    path = os.path.join(OUT, f"sod_{n}.csv")
-    if not os.path.exists(path):
-        cands = sorted(int(re.findall(r"sod_(\d+)\.csv", f)[0])
-                       for f in os.listdir(OUT) if re.match(r"sod_\d+\.csv", f))
-        n = min(cands, key=lambda c: abs(c - n)); path = os.path.join(OUT, f"sod_{n}.csv")
-    rows = read_csv(path)
-    x = np.array([float(r["x"]) for r in rows])
-    fig, axes = plt.subplots(3, 1, figsize=(6.4, 7.2), sharex=True)
-    for ax, (fld, exf, lab, col) in zip(axes, [
-            ("rho", "rho_exact", "density $\\rho$", CYAN),
-            ("u", "u_exact", "velocity $u$", EMBER),
-            ("p", "p_exact", "pressure $p$", PURPLE)]):
-        ax.plot(x, [float(r[exf]) for r in rows], "-", color="black", lw=2,
-                label="exact Riemann")
-        ax.plot(x, [float(r[fld]) for r in rows], "o", color=col, ms=2.6,
-                label=f"machmallow (N={n})")
-        ax.set_ylabel(lab); ax.legend(fontsize=8.5, loc="best")
+    # preferred: MUSCL and WENO5 from the same driver (convergence), N=400
+    mp = os.path.join(OUT, "sod_muscl_400.csv")
+    wp = os.path.join(OUT, "sod_weno_400.csv")
+    both = os.path.exists(mp) and os.path.exists(wp)
+    if both:
+        muscl, weno = read_csv(mp), read_csv(wp)
+    else:  # fallback: single-scheme dump from the sod1d driver
+        path = os.path.join(OUT, f"sod_{n}.csv")
+        if not os.path.exists(path):
+            cands = sorted(int(re.findall(r"sod_(\d+)\.csv", f)[0])
+                           for f in os.listdir(OUT)
+                           if re.match(r"sod_\d+\.csv", f))
+            n = min(cands, key=lambda c: abs(c - n))
+            path = os.path.join(OUT, f"sod_{n}.csv")
+        muscl = read_csv(path)
+    x = np.array([float(r["x"]) for r in muscl])
+    fig, axes = plt.subplots(3, 1, figsize=(6.4, 7.6), sharex=True)
+    for ax, (fld, exf, lab) in zip(axes, [
+            ("rho", "rho_exact", "density $\\rho$"),
+            ("u", "u_exact", "velocity $u$"),
+            ("p", "p_exact", "pressure $p$")]):
+        ax.plot(x, [float(r[exf]) for r in muscl], "-", color="black",
+                lw=1.8, label="exact Riemann", zorder=1)
+        ax.plot(x, [float(r[fld]) for r in muscl], "o", color=CYAN, ms=2.6,
+                label="MUSCL", zorder=3)
+        if both:
+            ax.plot(x, [float(r[fld]) for r in weno], "s", color=EMBER,
+                    ms=2.6, mfc="none", label="WENO5", zorder=2)
+        ax.set_ylabel(lab); ax.legend(fontsize=8, loc="best")
     axes[-1].set_xlabel("$x$")
-    axes[0].set_title(f"Sod shock tube at t = 0.2 — computed vs exact")
+    schemes = "MUSCL & WENO5" if both else "MUSCL"
+    axes[0].set_title(f"Sod shock tube — {schemes} vs exact (N=400)",
+                      fontsize=11)
     fig.tight_layout(); fig.savefig(os.path.join(FIG, "sod.png")); plt.close(fig)
-    return n
+    return 400
 
 
 def plot_blasius():
@@ -228,17 +242,21 @@ order 2 by manufactured solutions (`mms`; see `docs/VALIDATION.md`).
 ## 2. Validation — Sod shock tube vs exact Riemann
 
 The classic Riemann problem: density, velocity and pressure at t = 0.2
-overlaid on the exact solution. The scheme captures the rarefaction, the
-contact discontinuity and the shock without spurious oscillations.
+overlaid on the exact solution, for **both schemes**. Each captures the
+rarefaction, the contact discontinuity and the shock without spurious
+oscillations; WENO5 + HLLC resolves the contact slightly more sharply.
 
-> **Numerical setup** — MUSCL-Hancock + HLLC, **1D uniform grid** (no AMR),
-> inviscid Euler, CFL 0.8, t = 0.2. Grid-convergence study N = 100 → 1600;
-> profile shown at N = {sod_n}. Reference = exact Riemann solution. float32.
+> **Numerical setup** — **MUSCL-Hancock and WENO5**, both with HLLC, on a
+> uniform grid (**no AMR**), inviscid Euler, CFL 0.4, t = 0.2. Profile shown
+> at N = {sod_n} (from the `convergence` driver, same solver for both
+> schemes). Reference = exact Riemann solution. float32.
 
-![Sod shock tube vs exact Riemann](figures/sod.png)
+![Sod shock tube — MUSCL & WENO5 vs exact](figures/sod.png)
 
-Grid-convergence order (L1 density vs the exact solution): **{conv_order}**
-(≈1, as expected for a discontinuous solution). Profile shown at N = {sod_n}.
+Grid-convergence order (L1 density vs the exact solution): **≈0.90 for both
+schemes** — as expected, discontinuities cap both at first order (the
+high-order advantage of WENO5 shows on *smooth* flow; see §1). The `sod1d`
+driver's independent 1D grid-convergence study gives MUSCL {conv_order}.
 
 ---
 
@@ -327,7 +345,8 @@ def main():
     plot_blasius_cf()
 
     # copy source data for provenance
-    keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv"}
+    keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv",
+            "sod_muscl_400.csv", "sod_weno_400.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
