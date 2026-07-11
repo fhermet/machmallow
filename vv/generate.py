@@ -533,10 +533,10 @@ def plot_weno(txt):
 
 
 def plot_species(txt):
-    """Abgrall interface: a rho+gamma jump advected at u=0.5 for one period.
-    The signature of a well-posed multi-gas scheme is that p and u stay flat
-    across the density jump (naive conservative schemes oscillate p there)."""
-    path = os.path.join(OUT, "species_interface.csv")
+    """Two-gas suite, one panel per gate (mirrors the fiche's 4-row table):
+    (a) Abgrall interface — p, u flat across a ρ/γ jump; (b) two-gas Sod on a
+    uniform grid vs the generalized exact Riemann; (c) the same on 3-level AMR,
+    coloured by level; (d) species-mass drift over 200 steps."""
     d = {"p_start": grab(txt, r"startup ([\d.eE+-]+)"),
          "p_sust": grab(txt, r"sustained ([\d.eE+-]+)"),
          "u_err": grab(txt, r"max\|u-0.5\| = ([\d.eE+-]+)"),
@@ -544,24 +544,69 @@ def plot_species(txt):
          "mass": grab(txt, r"species mass, 200 steps: drift = ([\d.eE+-]+)"),
          "amr": grab(txt, r"3-level AMR: L1 = ([\d.eE+-]+)"),
          "amr_drift": grab(txt, r"3-level AMR:.*species mass drift = ([\d.eE+-]+)")}
-    if not os.path.exists(path):
+    pI = os.path.join(OUT, "species_interface.csv")
+    pS = os.path.join(OUT, "species_sod.csv")
+    pA = os.path.join(OUT, "species_sod_amr.csv")
+    pM = os.path.join(OUT, "species_mass.csv")
+    if not all(os.path.exists(p) for p in (pI, pS, pA, pM)):
         return d
-    rows = read_csv(path)
-    x = [float(r["x"]) for r in rows]
-    fig, ax = plt.subplots(figsize=(6.4, 4.4))
-    ax.plot(x, [float(r["rho"]) for r in rows], "-", color=CYAN, lw=1.8,
-            label=r"$\rho$ (jumps 1↔0.5)")
-    ax.plot(x, [float(r["Y"]) for r in rows], "-", color=PURPLE, lw=1.4,
-            label="Y (mass fraction)")
-    ax.plot(x, [float(r["p"]) for r in rows], "-", color=EMBER, lw=1.8,
-            label="p (must stay flat = 1)")
-    ax.plot(x, [float(r["u"]) for r in rows], "--", color="black", lw=1.2,
-            label="u (must stay flat = 0.5)")
-    ax.set_ylim(0, 1.15)
-    ax.set_xlabel("x"); ax.set_ylabel("value")
-    ax.set_title("Abgrall interface after one period — p, u flat across "
-                 "the ρ/γ jump")
-    ax.legend(fontsize=8, loc="upper right", ncol=2)
+    fig, ax = plt.subplots(2, 2, figsize=(9.4, 7.2))
+
+    # (a) Abgrall interface
+    r = read_csv(pI); x = [float(v["x"]) for v in r]
+    a = ax[0, 0]
+    a.plot(x, [float(v["rho"]) for v in r], "-", color=CYAN, lw=1.6,
+           label=r"$\rho$ (jumps 1↔0.5)")
+    a.plot(x, [float(v["Y"]) for v in r], "-", color=PURPLE, lw=1.3,
+           label="Y (mass fraction)")
+    a.plot(x, [float(v["p"]) for v in r], "-", color=EMBER, lw=1.8,
+           label="p (flat = 1)")
+    a.plot(x, [float(v["u"]) for v in r], "--", color="black", lw=1.1,
+           label="u (flat = 0.5)")
+    a.set_ylim(0, 1.15); a.set_xlabel("x"); a.set_ylabel("value")
+    a.set_title(f"(a) Abgrall interface — |p−1|={d['p_sust']}", fontsize=10)
+    a.legend(fontsize=7.5, loc="upper right", ncol=2)
+
+    # (b) two-gas Sod, uniform grid
+    r = read_csv(pS); x = [float(v["x"]) for v in r]
+    a = ax[0, 1]
+    a.plot(x, [float(v["rho_exact"]) for v in r], "-", color="black", lw=1.8,
+           label="exact (per-side γ)")
+    a.plot(x, [float(v["rho"]) for v in r], "o", color=CYAN, ms=2.4,
+           label="machmallow")
+    a.set_xlabel("x"); a.set_ylabel(r"$\rho$")
+    a.set_title(f"(b) two-gas Sod, uniform — L1={d['sod']}", fontsize=10)
+    a.legend(fontsize=8, loc="upper right")
+
+    # (c) two-gas Sod on 3-level AMR, coloured by level
+    r = read_csv(pA)
+    a = ax[1, 0]
+    xe = sorted(r, key=lambda v: float(v["x"]))
+    a.plot([float(v["x"]) for v in xe], [float(v["rho_exact"]) for v in xe],
+           "-", color="black", lw=1.6, label="exact", zorder=1)
+    cols = {"0": "#c0c0c0", "1": CYAN, "2": EMBER}
+    for lv, col in cols.items():
+        xs = [float(v["x"]) for v in r if v["level"] == lv]
+        ys = [float(v["rho"]) for v in r if v["level"] == lv]
+        if xs:
+            a.plot(xs, ys, "o", color=col, ms=3, label=f"level {lv}", zorder=2)
+    a.set_xlabel("x"); a.set_ylabel(r"$\rho$")
+    a.set_title(f"(c) two-gas Sod, 3-level AMR — L1={d['amr']}", fontsize=10)
+    a.legend(fontsize=8, loc="upper right")
+
+    # (d) species-mass drift over the run
+    r = read_csv(pM)
+    a = ax[1, 1]
+    a.semilogy([int(v["step"]) for v in r],
+               [max(float(v["drift"]), 1e-12) for v in r], "-", color=PURPLE,
+               lw=1.4)
+    a.axhline(1e-5, ls="--", color="gray", lw=1, label="gate 1e-5")
+    a.set_xlabel("step"); a.set_ylabel("relative species-mass drift")
+    a.set_title(f"(d) species-mass conservation — max {d['mass']}",
+                fontsize=10)
+    a.legend(fontsize=8, loc="lower right")
+
+    fig.suptitle("Multi-species two-gas — one panel per gate", y=1.0)
     fig.tight_layout(); fig.savefig(os.path.join(FIG, "species.png"))
     plt.close(fig)
     return d
@@ -948,25 +993,49 @@ on **3-level AMR**; (3) species-mass conservation at the float32 floor.
 > 3-level subcycled AMR hierarchy. Driver: `species_suite`. float32.
 
 ## Results
-![Abgrall interface — p and u flat across the ρ/γ jump](../figures/species.png)
+The four panels below map one-to-one to the four gates in the table.
 
-| Gate | Test | Result |
-|---|---|---|
-| 1 | Abgrall interface, \\|p−1\\| sustained | {species.get('p_sust', '—')} (gate 1e-2); max\\|u−0.5\\| {species.get('u_err', '—')} |
-| 2 | two-gas Sod (uniform), L1(ρ) vs exact | {species.get('sod', '—')} (gate 6e-3) |
-| 3 | species mass, 200 steps | drift {species.get('mass', '—')} (gate 1e-5) |
-| 4 | two-gas Sod on 3-level AMR | L1 {species.get('amr', '—')}, species drift {species.get('amr_drift', '—')} |
+![Two-gas suite — one panel per gate](../figures/species.png)
+
+| # | Test | What the panel shows | Result |
+|---|---|---|---|
+| a | **Abgrall interface** | a ρ/γ jump advected at u = 0.5; p (ember) and u (dashed) must stay flat while ρ (cyan) and Y (purple) jump | \\|p−1\\| {species.get('p_sust', '—')} (gate 1e-2); max\\|u−0.5\\| {species.get('u_err', '—')} |
+| b | **two-gas Sod, uniform** | density at t = 0.2 (dots) over the generalized exact Riemann solution (line) | L1(ρ) {species.get('sod', '—')} (gate 6e-3) |
+| c | **two-gas Sod, 3-level AMR** | the composite density, each cell coloured by its refinement level, over the exact solution | L1 {species.get('amr', '—')} (gate 5e-3) |
+| d | **species-mass conservation** | relative drift of ∫ρY over 200 steps vs the 1e-5 gate | max {species.get('mass', '—')} (gate 1e-5) |
 
 ## Discussion
-The interface stays crisp with **pressure and velocity flat to ~0.6 % / 0.4 %**
-across the ρ/γ jump — the Abgrall condition. A tiny bounded wiggle remains
-because the reconstruction is on conservative variables; primitive-variable
-reconstruction is the documented next refinement, but the sustained oscillation
-is already well under the gate and does not grow. The two-gas Sod matches the
-generalized exact Riemann solution (each side keeping its own γ across the
-contact) both on a uniform grid and through the refluxed 3-level AMR, and
-species mass is conserved to the float32 floor. The same two-gas path is
-re-exercised under WENO5 in the [WENO5 suite](weno.md) (gates 7–8).""")
+**(a) Abgrall interface.** This is *the* discriminating multi-gas test. A naive
+fully-conservative scheme develops spurious **pressure oscillations** at a
+contact where γ jumps, because a conservative update of total energy is
+inconsistent with a uniform pressure when the equation of state changes across
+the face. The panel shows pressure and velocity staying flat to
+**{species.get('p_sust', '—')} / {species.get('u_err', '—')}** while ρ and Y
+advect as a clean top-hat — the quasi-conservative γ transport passes. A tiny
+bounded wiggle remains (conservative-variable reconstruction; primitive-variable
+reconstruction is the documented next refinement) but it is well under the gate
+and does not grow. The wrap-around feature at x = 0/1 is the periodic seam of
+the advected slab, not an artefact.
+
+**(b) two-gas Sod, uniform.** With a real γ 1.4 | 1.6 jump the exact Riemann
+solution keeps a **different γ on each side of the contact**; the computed
+density overlays it (L1 {species.get('sod', '—')}), so the per-side HLLC and
+the Γ transport are consistent through a genuine shock/contact/rarefaction.
+
+**(c) two-gas Sod on 3-level AMR.** The same problem through the full adaptive
+machinery: the colouring shows the base grid (grey) coarsening away from the
+structure while levels 1–2 (cyan/ember) track the contact and shock. The
+composite still lands on the exact solution (L1 {species.get('amr', '—')}) —
+species reconstruction, per-side HLLC and refluxing all compose correctly
+across coarse–fine interfaces.
+
+**(d) species-mass conservation.** ∫ρY drifts by at most
+**{species.get('mass', '—')}** over 200 steps — the float32 floor — confirming
+the scalar φ = ρY is transported conservatively.
+
+The same two-gas path is re-exercised under **WENO5** in the
+[WENO5 suite](weno.md) (gates 7–8) and end-to-end against **experiment** in the
+[Haas–Sturtevant shock–bubble](shock_bubble.md).""")
 
     # ---- fiche 1f: analytic suite (verification + validation) ----------
     fiche("analytic.md", f"""# Analytic suite — *verification & validation*
@@ -1578,7 +1647,8 @@ def main():
             "sod2d_exact.csv", "sod_amr_profile.csv", "mms.csv",
             "reactor_isothermal.csv", "detonation_front.csv",
             "weno_vortex_weno.csv", "weno_vortex_muscl.csv",
-            "species_interface.csv", "analytic_toro1.csv",
+            "species_interface.csv", "species_sod.csv",
+            "species_sod_amr.csv", "species_mass.csv", "analytic_toro1.csv",
             "analytic_toro2.csv", "analytic_toro3.csv", "analytic_toro4.csv",
             "immersed_noslip.csv", "shear_profile.csv",
             "vv_conservation_log.csv"}

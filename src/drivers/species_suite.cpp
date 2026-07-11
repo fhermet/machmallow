@@ -173,6 +173,17 @@ bool gate2_twoGasSod() {
                    exact::sample(L, R, (double(g.xc(i)) - 0.5) / tEnd)
                        .rho) /
                n;
+    // uniform-grid density profile vs the generalized exact Riemann (vv)
+    if (FILE* pf = std::fopen("out/species_sod.csv", "w")) {
+        std::fprintf(pf, "x,rho,rho_exact\n");
+        for (int i = NG; i < NG + n; ++i) {
+            const double x = double(g.xc(i));
+            std::fprintf(pf, "%.6g,%.6g,%.6g\n", x,
+                         double(g.at(i, NG + 4).rho),
+                         exact::sample(L, R, (x - 0.5) / tEnd).rho);
+        }
+        std::fclose(pf);
+    }
     std::printf("gate 2 — two-gas Sod (1.4|1.6): L1(rho) vs exact = "
                 "%.4e (gate 6e-3)\n",
                 err);
@@ -209,13 +220,18 @@ bool gate3_speciesMass() {
     const double m0 = phiMass();
     ScratchY s;
     double t = 0, drift = 0;
+    FILE* pf = std::fopen("out/species_mass.csv", "w"); // trajectory (vv)
+    if (pf) std::fprintf(pf, "step,drift\n");
     for (int k = 0; k < 200; ++k) {
         bcPeriodicX(g, phi, Gm);
         const Real dt = maxStableDtY(g, Gm, CFL);
         step2DY(g, phi, Gm, dt, s, gas);
         t += dt;
-        drift = std::max(drift, std::fabs(phiMass() - m0) / m0);
+        const double dk = std::fabs(phiMass() - m0) / m0;
+        drift = std::max(drift, dk);
+        if (pf) std::fprintf(pf, "%d,%.6e\n", k + 1, dk);
     }
+    if (pf) std::fclose(pf);
     std::printf("gate 3 — species mass, 200 steps: drift = %.3e (gate "
                 "1e-5)\n",
                 drift);
@@ -322,6 +338,42 @@ bool gate4_speciesAmr() {
                            p.grid.dx * p.grid.dy;
                 }
     err /= 0.25;
+    // composite mid-row density profile (finest per cell) vs exact, tagged
+    // by level, for the vv AMR figure (flow is x-aligned / y-uniform)
+    if (FILE* pf = std::fopen("out/species_sod_amr.csv", "w")) {
+        std::fprintf(pf, "x,rho,rho_exact,level\n");
+        const auto rex = [&](double x) {
+            return exact::sample(L, R, (x - 0.5) / tEnd).rho;
+        };
+        const int jm = 8; // base mid-row (NY = 16)
+        for (int i = 0; i < 64; ++i)
+            if (!amr.covered(1, i / bC, jm / bC)) {
+                const double x = double(amr.base.xc(NG + i));
+                std::fprintf(pf, "%.6g,%.6g,%.6g,0\n", x,
+                             double(amr.base.at(NG + i, NG + jm).rho),
+                             rex(x));
+            }
+        for (int l = 1; l < 3; ++l)
+            for (const auto& p : amr.level(l).patches) {
+                int jr = NG;
+                double best = 1e30;
+                for (int j = NG; j < NG + amr.fineCells(); ++j) {
+                    const double dd =
+                        std::fabs(double(p.grid.yc(j)) - 0.125);
+                    if (dd < best) { best = dd; jr = j; }
+                }
+                const int gj = 2 * p.cj0 + (jr - NG);
+                for (int i = NG; i < NG + amr.fineCells(); ++i) {
+                    const int gi = 2 * p.ci0 + (i - NG);
+                    if (l < 2 && amr.covered(l + 1, gi / bC, gj / bC))
+                        continue;
+                    const double x = double(p.grid.xc(i));
+                    std::fprintf(pf, "%.6g,%.6g,%.6g,%d\n", x,
+                                 double(p.grid.at(i, jr).rho), rex(x), l);
+                }
+            }
+        std::fclose(pf);
+    }
     std::printf("gate 4 — two-gas Sod on 3-level AMR: L1 = %.4e (gate "
                 "5e-3), species mass drift = %.3e (gate 1e-5), patches "
                 "L1 %zu L2 %zu\n",
