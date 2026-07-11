@@ -46,31 +46,110 @@ dependencies — metal-cpp is vendored under `third_party/`.
 
 ## Running a case
 
+The 22 ready-made cases live in `cases/`:
+
 ```sh
-./build/run cases/dmr.ini              # Double Mach Reflection (hybrid subcycled AMR)
-./build/run cases/sod.ini              # Sod shock tube
-./build/run cases/cylinder_bowshock.ini # Mach 2 bow shock on an immersed cylinder
-./build/run cases/shear.ini            # viscous shear layer (Navier–Stokes)
+./build/run cases/sod.ini               # Sod shock tube
+./build/run cases/dmr.ini               # Double Mach reflection (hybrid subcycled AMR)
+./build/run cases/cylinder_bowshock.ini # Mach 2 bow shock over an immersed cylinder
+./build/run cases/shear.ini             # viscous shear layer (Navier–Stokes)
 ```
 
-**The solver is entirely driven by the case file** — no per-case C++. A case
-declares the domain, named primitive states, the initial condition as stacked
-geometric regions (half-planes — including *moving* shock fronts —, bands,
-rectangles, circles) with perturbations, immersed solids, and per-side
-boundary conditions (`transmissive`, `reflective`, `noslip`, `inflow`,
-`reservoir`, `backpressure`, segmentable, periodic — plus `analytic`, which
-re-evaluates the regions at time *t* in the ghost cells: the exact moving-shock
-BC in one line). Plus backend, viscosity, reactions, AMR (`levels`, tagging,
-subcycling) and output settings.
+Each run writes `vtkOverlappingAMR` frames to the `prefix` set in its
+`[output]` section (e.g. `out/sod_run_0001.vthb`). Open them in ParaView, or
+render a video with `tools/schlieren_video.py`.
 
-To create a case, copy the commented `cases/TEMPLATE.ini`, then use
-`./build/run --check mycase.ini` (effective config + unknown-key warnings) and
-`./build/run --list` (grammar reference). There are 22 ready-made cases in
-`cases/` (Sod, DMR, shear/Blasius, cylinder, nozzle, detonation/deflagration,
-Kelvin–Helmholtz, Rayleigh–Taylor, Richtmyer–Meshkov, shock–bubble, …).
+## Creating a new case
 
-Render the `.vthb` output to video with `tools/schlieren_video.py`
-(schlieren, vorticity, density; ParaView also opens the files directly).
+**The solver is entirely driven by the `.ini` file — there is no per-case
+C++.** A case declares the domain and grid, named primitive states, the
+initial condition as *stacked geometric regions*, per-side boundary conditions,
+and optional physics / AMR / output. The workflow:
+
+**1. Start from the commented template** (or the closest existing case):
+
+```sh
+cp cases/TEMPLATE.ini cases/mycase.ini
+```
+
+**2. Edit the sections.** A complete minimal case — a shock tube — is just:
+
+```ini
+backend = hybrid          # cpu (reference oracle) | hybrid (Metal GPU)
+t_end   = 0.2
+cfl     = 0.4
+
+[domain]                  # physical rectangle
+x0 = 0
+x1 = 1
+y0 = 0
+y1 = 0.25
+
+[grid]                    # base resolution (multiples of amr.block)
+nx = 128
+ny = 32
+
+[state.left]              # named primitive states: rho, u, v, p (defaults 1,0,0,1)
+rho = 1.0
+p   = 1.0
+
+[state.right]
+rho = 0.125
+p   = 0.1
+
+[ic]                      # a default state, overridden by ordered regions
+default  = right
+region.1 = halfplane 1 0 0.5 : left   # a*x + b*y < c  ->  x < 0.5 is "left"
+
+[bc]                      # per side
+left   = transmissive
+right  = transmissive
+bottom = transmissive
+top    = transmissive
+
+[output]
+frames = 4
+prefix = out/mycase
+```
+
+`#` **and** `;` both begin a comment, so keep **one key per line**. Build up
+from here by adding what you need:
+
+- **Regions** stack over the default (applied in order): `halfplane` (incl.
+  *moving* shock fronts via `speed`), `band`, `rect`, `circle`, `sinex`; plus
+  additive `perturb.N` (sinusoidal, `erf`, hydrostatic).
+- **Physics**: `mu = 1e-3` (Navier–Stokes, no-slip walls), a `[species]` block
+  + `gas = 2` states (two-gas), a `[reaction]` block (Arrhenius —
+  detonation/deflagration), `scheme = weno5` (high-order, single-gas).
+- **Immersed bodies**: a `[solid]` section using the same region grammar.
+- **AMR**: an `[amr]` block (`levels`, `block`, `tag_threshold`,
+  `tag_velocity`, `subcycle`, `regrid_every`).
+- **Boundaries**: `transmissive`, `reflective`, `inflow <state>`, `periodic`
+  (per axis), segmentable, and `analytic` — which re-evaluates the regions at
+  time *t* in the ghosts (an exact moving-shock inflow in one line).
+
+**3. Check the config** — prints the effective settings and flags unknown keys:
+
+```sh
+./build/run --check cases/mycase.ini
+```
+
+**4. Run it:**
+
+```sh
+./build/run cases/mycase.ini
+```
+
+**5. View the result** — open `out/mycase_*.vthb` in ParaView, or render:
+
+```sh
+python3 tools/schlieren_video.py --prefix out/mycase --full
+```
+
+`./build/run --list` prints the full grammar (every section, key, region type
+and BC). The exhaustive reference is
+[`docs/CASE_FORMAT.md`](docs/CASE_FORMAT.md), and
+[`docs/GUIDE.md`](docs/GUIDE.md) walks through a case in 10 minutes.
 
 ## Documentation
 
