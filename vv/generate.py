@@ -379,19 +379,37 @@ def plot_sod2d():
 
 
 def plot_sod_amr(txt):
-    """Bar: mass drift with vs without refluxing (frozen mesh)."""
+    """Two panels: AMR composite vs exact Riemann | mass drift with/without
+    refluxing (frozen mesh)."""
     m = {"with": grab(txt, r"frozen mesh\): ([\d.eE+-]+) with"),
          "without": grab(txt, r"with refluxing \| ([\d.eE+-]+) without")}
-    fig, ax = plt.subplots(figsize=(5.4, 4.4))
+    fig, ax = plt.subplots(1, 2, figsize=(10, 4.2))
+    # left: composite density profile vs exact
+    pp = os.path.join(OUT, "sod_amr_profile.csv")
+    if os.path.exists(pp):
+        rows = read_csv(pp)
+        ex = sorted((float(r["x"]), float(r["rho_exact"])) for r in rows)
+        ax[0].plot([a for a, _ in ex], [b for _, b in ex], "-", color="black",
+                   lw=1.6, label="exact Riemann", zorder=1)
+        for lvl, col, lab, mf in [("0", "#1477b8", "coarse (L0)", "#1477b8"),
+                                  ("1", EMBER, "fine patch (L1)", "none")]:
+            xs = [float(r["x"]) for r in rows if r["level"] == lvl]
+            rs = [float(r["rho"]) for r in rows if r["level"] == lvl]
+            ax[0].plot(xs, rs, "o", color=col, ms=4, mfc=mf, label=lab,
+                       zorder=3 if lvl == "1" else 2)
+        ax[0].set_xlabel("x"); ax[0].set_ylabel("ρ")
+        ax[0].legend(fontsize=8, loc="upper right")
+        ax[0].set_title("AMR composite vs exact Riemann")
+    # right: refluxing conservation bar
     try:
         vals = [float(m["without"]), float(m["with"])]
-        ax.bar(["no refluxing", "with refluxing"], vals,
-               color=[EMBER, CYAN], width=0.6)
-        ax.set_yscale("log"); ax.set_ylabel("max mass drift (frozen mesh)")
+        ax[1].bar(["no refluxing", "with refluxing"], vals,
+                  color=[EMBER, CYAN], width=0.6)
+        ax[1].set_yscale("log"); ax[1].set_ylabel("max mass drift (frozen mesh)")
         for i, v in enumerate(vals):
-            ax.text(i, v * 1.4, f"{v:.1e}", ha="center", fontsize=9)
-        ax.set_title("Refluxing restores conservation\nat coarse/fine faces")
-        ax.set_ylim(top=max(vals) * 6)
+            ax[1].text(i, v * 1.4, f"{v:.1e}", ha="center", fontsize=9)
+        ax[1].set_title("Refluxing restores conservation")
+        ax[1].set_ylim(top=max(vals) * 6)
     except ValueError:
         pass
     fig.tight_layout(); fig.savefig(os.path.join(FIG, "sod_amr.png"))
@@ -537,7 +555,12 @@ coarse/fine flux mismatch (mass drift at the float32 floor); (2) **accuracy**
 > rarefaction all cross the coarse/fine interfaces. Driver: `sod_amr`.
 
 ## Results
-![Mass drift with vs without refluxing](../figures/sod_amr.png)
+![AMR composite vs exact Riemann (left); mass drift with/without refluxing (right)](../figures/sod_amr.png)
+
+The **left panel** overlays the AMR composite density on the exact Riemann
+solution: the coarse cells (blue) carry the smooth regions, while the fine
+patches (orange) cluster exactly on the shock, contact and rarefaction — and
+the whole thing lands on the exact curve.
 
 | Metric | Result |
 |---|---|
@@ -547,12 +570,20 @@ coarse/fine flux mismatch (mass drift at the float32 floor); (2) **accuracy**
 | work vs uniform fine | {samr_work} % of the cell-steps |
 
 ## Discussion
-Refluxing is **essential**: with a frozen coarse/fine interface swept by all
-three waves, turning it off leaks mass **{rfx_ratio}× more**. With it on, the
-drift sits at the float32 floor. Meanwhile the AMR composite is **as accurate**
-as the uniform-fine grid (L1 ratio ≈ 1) for only ~{samr_work} % of the
-cell-steps — the whole point of AMR. This is the discriminating test behind
-the conservation-gate tolerances used across the suite.""")
+**What is refluxing?** At a coarse/fine interface the coarse cell and the
+adjacent fine cells each compute the flux through the *shared* face
+independently — at different resolutions, so the two disagree. Left
+uncorrected, that mismatch adds or removes mass (and momentum/energy) at the
+interface every step, breaking conservation. **Refluxing** (Berger–Colella)
+fixes it: after the fine level advances, the coarse flux through the shared
+face is *replaced* by the sum of the fine-face fluxes, so the interface
+becomes conservative to machine precision.
+
+The right panel is the proof: with a frozen coarse/fine interface swept by all
+three waves, turning refluxing **off** leaks mass **{rfx_ratio}× more**; with
+it **on**, the drift sits at the float32 floor. Meanwhile the AMR composite is
+**as accurate** as the uniform-fine grid (L1 ratio ≈ 1) for only ~{samr_work} %
+of the cell-steps — the whole point of AMR.""")
 
     # ---- fiche 3: Blasius boundary layer (validation vs theory) ---------
     fiche("blasius.md", f"""# Blasius boundary layer — *validation vs similarity*
@@ -791,7 +822,7 @@ def main():
     keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv",
             "blasius_profile_weno.csv", "blasius_cf_weno.csv",
             "sod_muscl_400.csv", "sod_weno_400.csv", "sod2d_field.csv",
-            "sod2d_exact.csv", "detonation_front.csv",
+            "sod2d_exact.csv", "sod_amr_profile.csv", "detonation_front.csv",
             "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):

@@ -12,7 +12,12 @@ coarse/fine flux mismatch (mass drift at the float32 floor); (2) **accuracy**
 > rarefaction all cross the coarse/fine interfaces. Driver: `sod_amr`.
 
 ## Results
-![Mass drift with vs without refluxing](../figures/sod_amr.png)
+![AMR composite vs exact Riemann (left); mass drift with/without refluxing (right)](../figures/sod_amr.png)
+
+The **left panel** overlays the AMR composite density on the exact Riemann
+solution: the coarse cells (blue) carry the smooth regions, while the fine
+patches (orange) cluster exactly on the shock, contact and rarefaction — and
+the whole thing lands on the exact curve.
 
 | Metric | Result |
 |---|---|
@@ -22,12 +27,20 @@ coarse/fine flux mismatch (mass drift at the float32 floor); (2) **accuracy**
 | work vs uniform fine | 63 % of the cell-steps |
 
 ## Discussion
-Refluxing is **essential**: with a frozen coarse/fine interface swept by all
-three waves, turning it off leaks mass **6279× more**. With it on, the
-drift sits at the float32 floor. Meanwhile the AMR composite is **as accurate**
-as the uniform-fine grid (L1 ratio ≈ 1) for only ~63 % of the
-cell-steps — the whole point of AMR. This is the discriminating test behind
-the conservation-gate tolerances used across the suite.
+**What is refluxing?** At a coarse/fine interface the coarse cell and the
+adjacent fine cells each compute the flux through the *shared* face
+independently — at different resolutions, so the two disagree. Left
+uncorrected, that mismatch adds or removes mass (and momentum/energy) at the
+interface every step, breaking conservation. **Refluxing** (Berger–Colella)
+fixes it: after the fine level advances, the coarse flux through the shared
+face is *replaced* by the sum of the fine-face fluxes, so the interface
+becomes conservative to machine precision.
+
+The right panel is the proof: with a frozen coarse/fine interface swept by all
+three waves, turning refluxing **off** leaks mass **6279× more**; with
+it **on**, the drift sits at the float32 floor. Meanwhile the AMR composite is
+**as accurate** as the uniform-fine grid (L1 ratio ≈ 1) for only ~63 %
+of the cell-steps — the whole point of AMR.
 
 ---
 *Part of the [V&V dossier](../README.md). Regenerate: `python3 vv/generate.py`. Source data: [`../data/`](../data/).*
