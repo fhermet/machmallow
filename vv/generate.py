@@ -417,6 +417,49 @@ def plot_sod_amr(txt):
     return m
 
 
+def plot_mms(txt):
+    """Manufactured-solution order study: L1 vs N. Viscous ~2 (both schemes),
+    steady-inviscid ~1 (numerical-viscosity-limited, informative)."""
+    path = os.path.join(OUT, "mms.csv")
+    if not os.path.exists(path):
+        return {}
+    rows = read_csv(path)
+    series = {}
+    for r in rows:
+        series.setdefault(r["label"], []).append(
+            (float(r["N"]), float(r["L1"])))
+    style = {
+        "viscous MUSCL": ("o-", CYAN, 1.0),
+        "viscous WENO5": ("s-", EMBER, 1.0),
+        "viscous MUSCL+gravity": ("^-", PURPLE, 1.0),
+        "inviscid MUSCL": (".--", "gray", 0.55),
+        "inviscid WENO5": (".--", "silver", 0.55),
+    }
+    fig, ax = plt.subplots(figsize=(6.4, 5.0))
+    for lab, pts in sorted(series.items()):
+        pts.sort()
+        N = np.array([p[0] for p in pts]); L1 = np.array([p[1] for p in pts])
+        slope = -np.polyfit(np.log(N), np.log(L1), 1)[0]
+        fmt, col, a = style.get(lab, ("o-", "black", 1.0))
+        ax.loglog(N, L1, fmt, color=col, alpha=a, ms=5,
+                  label=f"{lab}  (p={slope:.2f})")
+    N0 = np.array([16.0, 128.0])
+    for p, key in [(1, "inviscid MUSCL"), (2, "viscous MUSCL")]:
+        if key in series:
+            b = sorted(series[key])[0][1] * 1.25
+            ax.loglog(N0, b * (N0 / 16.0) ** (-p), ":", color="gray", lw=1)
+            ax.text(132, b * (128 / 16.0) ** (-p), f"p={p}", fontsize=8,
+                    color="gray", va="center")
+    ax.set_xlabel("N (cells per side)"); ax.set_ylabel("$L_1$ error (density)")
+    ax.set_title("Manufactured solution — Navier–Stokes order")
+    ax.legend(fontsize=8)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "mms.png"))
+    plt.close(fig)
+    return {"vmuscl": grab(txt, r"visqueux MUSCL ([\d.]+)"),
+            "vweno": grab(txt, r"WENO5 ([\d.]+) ;"),
+            "vgrav": grab(txt, r"visqueux\+gravite ([\d.]+)")}
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -429,9 +472,10 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 
 
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
-                 sod2d_txt="", samr_txt=""):
+                 sod2d_txt="", samr_txt="", mms=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
+    mms = mms or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -480,7 +524,45 @@ MUSCL converges at ~2. WENO5's formal order 5 is capped here by the RK3 time
 integration and the midpoint (1-point) face flux, but it carries a **much
 smaller error constant** — the isentropic vortex is ~6× less dissipated than
 MUSCL at equal resolution. The viscous Navier–Stokes operator is verified
-separately at order 2 by manufactured solutions (`mms`).""")
+separately at order 2 by manufactured solutions (`mms`; see the MMS fiche).""")
+
+    # ---- fiche 1b: manufactured solution (Navier-Stokes order) ----------
+    fiche("mms.md", f"""# Manufactured solution (MMS) — *verification (Navier–Stokes order)*
+
+**Objective.** Verify the **viscous Navier–Stokes** operator converges at its
+design order 2. A smooth steady solution is imposed with an exact source term
+$S = \\nabla\\!\\cdot F_{{\\rm Euler}} - \\nabla\\!\\cdot F_{{\\rm visc}}$; the
+discrete L1 error must then fall as $O(h^2)$. This is the only gate that pins
+the **viscous** operator's order (the
+[order-of-accuracy](order_of_accuracy.md) fiche covers the inviscid transient
+order).
+
+## Numerical setup
+> Smooth periodic manufactured solution (sinusoidal ρ,u,v,p), source computed
+> **in double** by 4th-order finite differences and injected each step. Relax
+> to steady state, measure L1(ρ) vs the manufactured field, N = 16 → 128,
+> μ = 0.01, CFL 0.4. Schemes MUSCL & WENO5 (+ a gravity-source variant).
+> Driver: `mms`. float32.
+
+## Results
+![MMS order study](../figures/mms.png)
+
+| Operator | Observed order |
+|---|---|
+| viscous, MUSCL | {mms.get('vmuscl', '—')} |
+| viscous, WENO5 | {mms.get('vweno', '—')} |
+| viscous + gravity, MUSCL | {mms.get('vgrav', '—')} |
+
+## Discussion
+Both schemes reach order **~2** on the viscous operator — capped at 2 by the
+**central 2nd-order viscous flux** (shared by MUSCL and WENO5), exactly as
+expected, so the full Navier–Stokes discretization is verified at order 2. The
+gravity-source variant stays at 2 (a sign or work-term bug would break the
+steady state and the order). The faint **inviscid** curves sit at ~1: with no
+physical viscosity the steady-state error is set by the scheme's *numerical*
+viscosity (1st order on this solution) — that is **not** the transient design
+order (MUSCL ~2, WENO5 ~4–5), which the order-of-accuracy fiche verifies by
+advecting an exact solution.""")
 
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
@@ -768,6 +850,7 @@ python3 vv/generate.py
 | Case | Type | Key result | Status |
 |---|---|---|---|
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
+| [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes) | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
@@ -791,26 +874,29 @@ def main():
     args = ap.parse_args()
     os.makedirs(FIG, exist_ok=True); os.makedirs(DATA, exist_ok=True)
 
-    conv_txt = sod_txt = bla_txt = det_txt = sod2d_txt = samr_txt = ""
+    conv_txt = sod_txt = bla_txt = det_txt = sod2d_txt = samr_txt = mms_txt = ""
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
         sod_txt = run_driver("sod1d")
         sod2d_txt = run_driver("sod2d")
         samr_txt = run_driver("sod_amr")
+        mms_txt = run_driver("mms")
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
-        conv_txt, sod_txt, sod2d_txt, samr_txt, bla_txt, det_txt = (
+        conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, bla_txt, det_txt = (
             cached("convergence"), cached("sod1d"), cached("sod2d"),
-            cached("sod_amr"), cached("blasius"), cached("detonation"))
+            cached("sod_amr"), cached("mms"), cached("blasius"),
+            cached("detonation"))
 
     print("plotting…")
     orders = plot_order()
     sod_n = plot_sod()
     plot_sod2d()
     samr = plot_sod_amr(samr_txt)
+    mms = plot_mms(mms_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -822,14 +908,14 @@ def main():
     keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv",
             "blasius_profile_weno.csv", "blasius_cf_weno.csv",
             "sod_muscl_400.csv", "sod_weno_400.csv", "sod2d_field.csv",
-            "sod2d_exact.csv", "sod_amr_profile.csv", "detonation_front.csv",
-            "vv_conservation_log.csv"}
+            "sod2d_exact.csv", "sod_amr_profile.csv", "mms.csv",
+            "detonation_front.csv", "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
-                 sod2d_txt, samr_txt)
+                 sod2d_txt, samr_txt, mms)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 

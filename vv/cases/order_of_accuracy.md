@@ -26,7 +26,7 @@ MUSCL converges at ~2. WENO5's formal order 5 is capped here by the RK3 time
 integration and the midpoint (1-point) face flux, but it carries a **much
 smaller error constant** — the isentropic vortex is ~6× less dissipated than
 MUSCL at equal resolution. The viscous Navier–Stokes operator is verified
-separately at order 2 by manufactured solutions (`mms`).
+separately at order 2 by manufactured solutions (`mms`; see the MMS fiche).
 
 ---
 *Part of the [V&V dossier](../README.md). Regenerate: `python3 vv/generate.py`. Source data: [`../data/`](../data/).*

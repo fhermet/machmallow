@@ -22,6 +22,7 @@ python3 vv/generate.py
 | Case | Type | Key result | Status |
 |---|---|---|---|
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
+| [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes) | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
