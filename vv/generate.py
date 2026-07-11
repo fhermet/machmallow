@@ -37,6 +37,7 @@ OUT = os.path.join(ROOT, "out")
 VV = os.path.join(ROOT, "vv")
 FIG = os.path.join(VV, "figures")
 DATA = os.path.join(VV, "data")
+CASES = os.path.join(VV, "cases")
 
 # clean, credible scientific style (not the black brand look — clarity first)
 CYAN, EMBER, PURPLE = "#1477b8", "#d1451b", "#6a3d9a"
@@ -220,7 +221,13 @@ def grab(text, pattern, default="—"):
     return m.group(1) if m else default
 
 
-def write_readme(orders, sod_n, sod_txt, bla_txt, conv_txt):
+FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
+          "Regenerate: `python3 vv/generate.py`. "
+          "Source data: [`../data/`](../data/).*\n")
+
+
+def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt):
+    """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     def order_of(prob, scheme):
         return f"{orders.get((prob, scheme), float('nan')):.2f}"
     rex = grab(bla_txt, r"Re_x = (\d+)")
@@ -228,42 +235,28 @@ def write_readme(orders, sod_n, sod_txt, bla_txt, conv_txt):
     d99 = grab(bla_txt, r"delta99:.*?\(([-\d.]+)%\)")
     cf = grab(bla_txt, r"Cf:.*?\(([-\d.]+)%\)")
     conv_order = grab(sod_txt, r"mean order: ([\d.]+)")
-    md = f"""# Verification & Validation — figures
+    os.makedirs(CASES, exist_ok=True)
 
-Reproducible evidence that machmallow solves the equations right
-(**verification**) and the right equations (**validation**). Every figure
-below is generated from a driver's output by `vv/generate.py` and committed,
-so it renders here without running anything.
+    def fiche(name, text):
+        with open(os.path.join(CASES, name), "w") as f:
+            f.write(text.rstrip() + "\n" + FOOTER)
 
-> These are the highlights with pictures. The **full gate list** (20+
-> quantitative PASS/FAIL gates, replayed in CI) is in
-> [`docs/VALIDATION.md`](../docs/VALIDATION.md).
+    # ---- fiche 1: order of accuracy (verification) ----------------------
+    fiche("order_of_accuracy.md", f"""# Order of accuracy — *verification*
 
-Regenerate everything:
+**Objective.** Confirm each scheme converges at its **design rate** in a
+smooth regime: the $L_1$ error must fall like $h^p$ as the grid is refined
+(measured before the float32 roundoff floor flattens the curve).
 
-```sh
-cmake --build build -j
-python3 vv/generate.py
-```
+## Numerical setup
+> MUSCL-Hancock + HLLC **and** WENO5 + SSP-RK3, on **uniform grids** (no AMR),
+> inviscid Euler, CFL 0.4. Problems: entropy wave (periodic, t=1), 2D
+> isentropic vortex (10×10 periodic, t=2), Sod (t=0.2). Reference = the
+> advected initial condition (smooth) / the exact Riemann solution (Sod).
+> float32. Driver: `convergence`.
 
-Numbers below are from an Apple M4 (float32); they may vary by ~1 ULP across
-machines. All studies **PASS** their CI gates.
-
----
-
-## 1. Verification — order of accuracy
-
-Smooth-regime convergence: the $L_1$ error must fall at the scheme's design
-rate as the grid is refined (measured before the float32 roundoff floor
-flattens the curve).
-
-> **Numerical setup** — MUSCL-Hancock + HLLC **and** WENO5 + SSP-RK3, on
-> **uniform grids** (no AMR), inviscid Euler, CFL 0.4. Problems: entropy wave
-> (periodic, t=1), 2D isentropic vortex (10×10 periodic, t=2), Sod (t=0.2).
-> Exact reference = the advected initial condition (smooth cases) / the exact
-> Riemann solution (Sod). float32.
-
-![Order of accuracy](figures/order_of_accuracy.png)
+## Results
+![Order of accuracy](../figures/order_of_accuracy.png)
 
 | Problem | Scheme | Observed order |
 |---|---|---|
@@ -272,61 +265,65 @@ flattens the curve).
 | isentropic vortex | MUSCL | {order_of('isentropic_vortex', 'muscl')} |
 | isentropic vortex | WENO5 | {order_of('isentropic_vortex', 'weno5')} |
 
-MUSCL converges at ~2; WENO5's formal order 5 is capped by the RK3 time
-integration and the midpoint face flux, but it carries a **much smaller error
-constant** (the vortex is ~6× less dissipated than MUSCL at equal
-resolution). The viscous Navier–Stokes operator is separately verified at
-order 2 by manufactured solutions (`mms`; see `docs/VALIDATION.md`).
+## Discussion
+MUSCL converges at ~2. WENO5's formal order 5 is capped here by the RK3 time
+integration and the midpoint (1-point) face flux, but it carries a **much
+smaller error constant** — the isentropic vortex is ~6× less dissipated than
+MUSCL at equal resolution. The viscous Navier–Stokes operator is verified
+separately at order 2 by manufactured solutions (`mms`).""")
 
----
+    # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
+    fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
 
-## 2. Validation — Sod shock tube vs exact Riemann
+**Objective.** Reproduce the exact solution of the classic Riemann problem:
+density, velocity and pressure at t = 0.2 must overlay the exact solution,
+capturing the rarefaction, the contact discontinuity and the shock without
+spurious oscillations.
 
-The classic Riemann problem: density, velocity and pressure at t = 0.2
-overlaid on the exact solution, for **both schemes**. Each captures the
-rarefaction, the contact discontinuity and the shock without spurious
-oscillations; WENO5 + HLLC resolves the contact slightly more sharply.
+## Numerical setup
+> **MUSCL-Hancock and WENO5**, both with HLLC, on a uniform grid (**no AMR**),
+> inviscid Euler, CFL 0.4, t = 0.2. Profile shown at N = {sod_n} (from the
+> `convergence` driver — same solver for both schemes). Reference = exact
+> Riemann solution. float32.
 
-> **Numerical setup** — **MUSCL-Hancock and WENO5**, both with HLLC, on a
-> uniform grid (**no AMR**), inviscid Euler, CFL 0.4, t = 0.2. Profile shown
-> at N = {sod_n} (from the `convergence` driver, same solver for both
-> schemes). Reference = exact Riemann solution. float32.
+## Results
+![Sod shock tube — MUSCL & WENO5 vs exact](../figures/sod.png)
 
-![Sod shock tube — MUSCL & WENO5 vs exact](figures/sod.png)
+Grid-convergence order (L1 density vs exact): **≈0.90 for both schemes**. The
+`sod1d` driver's independent 1D study gives MUSCL {conv_order}.
 
-Grid-convergence order (L1 density vs the exact solution): **≈0.90 for both
-schemes** — as expected, discontinuities cap both at first order (the
-high-order advantage of WENO5 shows on *smooth* flow; see §1). The `sod1d`
-driver's independent 1D grid-convergence study gives MUSCL {conv_order}.
+## Discussion
+Both schemes match the exact solution. Discontinuities cap the convergence at
+first order for both — the high-order advantage of WENO5 appears on *smooth*
+flow (see the order-of-accuracy fiche), while here WENO5 + HLLC only resolves
+the **contact** slightly more sharply.""")
 
----
+    # ---- fiche 3: Blasius boundary layer (validation vs theory) ---------
+    fiche("blasius.md", f"""# Blasius boundary layer — *validation vs similarity*
 
-## 3. Validation — Blasius boundary layer vs similarity
+**Objective.** A low-Mach viscous flow over a flat plate: at the measurement
+station (Re_x = {rex}) the steady velocity profile must collapse onto the
+Blasius similarity solution $u/U_e = f'(\\eta)$, with the right boundary-layer
+thickness and skin friction.
 
-A low-Mach viscous flow over a flat plate. At the measurement station
-(Re_x = {rex}) the steady velocity profile must collapse onto the Blasius
-similarity solution $u/U_e = f'(\\eta)$.
+## Numerical setup
+> **MUSCL-Hancock and WENO5**, both with HLLC, on a **single uniform grid
+> 320×256** (dx = dy ≈ 3.9e-3, **no AMR**), GPU (`hybrid` backend),
+> Navier–Stokes μ = 8e-5, CFL 0.4, free stream U = 0.3 (**M ≈ 0.25**). BCs:
+> inflow (left), zero-gradient (right), **pinned free stream** on top (ZPG),
+> and an **aligned bottom wall** — slip ahead of the leading edge (x < 0.15),
+> **no-slip** on the plate. Marched to steady state. float32. Driver:
+> `blasius`.
 
-> **Numerical setup** — **MUSCL-Hancock and WENO5**, both with HLLC, on a
-> **single uniform grid 320×256** (dx = dy ≈ 3.9e-3, **no AMR**), GPU
-> (`hybrid` backend), Navier–Stokes μ = 8e-5, CFL 0.4, free stream U = 0.3
-> (**M ≈ 0.25**). BCs: inflow (left), zero-gradient (right), **pinned free
-> stream** on top (zero pressure gradient), and an **aligned bottom wall** —
-> slip ahead of the leading edge (x < 0.15), **no-slip** on the plate. Marched
-> to steady state. float32.
+## Results
 
-![Blasius profile vs similarity](figures/blasius.png)
+### Velocity profile
+![Blasius profile vs similarity](../figures/blasius.png)
 
-MUSCL and WENO5 land essentially on top of each other here — expected for a
-**smooth steady** boundary layer (the viscous flux operator is shared and
-there are no discontinuities for WENO5 to sharpen). That agreement is itself
-a useful cross-scheme consistency check; the gated metrics below are from the
-MUSCL run.
-
-The skin friction measured at several stations along the plate, against the
-Blasius law $C_f = 0.664/\\sqrt{{Re_x}}$:
-
-![Skin friction vs Blasius](figures/blasius_cf.png)
+MUSCL and WENO5 land essentially on top of each other — expected for a
+**smooth steady** boundary layer (shared viscous operator, no discontinuities
+to sharpen); a useful cross-scheme consistency check. Gated metrics are from
+the MUSCL run:
 
 | Quantity (station Re_x = {rex}) | Result vs theory |
 |---|---|
@@ -334,46 +331,70 @@ Blasius law $C_f = 0.664/\\sqrt{{Re_x}}$:
 | boundary-layer thickness $\\delta_{{99}}$ | {d99}% |
 | skin friction $C_f$ vs $0.664/\\sqrt{{Re_x}}$ | {cf}% |
 
-**Where the Cf bias comes from — a grid-convergence + Mach study.** The Cf is
-biased high everywhere (~+5 % mid-plate, rising to +7 % at the leading edge
-and +12 % near the outflow). A refinement study (reproduce with
+### Skin friction along the plate
+![Skin friction vs Blasius](../figures/blasius_cf.png)
+
+## Discussion — where the Cf bias comes from
+The Cf is biased high everywhere (~+5 % mid-plate, +7 % at the leading edge,
++12 % near the outflow). A grid-convergence + Mach study (reproduce with
 `bash vv/blasius_study.sh`) pins down each cause:
 
-![Cf bias vs wall-normal resolution](figures/blasius_refine.png)
+![Cf bias vs wall-normal resolution](../figures/blasius_refine.png)
 
-- **Dominant cause — near-wall resolution.** Refining the wall-normal grid
-  drives the mid-plate bias down monotonically (+8.1 % at ny=128 → +4.0 % at
-  ny=1024). The estimator itself is *exact* for a Blasius profile (the
-  near-wall velocity is linear to $O(\\eta^4)$), so this is the finite-grid
-  representation of the wall shear, not the wall-gradient formula.
-  **Refining in y *alone* recovers the accuracy at ~half the cells** of
-  isotropic refinement (anisotropic ny=512/nx=320 = 164k cells beats isotropic
-  328k) — the error is purely wall-normal.
+- **Dominant — near-wall resolution.** Refining the wall-normal grid drives
+  the mid-plate bias down monotonically (+8.1 % at ny=128 → +4.0 % at
+  ny=1024). The estimator is *exact* for a Blasius profile (near-wall velocity
+  linear to $O(\\eta^4)$), so this is the finite-grid wall shear, not the
+  formula. **Refining in y *alone* recovers the accuracy at ~half the cells**
+  of isotropic refinement — the error is purely wall-normal.
 - **Compressibility — ruled out.** At fixed Re_x and resolution, lowering the
-  Mach number from 0.25 to 0.06 (raising the stagnation pressure) leaves the
-  bias unchanged (+5.4 → +5.5 %). The incompressible reference is fine.
-- **Residual ~+4 % (grid-independent plateau)** — consistent with the weak
-  **favorable pressure gradient** ($U_e$ drifts +2 % along the plate under the
-  pinned top), which raises the wall shear above the ideal ZPG Blasius law; it
-  is Mach- and grid-independent. (A virtual-origin shift is ruled out — the
-  mid-plate ratio is already flat at the geometric origin.)
-- **Local rises** — the leading edge (+7 %) has the thinnest BL (fewest cells)
-  plus the slip→no-slip / LE singularity; the outflow (+12 %) is a
-  transmissive-boundary artifact. δ99 (−2 %) is the discrete 0.99-crossing.
+  Mach number from 0.25 to 0.06 leaves the bias unchanged (+5.4 → +5.5 %).
+- **Residual ~+4 %** — consistent with the weak **favorable pressure
+  gradient** ($U_e$ drifts +2 % under the pinned top); Mach- and
+  grid-independent. (Virtual-origin shift ruled out — mid-plate already flat.)
+- **Local rises** — leading edge (thinnest BL, fewest cells + LE singularity);
+  outflow (transmissive-boundary artifact). δ99 (−2 %) is the discrete
+  0.99-crossing.
 
 **Design note.** Industrial codes avoid this bias with wall-normal
 *stretching* (body-fitted prism layers, y⁺ < 1) — not possible on our
 uniform-Cartesian + ratio-2 block-AMR foundation. The on-design equivalent is
-the **anisotropic uniform grid** above (fine y, coarse x). All metrics pass
-their gates.
+the anisotropic uniform grid above. All metrics pass their gates.""")
 
----
+    # ---- index ----------------------------------------------------------
+    index = f"""# Verification & Validation
 
-*Generated by [`vv/generate.py`](generate.py). Source data in
-[`vv/data/`](data/). Full V&V gate list: [`docs/VALIDATION.md`](../docs/VALIDATION.md).*
+Reproducible evidence that machmallow solves the equations right
+(**verification**) and the right equations (**validation**). Each case has its
+own fiche with the numerical setup, committed figures (computed vs
+exact/theory) and a discussion — they render on GitHub without running
+anything.
+
+> This is the illustrated highlight reel. The **full quantitative gate list**
+> (20+ PASS/FAIL gates replayed in CI) is in
+> [`../docs/VALIDATION.md`](../docs/VALIDATION.md).
+
+Regenerate every figure and fiche:
+
+```sh
+cmake --build build -j
+python3 vv/generate.py
+```
+
+## Cases
+
+| Case | Type | Key result | Status |
+|---|---|---|---|
+| [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
+| [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
+| [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS {rms} vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
+
+Numbers are from an Apple M4 (float32) and may vary ~1 ULP across machines.
+
+*Generated by [`generate.py`](generate.py); source data in [`data/`](data/).*
 """
     with open(os.path.join(VV, "README.md"), "w") as f:
-        f.write(md)
+        f.write(index)
 
 
 def main():
@@ -405,8 +426,9 @@ def main():
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
-    write_readme(orders, sod_n, sod_txt, bla_txt, conv_txt)
-    print(f"done — figures in {FIG}, report in {os.path.join(VV, 'README.md')}")
+    write_report(orders, sod_n, sod_txt, bla_txt, conv_txt)
+    print(f"done — figures in {FIG}, fiches in {CASES}, index "
+          f"{os.path.join(VV, 'README.md')}")
 
 
 if __name__ == "__main__":
