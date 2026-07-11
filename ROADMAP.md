@@ -57,6 +57,10 @@ characteristic non-reflecting BC remains in the backlog.
   (DMR), annotated pedagogical overlay (LaTeX style) and MP4 export via
   ffmpeg. Frame-per-step output on the solver side via `[output] every = K`.
   Remaining: log plotting. Without depending on ParaView for daily use.
+  **V&V figure dossier** (`vv/`): `vv/generate.py` runs the V&V drivers and
+  turns their output into committed comparison figures (computed vs
+  exact/theory) + a self-contained report — first batch: order of accuracy,
+  Sod vs exact Riemann, Blasius vs similarity.
 - [~] Systematically actionable error messages (file:line, suggested fix) —
   started: GPU slot-pool exhaustion (AmrGpuML) now reported by a clear error
   (patch count, KB/patch, pool MB, and the levers: `amr.levels`,

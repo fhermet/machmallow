@@ -17,6 +17,10 @@ flowchart LR
 The numbers below are from the drivers (Apple M4, float32). They may vary by
 ~1 ULP across machines; the **gates** have margin.
 
+> 📊 For **comparison figures** (computed vs exact/theory) generated from the
+> driver output, see [`vv/`](../vv/README.md) — regenerate with
+> `python3 vv/generate.py`.
+
 ---
 
 ## 1. Verification

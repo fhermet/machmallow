@@ -114,6 +114,10 @@ validation harnesses run in CI on every push (see `.github/workflows/ci.yml`).
 Development follows a strict CPU/GPU lock-step discipline (the CPU path is the
 reference oracle).
 
+📊 **[`vv/`](vv/README.md) — verification & validation figures** (computed vs
+exact/theory, reproducible with `python3 vv/generate.py`). The full
+quantitative gate list is in [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
 ## Roadmap
 
 Milestones and planned work (multi-level AMR, WENO, cut-cells, real-time

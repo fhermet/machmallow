@@ -101,7 +101,7 @@ double l1DensityError(const Solution& sol, int n, bool writeCsv) {
         std::filesystem::create_directories("out");
         const std::string path = "out/sod_" + std::to_string(n) + ".csv";
         f = std::fopen(path.c_str(), "w");
-        std::fprintf(f, "x,rho,u,p,rho_exact\n");
+        std::fprintf(f, "x,rho,u,p,rho_exact,u_exact,p_exact\n");
     }
     for (int i = 0; i < n; ++i) {
         const double xc = (i + 0.5) * sol.dx;
@@ -110,8 +110,9 @@ double l1DensityError(const Solution& sol, int n, bool writeCsv) {
         const Prim w = toPrim(sol.U[NG + i]);
         err += std::fabs(double(w.rho) - ex.rho) * sol.dx;
         if (f != nullptr) {
-            std::fprintf(f, "%.8g,%.8g,%.8g,%.8g,%.8g\n", xc, double(w.rho),
-                         double(w.u), double(w.p), ex.rho);
+            std::fprintf(f, "%.8g,%.8g,%.8g,%.8g,%.8g,%.8g,%.8g\n", xc,
+                         double(w.rho), double(w.u), double(w.p), ex.rho,
+                         ex.u, ex.p);
         }
     }
     if (f != nullptr) std::fclose(f);

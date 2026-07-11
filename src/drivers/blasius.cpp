@@ -158,6 +158,20 @@ int main() {
         if (d99 < 0 && u >= 0.99) d99 = y; // first y reaching 0.99 Ue
     }
     const double rms = std::sqrt(e2 / n);
+    // dump the station profile (u/Ue vs eta, and Blasius f') for the V&V
+    // figure (vv/). Guarded: skip silently if out/ is unavailable.
+    if (FILE* pf = std::fopen("out/blasius_profile.csv", "w")) {
+        std::fprintf(pf, "eta,u_computed,blasius\n");
+        for (int j = 0; j < ny; ++j) {
+            const double y = double(g.yc(NG + j));
+            const double eta = y * scale;
+            if (eta > 6.0) break;
+            std::fprintf(pf, "%.6g,%.6g,%.6g\n", eta,
+                         double(toPrim(g.at(im, NG + j)).u) / Ue,
+                         bl.fpAt(eta));
+        }
+        std::fclose(pf);
+    }
     if (std::getenv("PROFILE"))
         for (int j = 0; j < ny; j += 4) {
             const double y = double(g.yc(NG + j));
