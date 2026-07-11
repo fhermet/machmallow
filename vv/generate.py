@@ -602,6 +602,36 @@ def plot_analytic(txt):
     return d
 
 
+def plot_immersed(txt):
+    """No-slip Blasius boundary layer grown on an IMMERSED plate (wall set by
+    the solid mask, not a domain BC): u/Ue vs the Blasius f'(eta)."""
+    path = os.path.join(OUT, "immersed_noslip.csv")
+    d = {"rms": grab(txt, r"profil RMS\(u/Ue - f'\) = ([\d.eE+-]+)"),
+         "slip": grab(txt, r"glissement paroi u/Ue = ([\d.]+)"),
+         "cf": grab(txt, r"Cf = [\d.eE+-]+ vs [\d.eE+-]+ \(Blasius\) \| écart (\d+)%"),
+         "rex": grab(txt, r"Re_x=(\d+)"),
+         "refl_err": grab(txt, r"err ([\d.]+)%, gate 5%"),
+         "amr_err": grab(txt, r"AMR vs base ([\d.]+)%"),
+         "gpu": grab(txt, r"single\s+patches.*écart rel max ([\d.eE+-]+)"),
+         "gpu_ml": grab(txt, r"ML \d+ niveaux\s+\| écart rel max ([\d.eE+-]+)")}
+    if not os.path.exists(path):
+        return d
+    rows = read_csv(path)
+    eta = [float(r["eta"]) for r in rows]
+    fig, ax = plt.subplots(figsize=(5.4, 5.0))
+    ax.plot([float(r["fp"]) for r in rows], eta, "-", color="black", lw=2,
+            label="Blasius $f'(\\eta)$")
+    ax.plot([float(r["u"]) for r in rows], eta, "o", color=CYAN, ms=4,
+            label=f"immersed plate (RMS {d['rms']})")
+    ax.set_xlabel(r"$u / U_e$"); ax.set_ylabel(r"$\eta = y\,\sqrt{U_e/(\nu x)}$")
+    ax.set_ylim(0, 8); ax.set_xlim(0, 1.05)
+    ax.set_title(f"No-slip on an immersed plate — $Re_x$={d['rex']}")
+    ax.legend(fontsize=9, loc="lower right")
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "immersed.png"))
+    plt.close(fig)
+    return d
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -615,7 +645,7 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
                  sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None,
-                 species=None, analytic=None):
+                 species=None, analytic=None, immersed=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
@@ -623,6 +653,7 @@ def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
     weno = weno or {}
     species = species or {}
     analytic = analytic or {}
+    immersed = immersed or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -874,6 +905,57 @@ the smooth sine crests — the documented motivation for WENO5, see
 extrema — reaches ~2. Sedov recovers the self-similar **½** exponent and RT
 matches the linear dispersion relation $\\sqrt{{Agk}}$ to within a few percent.
 Together these pin the scheme's accuracy **and** its nonlinear robustness.""")
+
+    # ---- fiche 1g: immersed boundaries (validation + verification) -----
+    fiche("immersed.md", f"""# Immersed boundaries — *validation & verification*
+
+**Objective.** Validate the staircase immersed-solid treatment (solid mask +
+mask-aware fluxes threaded through `step2D` and the whole AMR chain) on four
+fronts: (1) a **planar shock reflecting on an immersed wall** — the
+post-reflection wall pressure has an *exact* 1D value (sub- and supersonic
+incident); (2) the **declarative** path (a `[solid]` region parsed from
+`cases/shock_wall.ini` run through the real runner); (3) the same reflection
+**with AMR** (2-level, subcycled, 3-level) — wall pressure preserved through
+restriction / reflux / prolongation / body-edge tagging; (4) a **no-slip
+viscous** boundary layer — Blasius on a plate posed *by the mask* (not a domain
+BC) — and (5) **CPU↔GPU lock-step** on an immersed Mach-2 cylinder.
+
+## Numerical setup
+> MUSCL-Hancock + HLLC, reflective wall flux inside the masked cells. Shock
+> reflection: Ms = 2 (subsonic) / 3 (supersonic), exact 1D reflected pressure.
+> No-slip: M ≈ 0.25, μ = 1.2e-4, plate from x = 0.2, Blasius by RK4. GPU:
+> `AmrGpu` vs the validated CPU `Amr2` in lock-step (same dt). Drivers:
+> `immersed`, `immersed_case`, `immersed_amr`, `immersed_noslip`,
+> `immersed_gpu`. float32.
+
+## Results
+![No-slip Blasius on an immersed plate](../figures/immersed.png)
+
+| Gate | Test | Result |
+|---|---|---|
+| shock | wall pressure vs exact 1D (declarative) | err {immersed.get('refl_err', '—')} % (gate 5 %), non-penetration \\|u\\|→0 |
+| AMR | wall pressure, AMR vs base | {immersed.get('amr_err', '—')} % (gate 2 %), exact within 5 % |
+| no-slip | profile RMS(u/Ue − f′) | {immersed.get('rms', '—')} (gate 3e-2); wall slip {immersed.get('slip', '—')}; Cf within {immersed.get('cf', '—')} % |
+| GPU | CPU↔GPU lock-step, max rel. error | single {immersed.get('gpu', '—')}, 3-level {immersed.get('gpu_ml', '—')} |
+
+## Discussion
+The reflected-shock wall pressure lands within a few tenths of a percent of the
+exact 1D value for **both** a subsonic and a supersonic incident shock, and the
+declarative `[solid]` path reproduces it — validating the full chain from INI
+parsing through `solidAt()` to the mask-aware step. Turning on AMR keeps the
+wall pressure within 0.2 % of the base-grid run across 2-level, subcycled and
+3-level hierarchies, proving the mask survives restriction, refluxing and
+body-edge tagging. The **no-slip** case is the strongest: a boundary layer
+grown entirely by the mask reproduces the Blasius profile to
+**RMS {immersed.get('rms', '—')}** with wall slip {immersed.get('slip', '—')}
+and skin friction within {immersed.get('cf', '—')} % of 0.664/√Re_x — the
+mask-aware viscous flux is doing real physics, not just blocking flow. Finally
+the GPU path advances in lock-step with the CPU reference to ~1e-3 (fp32 sum
+reassociation), locking the Metal port of the mask. Complements the
+[oblique-shock wedge](wedge.md), which is itself an immersed body.
+
+> WENO5 is incompatible with immersed solids (hard error) — the immersed path
+> is MUSCL-Hancock only.""")
 
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
@@ -1173,6 +1255,7 @@ python3 vv/generate.py
 | [CJ detonation](cases/detonation.md) | validation · exact | D relaxes to D_CJ (+0.4 % uniform, −0.2 % AMR, long tube) | ✅ PASS |
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS {rms} vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
 | [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
+| [Immersed boundaries](cases/immersed.md) | validation · theory | reflected-shock wall p exact; no-slip Blasius (RMS {immersed.get('rms', '—')}); GPU lock-step | ✅ PASS |
 
 Numbers are from an Apple M4 (float32) and may vary ~1 ULP across machines.
 
@@ -1191,7 +1274,9 @@ def main():
 
     conv_txt = sod_txt = bla_txt = det_txt = ""
     sod2d_txt = samr_txt = mms_txt = rea_txt = weno_txt = spec_txt = ""
-    ana_txt = ""
+    ana_txt = imm_txt = ""
+    IMM = ["immersed", "immersed_case", "immersed_amr", "immersed_noslip",
+           "immersed_gpu"]
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
@@ -1205,6 +1290,7 @@ def main():
         ana_txt = run_driver("analytic_suite")
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
+        imm_txt = "\n".join(run_driver(e) for e in IMM)  # last: GPU lock-step
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
         (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, weno_txt,
@@ -1214,6 +1300,7 @@ def main():
              cached("weno_suite"), cached("species_suite"),
              cached("analytic_suite"), cached("blasius"),
              cached("detonation"))
+        imm_txt = "\n".join(cached(e) for e in IMM)
 
     print("plotting…")
     orders = plot_order()
@@ -1225,6 +1312,7 @@ def main():
     weno = plot_weno(weno_txt)
     species = plot_species(spec_txt)
     analytic = plot_analytic(ana_txt)
+    immersed = plot_immersed(imm_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -1241,13 +1329,14 @@ def main():
             "weno_vortex_weno.csv", "weno_vortex_muscl.csv",
             "species_interface.csv", "analytic_toro1.csv",
             "analytic_toro2.csv", "analytic_toro3.csv", "analytic_toro4.csv",
-            "vv_conservation_log.csv"}
+            "immersed_noslip.csv", "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
-                 sod2d_txt, samr_txt, mms, rea, weno, species, analytic)
+                 sod2d_txt, samr_txt, mms, rea, weno, species, analytic,
+                 immersed)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 

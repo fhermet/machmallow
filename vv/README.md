@@ -34,6 +34,7 @@ python3 vv/generate.py
 | [CJ detonation](cases/detonation.md) | validation · exact | D relaxes to D_CJ (+0.4 % uniform, −0.2 % AMR, long tube) | ✅ PASS |
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS 1.3618e-02 vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
 | [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
+| [Immersed boundaries](cases/immersed.md) | validation · theory | reflected-shock wall p exact; no-slip Blasius (RMS 6.835e-03); GPU lock-step | ✅ PASS |
 
 Numbers are from an Apple M4 (float32) and may vary ~1 ULP across machines.
 

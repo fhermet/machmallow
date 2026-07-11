@@ -126,6 +126,19 @@ int main() {
     }
     const double rms = std::sqrt(e2 / n);
 
+    // profil vs Blasius pour la figure vv (eta, u/Ue simulé, f' exact)
+    if (FILE* pf = std::fopen("out/immersed_noslip.csv", "w")) {
+        std::fprintf(pf, "eta,u,fp\n");
+        for (int j = plateRows; j < ny; ++j) {
+            const double eta = (double(g.yc(NG + j)) - ys) * scale;
+            if (eta > 8.0) break;
+            std::fprintf(pf, "%.5g,%.5g,%.5g\n", eta,
+                         double(toPrim(g.at(im, NG + j)).u) / Ue,
+                         bl.fpAt(eta));
+        }
+        std::fclose(pf);
+    }
+
     // glissement résiduel à la paroi (doit être ~0 : no-slip)
     const double uWall = double(toPrim(g.at(im, NG + plateRows)).u);
     // frottement pariétal vs Cf = 0.664/sqrt(Re_x)
