@@ -532,6 +532,41 @@ def plot_weno(txt):
     return d
 
 
+def plot_species(txt):
+    """Abgrall interface: a rho+gamma jump advected at u=0.5 for one period.
+    The signature of a well-posed multi-gas scheme is that p and u stay flat
+    across the density jump (naive conservative schemes oscillate p there)."""
+    path = os.path.join(OUT, "species_interface.csv")
+    d = {"p_start": grab(txt, r"startup ([\d.eE+-]+)"),
+         "p_sust": grab(txt, r"sustained ([\d.eE+-]+)"),
+         "u_err": grab(txt, r"max\|u-0.5\| = ([\d.eE+-]+)"),
+         "sod": grab(txt, r"two-gas Sod \(1.4\|1.6\): L1\(rho\) vs exact = ([\d.eE+-]+)"),
+         "mass": grab(txt, r"species mass, 200 steps: drift = ([\d.eE+-]+)"),
+         "amr": grab(txt, r"3-level AMR: L1 = ([\d.eE+-]+)"),
+         "amr_drift": grab(txt, r"3-level AMR:.*species mass drift = ([\d.eE+-]+)")}
+    if not os.path.exists(path):
+        return d
+    rows = read_csv(path)
+    x = [float(r["x"]) for r in rows]
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    ax.plot(x, [float(r["rho"]) for r in rows], "-", color=CYAN, lw=1.8,
+            label=r"$\rho$ (jumps 1↔0.5)")
+    ax.plot(x, [float(r["Y"]) for r in rows], "-", color=PURPLE, lw=1.4,
+            label="Y (mass fraction)")
+    ax.plot(x, [float(r["p"]) for r in rows], "-", color=EMBER, lw=1.8,
+            label="p (must stay flat = 1)")
+    ax.plot(x, [float(r["u"]) for r in rows], "--", color="black", lw=1.2,
+            label="u (must stay flat = 0.5)")
+    ax.set_ylim(0, 1.15)
+    ax.set_xlabel("x"); ax.set_ylabel("value")
+    ax.set_title("Abgrall interface after one period — p, u flat across "
+                 "the ρ/γ jump")
+    ax.legend(fontsize=8, loc="upper right", ncol=2)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "species.png"))
+    plt.close(fig)
+    return d
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -544,12 +579,14 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 
 
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
-                 sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None):
+                 sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None,
+                 species=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
     rea = rea or {}
     weno = weno or {}
+    species = species or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -720,6 +757,44 @@ per-stage ghost machinery is exact. Two-gas Riemann (uniform and 3-level AMR)
 and the exact-`erf` viscous layer close the loop on the species and viscous
 paths. WENO5 is single-gas-per-cell and **incompatible with immersed solids**
 (hard error), by design.""")
+
+    # ---- fiche 1e: multi-species / two-gas (validation) ----------------
+    fiche("species.md", f"""# Multi-species two-gas — *validation vs exact*
+
+**Objective.** Validate the two-gas core (per-cell γ transported with the
+species mass fraction): (1) the **Abgrall material-interface** test — a ρ+γ
+jump advected in a uniform p, u field must keep **pressure and velocity flat**
+(the discriminating test that naive conservative multi-gas schemes fail with
+spurious pressure oscillations at the interface); (2) a **two-gas Sod**
+(γ 1.4 | 1.6) vs the generalized per-side exact Riemann solution, uniform and
+on **3-level AMR**; (3) species-mass conservation at the float32 floor.
+
+## Numerical setup
+> MUSCL-Hancock + per-side HLLC with a **quasi-conservative γ transport**
+> (`Muscl2DSpecies`), CFL 0.4. Interface: periodic, u = 0.5, one full period
+> (N = 200). Two-gas Sod: transmissive, t = 0.2, N = 400 (uniform) and a
+> 3-level subcycled AMR hierarchy. Driver: `species_suite`. float32.
+
+## Results
+![Abgrall interface — p and u flat across the ρ/γ jump](../figures/species.png)
+
+| Gate | Test | Result |
+|---|---|---|
+| 1 | Abgrall interface, \\|p−1\\| sustained | {species.get('p_sust', '—')} (gate 1e-2); max\\|u−0.5\\| {species.get('u_err', '—')} |
+| 2 | two-gas Sod (uniform), L1(ρ) vs exact | {species.get('sod', '—')} (gate 6e-3) |
+| 3 | species mass, 200 steps | drift {species.get('mass', '—')} (gate 1e-5) |
+| 4 | two-gas Sod on 3-level AMR | L1 {species.get('amr', '—')}, species drift {species.get('amr_drift', '—')} |
+
+## Discussion
+The interface stays crisp with **pressure and velocity flat to ~0.6 % / 0.4 %**
+across the ρ/γ jump — the Abgrall condition. A tiny bounded wiggle remains
+because the reconstruction is on conservative variables; primitive-variable
+reconstruction is the documented next refinement, but the sustained oscillation
+is already well under the gate and does not grow. The two-gas Sod matches the
+generalized exact Riemann solution (each side keeping its own γ across the
+contact) both on a uniform grid and through the refluxed 3-level AMR, and
+species mass is conserved to the float32 floor. The same two-gas path is
+re-exercised under WENO5 in the [WENO5 suite](weno.md) (gates 7–8).""")
 
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
@@ -1011,6 +1086,7 @@ python3 vv/generate.py
 | [0D reactor kinetics](cases/reactor.md) | verification | Arrhenius integrator vs exact (isothermal/adiabatic/stiff) | ✅ PASS |
 | [WENO5 scheme suite](cases/weno.md) | verification | WENO5 {weno.get('ratio', '—')}× less dissipative than MUSCL (vortex); bit-exact on AMR | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
+| [Multi-species two-gas](cases/species.md) | validation · exact | Abgrall interface (p, u flat); two-gas Riemann (uniform + AMR) | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
 | [Diagonal 2D Sod](cases/sod2d.md) | validation · exact | 2D field collapses onto 1D Riemann (isotropy) | ✅ PASS |
@@ -1034,7 +1110,7 @@ def main():
     os.makedirs(FIG, exist_ok=True); os.makedirs(DATA, exist_ok=True)
 
     conv_txt = sod_txt = bla_txt = det_txt = ""
-    sod2d_txt = samr_txt = mms_txt = rea_txt = weno_txt = ""
+    sod2d_txt = samr_txt = mms_txt = rea_txt = weno_txt = spec_txt = ""
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
@@ -1044,15 +1120,17 @@ def main():
         mms_txt = run_driver("mms")
         rea_txt = run_driver("reactor")
         weno_txt = run_driver("weno_suite")
+        spec_txt = run_driver("species_suite")
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
         (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, weno_txt,
-         bla_txt, det_txt) = (
+         spec_txt, bla_txt, det_txt) = (
              cached("convergence"), cached("sod1d"), cached("sod2d"),
              cached("sod_amr"), cached("mms"), cached("reactor"),
-             cached("weno_suite"), cached("blasius"), cached("detonation"))
+             cached("weno_suite"), cached("species_suite"), cached("blasius"),
+             cached("detonation"))
 
     print("plotting…")
     orders = plot_order()
@@ -1062,6 +1140,7 @@ def main():
     mms = plot_mms(mms_txt)
     rea = plot_reactor(rea_txt)
     weno = plot_weno(weno_txt)
+    species = plot_species(spec_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -1076,13 +1155,13 @@ def main():
             "sod2d_exact.csv", "sod_amr_profile.csv", "mms.csv",
             "reactor_isothermal.csv", "detonation_front.csv",
             "weno_vortex_weno.csv", "weno_vortex_muscl.csv",
-            "vv_conservation_log.csv"}
+            "species_interface.csv", "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
-                 sod2d_txt, samr_txt, mms, rea, weno)
+                 sod2d_txt, samr_txt, mms, rea, weno, species)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 

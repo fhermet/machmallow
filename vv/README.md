@@ -26,6 +26,7 @@ python3 vv/generate.py
 | [0D reactor kinetics](cases/reactor.md) | verification | Arrhenius integrator vs exact (isothermal/adiabatic/stiff) | ✅ PASS |
 | [WENO5 scheme suite](cases/weno.md) | verification | WENO5 6.0× less dissipative than MUSCL (vortex); bit-exact on AMR | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
+| [Multi-species two-gas](cases/species.md) | validation · exact | Abgrall interface (p, u flat); two-gas Riemann (uniform + AMR) | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
 | [Diagonal 2D Sod](cases/sod2d.md) | validation · exact | 2D field collapses onto 1D Riemann (isotropy) | ✅ PASS |

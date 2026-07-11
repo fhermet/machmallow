@@ -111,6 +111,20 @@ bool gate1_interfaceAdvection() {
         const double yEx = (x > 0.2 && x < 0.5) ? 1.0 : 0.0;
         yErr += std::fabs(double(Y) - yEx) / n;
     }
+    // final profile after one period vs the (unshifted) exact interface,
+    // for the vv Abgrall figure: rho/Y jump, p and u must stay flat
+    if (FILE* pf = std::fopen("out/species_interface.csv", "w")) {
+        std::fprintf(pf, "x,rho,u,p,Y\n");
+        for (int i = NG; i < NG + n; ++i) {
+            const std::size_t id = g.idx(i, NG + 4);
+            const Prim w = toPrimG(g.q[id], Gm[id]);
+            const Real Y = phi[id] / std::max(g.q[id].rho, RHO_FLOOR);
+            std::fprintf(pf, "%.6g,%.6g,%.6g,%.6g,%.6g\n", double(g.xc(i)),
+                         double(w.rho), double(w.u), double(w.p),
+                         double(Y));
+        }
+        std::fclose(pf);
+    }
     // Startup transient (discrete IC) and sustained levels gated
     // separately; the conservative-variable reconstruction leaves a
     // bounded O(0.7%) interface wiggle — primitive reconstruction is
