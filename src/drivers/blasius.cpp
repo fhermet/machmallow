@@ -74,8 +74,7 @@ struct Blasius {
 
 // Slip upstream of the leading edge, no-slip on the plate; the other
 // sides are uniform inflow (left) and zero-gradient (right, top).
-void fillBC(GridRef& g) {
-    const Cons inflow = toCons({RHO0, U0, 0, P0});
+void fillBC(GridRef& g, const Cons& inflow) {
     for (int j = 0; j < g.toty(); ++j)
         for (int k = 0; k < NG; ++k) g.at(k, j) = inflow; // left inflow
     fillTransmissiveRight(g);
@@ -99,16 +98,29 @@ void fillBC(GridRef& g) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     MetalContext ctx;
-    const int nx = 320, ny = 256;
+    // optional grid-refinement knob: `blasius <ny>` (default 256, unchanged
+    // for CI/gate). nx scales to keep square cells (Lx/Ly = 1.25).
+    const int ny = (argc > 1) ? std::atoi(argv[1]) : 256;
+    // optional independent nx (`blasius <ny> <nx>`) to test an ANISOTROPIC
+    // grid: fine wall-normal (ny), coarse streamwise (nx). Default keeps
+    // square cells (nx = 1.25 ny).
+    const int nx = (argc > 2) ? std::atoi(argv[2]) : (5 * ny) / 4;
+    // optional stagnation pressure (`blasius <ny> <nx> <p0>`) to lower the
+    // Mach number AT FIXED Re_x (U, rho, mu unchanged -> same BL, same
+    // resolution; only c = sqrt(gamma p/rho) changes) — isolates the
+    // compressibility part of the Cf bias. Default P0 (M ~ 0.25).
+    const Real P0v = (argc > 3) ? Real(std::atof(argv[3])) : P0;
+    const double Mach = double(U0) / std::sqrt(GAMMA * double(P0v) / double(RHO0));
     const double Lx = 1.25, Ly = 1.0;
     const Real dx = Real(Lx / nx), dy = Real(Ly / ny);
     Euler2DGpu gpu(ctx, nx, ny, dx, dy);
     gpu.setViscosity(MU);
     GridRef g = gpu.ref(0, 0);
 
-    const Cons init = toCons({RHO0, U0, 0, P0});
+    const Cons inflow = toCons({RHO0, U0, 0, P0v});
+    const Cons init = inflow;
     for (int j = 0; j < g.toty(); ++j)
         for (int i = 0; i < g.totx(); ++i) g.at(i, j) = init;
 
@@ -116,9 +128,9 @@ int main() {
     const int im = NG + int(XM / Lx * nx);
     std::vector<double> prev(ny, 0);
     int steps = 0;
-    const int MAXSTEPS = 30000;
+    const int MAXSTEPS = 150000; // ceiling; the steady detector stops early
     for (; steps < MAXSTEPS; ++steps) {
-        fillBC(g);
+        fillBC(g, inflow);
         const Real dt = gpu.maxStableDt(CFL);
         gpu.step(dt);
         if (steps % 500 == 0 && steps > 0) {
@@ -194,8 +206,8 @@ int main() {
     std::printf("  Ue/U0 = %.3f (free-stream drift at the station)\n",
                 Ue / double(U0));
 
-    std::printf("Blasius flat plate: Re_x = %.0f, steady after %d "
-                "steps\n", Rex, steps);
+    std::printf("Blasius flat plate: Re_x = %.0f, Mach = %.3f, steady "
+                "after %d steps\n", Rex, Mach, steps);
     std::printf("  profile RMS(u/U - f') over eta<6 : %.4e (gate "
                 "3e-2)\n", rms);
     std::printf("  delta99: %.4f vs Blasius %.4f  (%.1f%%)\n", d99,
@@ -236,7 +248,7 @@ int main() {
     // Same viscous case run with scheme = weno5; on a smooth steady boundary
     // layer the profiles nearly coincide with MUSCL (the viscous operator is
     // shared, no discontinuities to sharpen) — a useful consistency check.
-    {
+    if (ny == 256) {  // only at the vv-figure resolution
         Euler2DGpu gw(ctx, nx, ny, dx, dy);
         gw.enableWeno();
         gw.setViscosity(MU);
@@ -245,7 +257,7 @@ int main() {
             for (int i = 0; i < gg.totx(); ++i) gg.at(i, j) = init;
         std::vector<double> pv(ny, 0);
         for (int s = 0; s < MAXSTEPS; ++s) {
-            fillBC(gg);
+            fillBC(gg, inflow);
             gw.step(gw.maxStableDt(CFL));
             if (s % 500 == 0 && s > 0) {
                 double dm = 0;

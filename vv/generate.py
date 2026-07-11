@@ -185,6 +185,35 @@ def plot_blasius_cf():
     plt.close(fig)
 
 
+def plot_blasius_refine():
+    """Cf bias vs wall-normal resolution (isotropic vs anisotropic refinement).
+    Reads the committed study data (vv/blasius_study.sh regenerates it)."""
+    path = os.path.join(DATA, "blasius_refinement.csv")
+    if not os.path.exists(path):
+        return
+    rows = read_csv(path)
+    fig, ax = plt.subplots(figsize=(6.2, 4.8))
+    for study, mk, col, lab in [
+            ("iso", "o", CYAN, "isotropic (refine x & y)"),
+            ("aniso", "s", EMBER, "anisotropic (refine y only)")]:
+        pts = sorted((float(r["dy"]), float(r["cf_pct"]))
+                     for r in rows if r["study"] == study)
+        if not pts:
+            continue
+        dy = [p[0] for p in pts]; cf = [p[1] for p in pts]
+        ax.plot(dy, cf, mk + "-", color=col, ms=7, label=lab)
+    ax.axhline(4.0, ls=":", color="gray", lw=1.2)
+    ax.text(ax.get_xlim()[1], 4.05, "physical residual (~4%) ",
+            color="gray", fontsize=8, ha="right", va="bottom")
+    ax.set_xscale("log"); ax.invert_xaxis()          # finer to the right
+    ax.set_xlabel("wall-normal spacing $dy$  (finer →)")
+    ax.set_ylabel("$C_f$ bias vs Blasius  [%]")
+    ax.set_title("$C_f$ bias vs wall-normal resolution")
+    ax.legend(fontsize=9)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "blasius_refine.png"))
+    plt.close(fig)
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -305,34 +334,38 @@ Blasius law $C_f = 0.664/\\sqrt{{Re_x}}$:
 | boundary-layer thickness $\\delta_{{99}}$ | {d99}% |
 | skin friction $C_f$ vs $0.664/\\sqrt{{Re_x}}$ | {cf}% |
 
-**Explaining the small discrepancies** (they are quantified and gated, not
-hidden). The $C_f$ figure shows a positive bias everywhere, with a **minimum
-(~+5 %) near mid-plate** growing toward both ends — each part has a cause:
-- **~+5 % floor (mid-plate)** — the wall shear is estimated with a
-  **first-order one-sided difference** over the first half-cell,
-  $du/dy \\approx u_1/(dy/2)$. On a finite grid this **overestimates** the true
-  wall gradient of a curved profile, a roughly constant bias that shrinks as
-  the wall is refined (higher $N_y$). The profile RMS (1.4 %) is the cleaner,
-  less discretization-sensitive metric.
-- **rise toward the outflow** (up to +12 % at x→1.1) — the transmissive right
-  boundary and finite domain distort the near-exit edge velocity and profile;
-  it is a boundary artifact, not a scheme error (a longer domain / a
-  non-reflecting outflow would remove it).
-- **rise toward the leading edge** — there the boundary layer is thinnest
-  (fewest cells across it) and the slip→no-slip transition + LE singularity
-  sit right there, so the same wall-gradient bias is larger.
-- **δ99 (≈ −2 %)** — read as the first cell reaching 0.99 $U_e$ on a discrete
-  grid; that threshold-crossing is resolution-limited (the true point sits
-  between two cells).
-- **compressibility & non-parallel effects** — the run is at **M ≈ 0.25**
-  (Blasius is incompressible) at a **moderate** Re_x (Blasius is the Re → ∞,
-  δ ≪ x asymptotic limit). The pinned-top ZPG keeps the free-stream drift
-  small (Ue/U0 ≈ 1.04), which the comparison divides out via the local edge
-  velocity $U_e$.
+**Where the Cf bias comes from — a grid-convergence + Mach study.** The Cf is
+biased high everywhere (~+5 % mid-plate, rising to +7 % at the leading edge
+and +12 % near the outflow). A refinement study (reproduce with
+`bash vv/blasius_study.sh`) pins down each cause:
 
-The reported station (Re_x = {rex}, +7 %) sits on the rising branch toward the
-outflow; the mid-plate agreement is closer (~+5 %). All metrics pass their
-gates and shrink with resolution / lower Mach / a non-reflecting outflow.
+![Cf bias vs wall-normal resolution](figures/blasius_refine.png)
+
+- **Dominant cause — near-wall resolution.** Refining the wall-normal grid
+  drives the mid-plate bias down monotonically (+8.1 % at ny=128 → +4.0 % at
+  ny=1024). The estimator itself is *exact* for a Blasius profile (the
+  near-wall velocity is linear to $O(\\eta^4)$), so this is the finite-grid
+  representation of the wall shear, not the wall-gradient formula.
+  **Refining in y *alone* recovers the accuracy at ~half the cells** of
+  isotropic refinement (anisotropic ny=512/nx=320 = 164k cells beats isotropic
+  328k) — the error is purely wall-normal.
+- **Compressibility — ruled out.** At fixed Re_x and resolution, lowering the
+  Mach number from 0.25 to 0.06 (raising the stagnation pressure) leaves the
+  bias unchanged (+5.4 → +5.5 %). The incompressible reference is fine.
+- **Residual ~+4 % (grid-independent plateau)** — consistent with the weak
+  **favorable pressure gradient** ($U_e$ drifts +2 % along the plate under the
+  pinned top), which raises the wall shear above the ideal ZPG Blasius law; it
+  is Mach- and grid-independent. (A virtual-origin shift is ruled out — the
+  mid-plate ratio is already flat at the geometric origin.)
+- **Local rises** — the leading edge (+7 %) has the thinnest BL (fewest cells)
+  plus the slip→no-slip / LE singularity; the outflow (+12 %) is a
+  transmissive-boundary artifact. δ99 (−2 %) is the discrete 0.99-crossing.
+
+**Design note.** Industrial codes avoid this bias with wall-normal
+*stretching* (body-fitted prism layers, y⁺ < 1) — not possible on our
+uniform-Cartesian + ratio-2 block-AMR foundation. The on-design equivalent is
+the **anisotropic uniform grid** above (fine y, coarse x). All metrics pass
+their gates.
 
 ---
 
@@ -362,6 +395,7 @@ def main():
     sod_n = plot_sod()
     plot_blasius()
     plot_blasius_cf()
+    plot_blasius_refine()
 
     # copy source data for provenance
     keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv",
