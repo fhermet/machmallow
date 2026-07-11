@@ -23,5 +23,11 @@ $\xi$ (right panel) — the scheme is **isotropic** (a 45° shock is captured
 like an axis-aligned one) and matches the exact Riemann solution. Order ~1 is
 the expected discontinuity-limited rate, consistent with the 1D Sod fiche.
 
+The initial discontinuity meets the boundary at the corners (1,0) and (0,1),
+where the flow is genuinely 2D and the transmissive BCs distort the oblique
+waves; those disturbances travel inward at finite speed, so both the L1 gate
+and the collapse above are measured only on the **boundary-free central
+square [0.3, 0.7]²** (dashed box) — still untouched at t = 0.15.
+
 ---
 *Part of the [V&V dossier](../README.md). Regenerate: `python3 vv/generate.py`. Source data: [`../data/`](../data/).*

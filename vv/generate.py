@@ -354,6 +354,12 @@ def plot_sod2d():
     fig.colorbar(pc, ax=ax[0], label="ρ"); ax[0].set_aspect("equal")
     ax[0].set_title("2D density field (diagonal Sod)")
     ax[0].set_xlabel("x"); ax[0].set_ylabel("y")
+    # boundary-free central square used for validation (excludes corner/edge
+    # effects, where the discontinuity meets the boundary at (1,0) & (0,1))
+    ax[0].plot([0.3, 0.7, 0.7, 0.3, 0.3], [0.3, 0.3, 0.7, 0.7, 0.3], "--",
+               color="red", lw=1.6)
+    ax[0].text(0.5, 0.305, "validation region", color="red", fontsize=7.5,
+               ha="center", va="bottom")
     # collapse only the boundary-free central square (what the gate measures)
     c = (x >= 0.3) & (x <= 0.7) & (y >= 0.3) & (y <= 0.7)
     xi = (x[c] + y[c] - 1.0) / np.sqrt(2)
@@ -508,7 +514,13 @@ Mean grid-convergence order (L1 density, central square): **{sod2d_order}**
 Every cell of the 2D field lands on the exact 1D curve when plotted against
 $\\xi$ (right panel) — the scheme is **isotropic** (a 45° shock is captured
 like an axis-aligned one) and matches the exact Riemann solution. Order ~1 is
-the expected discontinuity-limited rate, consistent with the 1D Sod fiche.""")
+the expected discontinuity-limited rate, consistent with the 1D Sod fiche.
+
+The initial discontinuity meets the boundary at the corners (1,0) and (0,1),
+where the flow is genuinely 2D and the transmissive BCs distort the oblique
+waves; those disturbances travel inward at finite speed, so both the L1 gate
+and the collapse above are measured only on the **boundary-free central
+square [0.3, 0.7]²** (dashed box) — still untouched at t = 0.15.""")
 
     # ---- fiche 2c: Sod on AMR (verification: refluxing + accuracy) ------
     fiche("sod_amr.md", f"""# Sod on AMR — *verification: refluxing + accuracy*
