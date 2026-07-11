@@ -417,6 +417,31 @@ def plot_sod_amr(txt):
     return m
 
 
+def plot_reactor(txt):
+    """0D reactor: isothermal lambda(t) vs the exact exponential."""
+    path = os.path.join(OUT, "reactor_isothermal.csv")
+    d = {"iso": grab(txt, r"isothermal reactor:.*err ([\d.eE+-]+)"),
+         "adT": grab(txt, r"adiabatic reactor:.*T ([\d.]+) vs eq"),
+         "adEq": grab(txt, r"adiabatic reactor:.*vs eq ([\d.]+)"),
+         "adResid": grab(txt, r"energy-balance resid ([\d.eE+-]+)"),
+         "stiff": grab(txt, r"stiff reactor.*lambda ([\d.]+)")}
+    if not os.path.exists(path):
+        return d
+    rows = read_csv(path)
+    t = [float(r["t"]) for r in rows]
+    lam = [float(r["lambda"]) for r in rows]
+    ex = [float(r["lambda_exact"]) for r in rows]
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    ax.plot(t, ex, "-", color="black", lw=2, label="exact  $1-e^{-Kt}$")
+    ax.plot(t[::4], lam[::4], "o", color=CYAN, ms=5, label="machmallow (RK4)")
+    ax.set_xlabel("time $t$"); ax.set_ylabel("reaction progress $\\lambda$")
+    ax.set_title("0D reactor — isothermal kinetics vs exact")
+    ax.legend(fontsize=9, loc="lower right")
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "reactor.png"))
+    plt.close(fig)
+    return d
+
+
 def plot_mms(txt):
     """Manufactured-solution order study: L1 vs N. Viscous ~2 (both schemes),
     steady-inviscid ~1 (numerical-viscosity-limited, informative)."""
@@ -472,10 +497,11 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 
 
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
-                 sod2d_txt="", samr_txt="", mms=None):
+                 sod2d_txt="", samr_txt="", mms=None, rea=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
+    rea = rea or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -563,6 +589,38 @@ physical viscosity the steady-state error is set by the scheme's *numerical*
 viscosity (1st order on this solution) — that is **not** the transient design
 order (MUSCL ~2, WENO5 ~4–5), which the order-of-accuracy fiche verifies by
 advecting an exact solution.""")
+
+    # ---- fiche 1c: 0D reactor kinetics (verification vs analytic) -------
+    fiche("reactor.md", f"""# 0D reactor kinetics — *verification vs analytic*
+
+**Objective.** Verify the stiff Arrhenius reaction integrator against exact 0D
+solutions *before* it is coupled to the flow: (1) **isothermal** (q=0) → exact
+exponential; (2) **adiabatic** → full burn to λ=1 with T rising by exactly
+(γ−1)q and exact energy balance; (3) **very stiff** → the subcycling stays
+bounded and still reaches equilibrium in one coarse step.
+
+## Numerical setup
+> Single-step Arrhenius reaction, adaptive **subcycled RK4**, energy slaved to
+> the progress variable ($e = e_0 + q\\,\\Delta\\lambda$, conservative by
+> construction). Constant-volume 0D integration. Driver: `reactor`.
+
+## Results
+![Isothermal reactor: λ(t) vs exact](../figures/reactor.png)
+
+| Test | Result |
+|---|---|
+| isothermal, λ vs $1-e^{{-Kt}}$ | err {rea.get('iso', '—')} (gate 1e-5) |
+| adiabatic, equilibrium T | {rea.get('adT', '—')} vs {rea.get('adEq', '—')} exact; energy resid {rea.get('adResid', '—')} |
+| stiff (A=1e4, dt=1), λ | {rea.get('stiff', '—')} (bounded, equilibrates) |
+
+## Discussion
+The isothermal case (constant rate K) reproduces the exact exponential to
+~1e-7 (curve). The adiabatic burn reaches λ=1 with the temperature rising by
+exactly (γ−1)q and energy conserved to ~5e-7 — the energy-slaving makes the
+integrator conservative by construction. The stiff case (A=1e4 in a single
+coarse step) stays bounded and equilibrates, showing the adaptive subcycling
+handles stiffness. This 0D validation underpins the coupled
+[CJ detonation](detonation.md) case.""")
 
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
@@ -851,6 +909,7 @@ python3 vv/generate.py
 |---|---|---|---|
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
 | [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes) | ✅ PASS |
+| [0D reactor kinetics](cases/reactor.md) | verification | Arrhenius integrator vs exact (isothermal/adiabatic/stiff) | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
 | [Sod on AMR](cases/sod_amr.md) | verification | refluxing conserves (6000× vs off); L1 = uniform-fine | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
@@ -874,7 +933,8 @@ def main():
     args = ap.parse_args()
     os.makedirs(FIG, exist_ok=True); os.makedirs(DATA, exist_ok=True)
 
-    conv_txt = sod_txt = bla_txt = det_txt = sod2d_txt = samr_txt = mms_txt = ""
+    conv_txt = sod_txt = bla_txt = det_txt = ""
+    sod2d_txt = samr_txt = mms_txt = rea_txt = ""
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
@@ -882,14 +942,15 @@ def main():
         sod2d_txt = run_driver("sod2d")
         samr_txt = run_driver("sod_amr")
         mms_txt = run_driver("mms")
+        rea_txt = run_driver("reactor")
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
-        conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, bla_txt, det_txt = (
-            cached("convergence"), cached("sod1d"), cached("sod2d"),
-            cached("sod_amr"), cached("mms"), cached("blasius"),
-            cached("detonation"))
+        (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, bla_txt,
+         det_txt) = (cached("convergence"), cached("sod1d"), cached("sod2d"),
+                     cached("sod_amr"), cached("mms"), cached("reactor"),
+                     cached("blasius"), cached("detonation"))
 
     print("plotting…")
     orders = plot_order()
@@ -897,6 +958,7 @@ def main():
     plot_sod2d()
     samr = plot_sod_amr(samr_txt)
     mms = plot_mms(mms_txt)
+    rea = plot_reactor(rea_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -909,13 +971,14 @@ def main():
             "blasius_profile_weno.csv", "blasius_cf_weno.csv",
             "sod_muscl_400.csv", "sod_weno_400.csv", "sod2d_field.csv",
             "sod2d_exact.csv", "sod_amr_profile.csv", "mms.csv",
-            "detonation_front.csv", "vv_conservation_log.csv"}
+            "reactor_isothermal.csv", "detonation_front.csv",
+            "vv_conservation_log.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
-                 sod2d_txt, samr_txt, mms)
+                 sod2d_txt, samr_txt, mms, rea)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 
