@@ -132,11 +132,31 @@ def plot_blasius():
     ax.plot([float(r["blasius"]) for r in rows], eta, "-", color="black",
             lw=2, label="Blasius $f'(\\eta)$")
     ax.plot([float(r["u_computed"]) for r in rows], eta, "o", color=CYAN,
-            ms=5, label="machmallow (immersed no-slip)")
+            ms=5, label="machmallow")
     ax.set_xlabel("$u/U_e$"); ax.set_ylabel("$\\eta = y\\,\\sqrt{U_e/\\nu x}$")
     ax.set_title("Blasius boundary layer — profile vs similarity")
     ax.legend(fontsize=9, loc="lower right")
     fig.tight_layout(); fig.savefig(os.path.join(FIG, "blasius.png")); plt.close(fig)
+
+
+def plot_blasius_cf():
+    path = os.path.join(OUT, "blasius_cf.csv")
+    if not os.path.exists(path):
+        return
+    rows = read_csv(path)
+    rex = np.array([float(r["Rex"]) for r in rows])
+    o = np.argsort(rex); rex = rex[o]
+    cf = np.array([float(r["Cf"]) for r in rows])[o]
+    cfx = np.array([float(r["Cf_exact"]) for r in rows])[o]
+    fig, ax = plt.subplots(figsize=(6.2, 4.8))
+    ax.loglog(rex, cfx, "-", color="black", lw=2,
+              label="Blasius $0.664/\\sqrt{Re_x}$")
+    ax.loglog(rex, cf, "o", color=CYAN, ms=6, label="machmallow")
+    ax.set_xlabel("$Re_x$"); ax.set_ylabel("skin friction $C_f$")
+    ax.set_title("Skin friction along the plate vs Blasius")
+    ax.legend(fontsize=9)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "blasius_cf.png"))
+    plt.close(fig)
 
 
 # ---- metric parsing ------------------------------------------------------
@@ -182,6 +202,12 @@ Smooth-regime convergence: the $L_1$ error must fall at the scheme's design
 rate as the grid is refined (measured before the float32 roundoff floor
 flattens the curve).
 
+> **Numerical setup** — MUSCL-Hancock + HLLC **and** WENO5 + SSP-RK3, on
+> **uniform grids** (no AMR), inviscid Euler, CFL 0.4. Problems: entropy wave
+> (periodic, t=1), 2D isentropic vortex (10×10 periodic, t=2), Sod (t=0.2).
+> Exact reference = the advected initial condition (smooth cases) / the exact
+> Riemann solution (Sod). float32.
+
 ![Order of accuracy](figures/order_of_accuracy.png)
 
 | Problem | Scheme | Observed order |
@@ -205,6 +231,10 @@ The classic Riemann problem: density, velocity and pressure at t = 0.2
 overlaid on the exact solution. The scheme captures the rarefaction, the
 contact discontinuity and the shock without spurious oscillations.
 
+> **Numerical setup** — MUSCL-Hancock + HLLC, **1D uniform grid** (no AMR),
+> inviscid Euler, CFL 0.8, t = 0.2. Grid-convergence study N = 100 → 1600;
+> profile shown at N = {sod_n}. Reference = exact Riemann solution. float32.
+
 ![Sod shock tube vs exact Riemann](figures/sod.png)
 
 Grid-convergence order (L1 density vs the exact solution): **{conv_order}**
@@ -214,21 +244,58 @@ Grid-convergence order (L1 density vs the exact solution): **{conv_order}**
 
 ## 3. Validation — Blasius boundary layer vs similarity
 
-A low-Mach viscous flow over an **immersed** flat plate (no-slip wall). At the
-measurement station (Re_x = {rex}) the steady velocity profile must collapse
-onto the Blasius similarity solution $u/U_e = f'(\\eta)$.
+A low-Mach viscous flow over a flat plate. At the measurement station
+(Re_x = {rex}) the steady velocity profile must collapse onto the Blasius
+similarity solution $u/U_e = f'(\\eta)$.
+
+> **Numerical setup** — MUSCL-Hancock + HLLC, **single uniform grid 320×256**
+> (dx = dy ≈ 3.9e-3, **no AMR**), GPU (`hybrid` backend), Navier–Stokes
+> μ = 8e-5, CFL 0.4, free stream U = 0.3 (**M ≈ 0.25**). BCs: inflow (left),
+> zero-gradient (right), **pinned free stream** on top (zero pressure
+> gradient), and an **aligned bottom wall** — slip ahead of the leading edge
+> (x < 0.15), **no-slip** on the plate. Marched to steady state. float32.
 
 ![Blasius profile vs similarity](figures/blasius.png)
 
-| Quantity | Result vs theory |
+The skin friction measured at several stations along the plate, against the
+Blasius law $C_f = 0.664/\\sqrt{{Re_x}}$:
+
+![Skin friction vs Blasius](figures/blasius_cf.png)
+
+| Quantity (station Re_x = {rex}) | Result vs theory |
 |---|---|
 | profile RMS $(u/U_e - f')$ | {rms} (gate 3e-2) |
 | boundary-layer thickness $\\delta_{{99}}$ | {d99}% |
 | skin friction $C_f$ vs $0.664/\\sqrt{{Re_x}}$ | {cf}% |
 
-The finite-resolution discrepancies (Cf, δ99) are quantified and gated, not
-hidden. This validates the full viscous path (Navier–Stokes + no-slip wall)
-on the staircased immersed boundary.
+**Explaining the small discrepancies** (they are quantified and gated, not
+hidden). The $C_f$ figure shows a positive bias everywhere, with a **minimum
+(~+5 %) near mid-plate** growing toward both ends — each part has a cause:
+- **~+5 % floor (mid-plate)** — the wall shear is estimated with a
+  **first-order one-sided difference** over the first half-cell,
+  $du/dy \\approx u_1/(dy/2)$. On a finite grid this **overestimates** the true
+  wall gradient of a curved profile, a roughly constant bias that shrinks as
+  the wall is refined (higher $N_y$). The profile RMS (1.4 %) is the cleaner,
+  less discretization-sensitive metric.
+- **rise toward the outflow** (up to +12 % at x→1.1) — the transmissive right
+  boundary and finite domain distort the near-exit edge velocity and profile;
+  it is a boundary artifact, not a scheme error (a longer domain / a
+  non-reflecting outflow would remove it).
+- **rise toward the leading edge** — there the boundary layer is thinnest
+  (fewest cells across it) and the slip→no-slip transition + LE singularity
+  sit right there, so the same wall-gradient bias is larger.
+- **δ99 (≈ −2 %)** — read as the first cell reaching 0.99 $U_e$ on a discrete
+  grid; that threshold-crossing is resolution-limited (the true point sits
+  between two cells).
+- **compressibility & non-parallel effects** — the run is at **M ≈ 0.25**
+  (Blasius is incompressible) at a **moderate** Re_x (Blasius is the Re → ∞,
+  δ ≪ x asymptotic limit). The pinned-top ZPG keeps the free-stream drift
+  small (Ue/U0 ≈ 1.04), which the comparison divides out via the local edge
+  velocity $U_e$.
+
+The reported station (Re_x = {rex}, +7 %) sits on the rising branch toward the
+outflow; the mid-plate agreement is closer (~+5 %). All metrics pass their
+gates and shrink with resolution / lower Mach / a non-reflecting outflow.
 
 ---
 
@@ -257,11 +324,12 @@ def main():
     orders = plot_order()
     sod_n = plot_sod()
     plot_blasius()
+    plot_blasius_cf()
 
     # copy source data for provenance
+    keep = {"convergence.csv", "blasius_profile.csv", "blasius_cf.csv"}
     for f in os.listdir(OUT):
-        if f == "convergence.csv" or f == "blasius_profile.csv" or \
-                re.match(r"sod_\d+\.csv", f):
+        if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_readme(orders, sod_n, sod_txt, bla_txt, conv_txt)

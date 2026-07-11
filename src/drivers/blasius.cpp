@@ -203,6 +203,35 @@ int main() {
     std::printf("  Cf: %.4e vs 0.664/sqrt(Re_x) %.4e  (%.1f%%)\n", Cf,
                 CfExact, 100 * (Cf / CfExact - 1));
 
+    // multi-station sweep along the plate for the Cf(Re_x) & delta99(Re_x)
+    // figures (vv/): same wall-shear / edge-velocity measurement at a range
+    // of x stations, each compared to the Blasius law at its own Re_x.
+    if (FILE* cf = std::fopen("out/blasius_cf.csv", "w")) {
+        std::fprintf(cf, "x,Rex,Cf,Cf_exact,d99,d99_exact\n");
+        for (double xs = 0.30; xs <= 1.10 + 1e-9; xs += 0.05) {
+            const int ii = NG + int(xs / Lx * nx);
+            const double xps = double(g.xc(ii)) - X0;
+            if (ii < NG || ii >= NG + nx || xps <= 0) continue;
+            double Ues = 0;
+            for (int j = 0; j < ny; ++j)
+                Ues = std::max(Ues, double(toPrim(g.at(ii, NG + j)).u));
+            const double sc = std::sqrt(Ues / (nu * xps));
+            double d99s = -1;
+            for (int j = 0; j < ny; ++j)
+                if (double(toPrim(g.at(ii, NG + j)).u) / Ues >= 0.99) {
+                    d99s = double(g.yc(NG + j)); break;
+                }
+            const double dudy =
+                double(toPrim(g.at(ii, NG)).u) / double(dy * 0.5);
+            const double Cfs = (nu * RHO0 * dudy) / (0.5 * RHO0 * Ues * Ues);
+            const double Rexs = Ues * xps / nu;
+            std::fprintf(cf, "%.5g,%.6g,%.6g,%.6g,%.6g,%.6g\n",
+                         double(g.xc(ii)), Rexs, Cfs,
+                         0.664 / std::sqrt(Rexs), d99s, 4.91 / sc);
+        }
+        std::fclose(cf);
+    }
+
     const bool ok = rms < 3e-2 && std::fabs(d99 / d99Exact - 1) < 0.15 &&
                     std::fabs(Cf / CfExact - 1) < 0.20;
     std::printf("%s\n", ok ? "PASS" : "FAIL");
