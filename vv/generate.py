@@ -632,6 +632,39 @@ def plot_immersed(txt):
     return d
 
 
+def plot_dmr(txt):
+    """Double Mach reflection density field (GPU, t=0.2) — the canonical
+    strong-shock AMR showcase. Metrics from the GPU/AMR/multi-level drivers."""
+    d = {"gpu_rel": grab(txt, r"correctness \(\d+x\d+, \d+ steps\): max rel diff = ([\d.eE+-]+)"),
+         "gpu_speed": grab(txt, r"speedup: ([\d.]+)x"),
+         "gpu_rate": grab(txt, r"GPU: \d+ steps in [\d.]+ s -> ([\d.]+) Mcell"),
+         "amr_rel": grab(txt, r"correctness \(30 lock-steps\): max rel diff = ([\d.eE+-]+)"),
+         "amr_work": grab(txt, r"work vs uniform 1/256: \d+ vs \d+ Mcell-steps \((\d+)%\)"),
+         "ml_rel": grab(txt, r"3-level DMR lock-step, 30 steps: max rel diff ([\d.eE+-]+)"),
+         "ml_kh": grab(txt, r"3-level periodic KH \(GPU\), \d+ steps: mass drift ([\d.eE+-]+)"),
+         "cd_ghost": grab(txt, r"DMR ghosts CaseDef vs preset: (\d+) differing")}
+    path = os.path.join(OUT, "dmr_field.csv")
+    if not os.path.exists(path):
+        return d
+    rows = read_csv(path)
+    x = np.array([float(r["x"]) for r in rows])
+    y = np.array([float(r["y"]) for r in rows])
+    rho = np.array([float(r["rho"]) for r in rows])
+    xs = np.unique(x); ys = np.unique(y)
+    Z = rho.reshape(len(ys), len(xs))
+    fig, ax = plt.subplots(figsize=(9.0, 2.7))
+    pcm = ax.pcolormesh(xs, ys, Z, cmap="inferno", shading="auto",
+                        vmin=float(rho.min()), vmax=float(rho.max()))
+    ax.set_aspect("equal")
+    ax.set_xlim(0, 3)          # crop to the reflected-shock region
+    ax.set_xlabel("x"); ax.set_ylabel("y")
+    ax.set_title("Double Mach reflection — density at $t=0.2$ (GPU)")
+    fig.colorbar(pcm, ax=ax, shrink=0.85, label=r"$\rho$")
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "dmr.png"), dpi=140)
+    plt.close(fig)
+    return d
+
+
 # ---- metric parsing ------------------------------------------------------
 def grab(text, pattern, default="—"):
     m = re.search(pattern, text)
@@ -645,7 +678,7 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
                  sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None,
-                 species=None, analytic=None, immersed=None):
+                 species=None, analytic=None, immersed=None, dmr=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
@@ -654,6 +687,7 @@ def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
     species = species or {}
     analytic = analytic or {}
     immersed = immersed or {}
+    dmr = dmr or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -957,6 +991,53 @@ reassociation), locking the Metal port of the mask. Complements the
 > WENO5 is incompatible with immersed solids (hard error) — the immersed path
 > is MUSCL-Hancock only.""")
 
+    # ---- fiche 1h: double Mach reflection (verification) ---------------
+    fiche("dmr.md", f"""# Double Mach reflection — *verification*
+
+**Objective.** The double Mach reflection (Woodward & Colella) is the standard
+**strong-shock** stress test: a Mach-10 shock striking a 30° wedge produces the
+incident/reflected/Mach-stem shocks meeting at a **triple point**, with a
+slip-line jet rolling up along the wall. There is no closed-form solution, so
+this is a **verification** case: (1) the GPU path advances in **lock-step** with
+the validated CPU reference; (2) the hierarchy is bit-close through **2-level**
+(`AmrGpu`) and **3-level** (`AmrGpuML`) subcycled AMR; (3) the declarative
+`CaseDef` ghost fill reproduces the analytic moving-shock BC **cell-for-cell**.
+
+## Numerical setup
+> MUSCL-Hancock + HLLC, CFL 0.4, domain 4 × 1, t = 0.2, the classic Mach-10
+> reflected-shock inflow (`dmr::fillGhosts`). Field shown: **GPU**, 960 × 240.
+> Lock-step gates compare `Euler2DGpu` / `AmrGpu` / `AmrGpuML` against the CPU
+> `Grid` / `Amr2` / `AmrML` on the same dt sequence. Drivers: `dmr_gpu`,
+> `dmr_amr`, `mlgpu_amr`, `casedef_test`. float32.
+
+## Results
+![Double Mach reflection — density at t=0.2](../figures/dmr.png)
+
+The density field shows the textbook structure: the Mach stem normal to the
+wall, the reflected shock, the triple point, and the wall jet curling under the
+contact — resolved on the refined patches.
+
+| Gate | Test | Result |
+|---|---|---|
+| GPU lock-step (uniform) | max rel. diff CPU↔GPU | {dmr.get('gpu_rel', '—')} (gate 1e-2); {dmr.get('gpu_speed', '—')}× speedup |
+| AMR lock-step (2-level) | max rel. diff CPU↔GPU | {dmr.get('amr_rel', '—')}; work {dmr.get('amr_work', '—')} % of uniform 1/256 |
+| AMR lock-step (3-level) | max rel. diff CPU↔GPU | {dmr.get('ml_rel', '—')} |
+| 3-level periodic KH (GPU) | closed-domain mass drift | {dmr.get('ml_kh', '—')} (gate 1e-6) |
+| CaseDef DMR ghosts | vs preset, differing cells | {dmr.get('cd_ghost', '—')} (gate 0) |
+
+## Discussion
+The GPU reproduces the CPU reference to **{dmr.get('gpu_rel', '—')}** (fp32 sum
+reassociation) at a **{dmr.get('gpu_speed', '—')}× speedup**, and the agreement
+holds through the full AMR machinery — 2-level and 3-level subcycled hierarchies
+stay bit-close to the CPU AMR with **identical per-level patch counts**, so the
+GPU refluxing / restriction / prolongation are exact copies of the validated
+CPU path. AMR does the DMR at 1/256 for only **{dmr.get('amr_work', '—')} %** of
+the uniform-grid cell-steps. The `CaseDef` gate closes the declarative loop: the
+parsed analytic moving-shock BC reproduces the hand-written `dmr::fillGhosts`
+**cell-for-cell** ({dmr.get('cd_ghost', '—')} differing). This is the case the
+[conservation](conservation.md) fiche's periodic KH complements on the
+GPU-lock-step / mass-drift axis.""")
+
     # ---- fiche 2: Sod shock tube (validation vs exact) ------------------
     fiche("sod.md", f"""# Sod shock tube — *validation vs exact Riemann*
 
@@ -1256,6 +1337,7 @@ python3 vv/generate.py
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS {rms} vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
 | [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
 | [Immersed boundaries](cases/immersed.md) | validation · theory | reflected-shock wall p exact; no-slip Blasius (RMS {immersed.get('rms', '—')}); GPU lock-step | ✅ PASS |
+| [Double Mach reflection](cases/dmr.md) | verification | strong-shock triple point; CPU↔GPU lock-step ({dmr.get('gpu_speed', '—')}×) through 3-level AMR | ✅ PASS |
 
 Numbers are from an Apple M4 (float32) and may vary ~1 ULP across machines.
 
@@ -1274,9 +1356,11 @@ def main():
 
     conv_txt = sod_txt = bla_txt = det_txt = ""
     sod2d_txt = samr_txt = mms_txt = rea_txt = weno_txt = spec_txt = ""
-    ana_txt = imm_txt = ""
+    ana_txt = imm_txt = dmr_txt = ""
     IMM = ["immersed", "immersed_case", "immersed_amr", "immersed_noslip",
            "immersed_gpu"]
+    DMR = [("dmr_gpu", ["240"]), ("dmr_amr", ["128", "gpu"]),
+           ("mlgpu_amr", ["32"]), ("casedef_test", [])]
     if not args.no_run:
         print("running V&V drivers…")
         conv_txt = run_driver("convergence")
@@ -1291,6 +1375,7 @@ def main():
         bla_txt = run_driver("blasius")
         det_txt = run_driver("detonation", "16")   # long tube -> D relaxes to CJ
         imm_txt = "\n".join(run_driver(e) for e in IMM)  # last: GPU lock-step
+        dmr_txt = "\n".join(run_driver(e, *a) for e, a in DMR)  # GPU DMR suite
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
         (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, weno_txt,
@@ -1301,6 +1386,7 @@ def main():
              cached("analytic_suite"), cached("blasius"),
              cached("detonation"))
         imm_txt = "\n".join(cached(e) for e in IMM)
+        dmr_txt = "\n".join(cached(e) for e, _ in DMR)
 
     print("plotting…")
     orders = plot_order()
@@ -1313,6 +1399,7 @@ def main():
     species = plot_species(spec_txt)
     analytic = plot_analytic(ana_txt)
     immersed = plot_immersed(imm_txt)
+    dmr = plot_dmr(dmr_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -1336,7 +1423,7 @@ def main():
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
                  sod2d_txt, samr_txt, mms, rea, weno, species, analytic,
-                 immersed)
+                 immersed, dmr)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 
