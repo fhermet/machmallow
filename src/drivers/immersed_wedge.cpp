@@ -81,14 +81,17 @@ WallForce cylinderForce() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     const double M = 2.5, thetaDeg = 15.0;
     const double theta = thetaDeg * DEG, tanT = std::tan(theta);
     const double rho0 = 1.4, p0 = 1.0;       // c = sqrt(1.4*1/1.4) = 1
     const double u0 = M;                       // -> u = M
 
-    const int nx = 400, ny = 225;
     const double Lx = 1.6, Ly = 0.9, x0 = 0.4; // pointe du dièdre
+    // optional resolution knob (`immersed_wedge <nx>`, default 400 -> CI/gate
+    // unchanged) to show the staircase bias in beta shrink with refinement.
+    const int nx = (argc > 1) ? std::atoi(argv[1]) : 400;
+    const int ny = int(std::lround(nx * Ly / Lx)); // square cells
     Grid g(nx, ny, 0, 0, Lx, Real(ny) * (Lx / nx));
 
     // masque : solide sous la rampe y < tanθ (x - x0), pour x > x0

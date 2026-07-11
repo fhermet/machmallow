@@ -268,6 +268,15 @@ int main() {
         xs.push_back(frontX());
     }
 
+    // dump the front trajectory x(t) for the V&V figure (vv/): the local
+    // speed dx/dt relaxes from the overdriven ignition toward D_CJ.
+    if (FILE* ff = std::fopen("out/detonation_front.csv", "w")) {
+        std::fprintf(ff, "t,x\n");
+        for (std::size_t k = 0; k < ts.size(); ++k)
+            std::fprintf(ff, "%.6g,%.6g\n", ts[k], xs[k]);
+        std::fclose(ff);
+    }
+
     int n = 0;
     const double Dmeas = fitSpeed(ts, xs, 0.6 * L, 0.85 * L, n);
     // relaxation diagnostic: the overdriven ignition decays to CJ

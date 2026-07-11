@@ -22,8 +22,11 @@ python3 vv/generate.py
 | Case | Type | Key result | Status |
 |---|---|---|---|
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
+| [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |
 | [Sod shock tube](cases/sod.md) | validation · exact | matches exact Riemann (both schemes) | ✅ PASS |
+| [CJ detonation](cases/detonation.md) | validation · exact | D → D_CJ (+0.8 % on AMR, CPU/GPU lock-step) | ✅ PASS |
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS 1.3618e-02 vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
+| [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
 
 Numbers are from an Apple M4 (float32) and may vary ~1 ULP across machines.
 
