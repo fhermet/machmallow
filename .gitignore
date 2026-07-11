@@ -4,3 +4,12 @@ build/
 *.vti
 *.vthb
 out/
+
+# rendered media (hero videos, previews)
+*.mp4
+*.mov
+*.gif
+
+# private channel/brand notes (not part of the public repo)
+BRAND.md
+YOUTUBE.md

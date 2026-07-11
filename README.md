@@ -2,112 +2,121 @@
 
 *Soft on the outside, supersonic on the inside.*
 
-Solveur CFD 2D compressible (Euler, puis Navier-Stokes) avec AMR
-block-structured hybride CPU/GPU, écrit from scratch en C++/Metal pour
-Apple Silicon.
+A 2D compressible CFD solver (Euler and Navier–Stokes) with block-structured
+hybrid CPU/GPU AMR, written from scratch in C++/Metal for Apple Silicon.
 
-## Caractéristiques
+## Features
 
-- **Schéma** : MUSCL-Hancock ordre 2 + solveur de Riemann HLLC ;
-  flux visqueux centrés optionnels (Navier-Stokes compressible, Pr = 0.72)
-- **AMR** : hiérarchie de patchs block-structured (style AMReX) à
-  profondeur arbitraire (`amr.levels`) — le CPU gère le regridding, le
-  GPU calcule les flux (tous les niveaux partagent un pool de slots) ;
-  subcycling Berger-Colella récursif (ghosts interpolés en temps,
-  refluxing par paire de niveaux, nesting garanti au regrid)
-- **GPU** : Metal via metal-cpp, shaders compilés au runtime (pas de Xcode requis),
-  buffers partagés zéro-copie (mémoire unifiée)
-- **Précision** : float32
-- **Sorties** : VTK (vtkOverlappingAMR) pour ParaView
+- **Schemes**: 2nd-order MUSCL-Hancock with an HLLC Riemann solver; optional
+  WENO5 + RK3 (single-gas). Optional centered viscous fluxes for the
+  compressible Navier–Stokes equations (Pr = 0.72), including adiabatic
+  no-slip walls.
+- **AMR**: block-structured patch hierarchy (AMReX-style) of arbitrary depth
+  (`amr.levels`). The CPU handles regridding while the GPU computes fluxes on
+  every level (all levels share one slot pool). Recursive Berger–Colella
+  subcycling (time-interpolated ghosts, pairwise reflux, guaranteed nesting on
+  regrid).
+- **Immersed solids**: static geometric bodies (circle, rectangle, triangle,
+  half-plane, …) masked on the Cartesian grid, treated as reflective slip
+  walls — or viscous no-slip walls when viscosity is on. AMR auto-refines the
+  body boundary.
+- **Multi-physics**: optional two-gas model (mass-fraction transport,
+  quasi-conservative Gamma closure) and single-step Arrhenius reaction for
+  detonation/deflagration.
+- **GPU**: Metal via [metal-cpp](https://developer.apple.com/metal/cpp/),
+  shaders compiled at runtime (no Xcode required), zero-copy shared buffers
+  (unified memory).
+- **Precision**: float32.
+- **Output**: VTK (`vtkOverlappingAMR`) for ParaView, plus an optional
+  real-time Metal render window.
 
 ## Build
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-./build/machmallow
 ```
 
-Prérequis : macOS 15+, Command Line Tools, CMake ≥ 3.24.
+Requirements: macOS 15+, Command Line Tools, CMake ≥ 3.24. No external
+dependencies — metal-cpp is vendored under `third_party/`.
 
-## Lancer un cas
+## Running a case
 
 ```sh
-./build/run cases/dmr.ini      # DMR, AMR hybride subcyclé, sorties .vthb
-./build/run cases/sod.ini      # tube à choc de Sod
-./build/run cases/shear.ini    # couche de cisaillement visqueuse (NS)
+./build/run cases/dmr.ini              # Double Mach Reflection (hybrid subcycled AMR)
+./build/run cases/sod.ini              # Sod shock tube
+./build/run cases/cylinder_bowshock.ini # Mach 2 bow shock on an immersed cylinder
+./build/run cases/shear.ini            # viscous shear layer (Navier–Stokes)
 ```
 
-**Le solveur est entièrement piloté par le fichier de cas** — aucun
-C++ par cas. Le fichier déclare le domaine, des états primitifs nommés,
-la condition initiale par régions géométriques (demi-plans — y compris
-fronts de choc *mobiles* —, bandes, rectangles, cercles) avec
-perturbations, et les conditions aux limites par côté (`transmissive`,
-`reflective`, `inflow`, segmentables, périodiques — et `analytic` qui
-réévalue les régions au temps t dans les ghosts : la BC exacte du DMR
-en une ligne). Plus backend, viscosité, AMR (`levels`, tagging,
-subcycling) et sorties.
+**The solver is entirely driven by the case file** — no per-case C++. A case
+declares the domain, named primitive states, the initial condition as stacked
+geometric regions (half-planes — including *moving* shock fronts —, bands,
+rectangles, circles) with perturbations, immersed solids, and per-side
+boundary conditions (`transmissive`, `reflective`, `noslip`, `inflow`,
+`reservoir`, `backpressure`, segmentable, periodic — plus `analytic`, which
+re-evaluates the regions at time *t* in the ghost cells: the exact moving-shock
+BC in one line). Plus backend, viscosity, reactions, AMR (`levels`, tagging,
+subcycling) and output settings.
 
-Pour créer un cas : copier `cases/TEMPLATE.ini` (commenté), puis
-`./build/run --check moncas.ini` (config effective + warnings de clés
-inconnues) et `./build/run --list` (grammaire). L'équivalence du système
-déclaratif avec les anciens presets C++ est verrouillée par
-`casedef_test` (Sod au L1 historique exact, ghosts DMR identiques
-cellule pour cellule). Les exécutables `sod1d`…`mlgpu_amr` restent les
-harnais de validation.
+To create a case, copy the commented `cases/TEMPLATE.ini`, then use
+`./build/run --check mycase.ini` (effective config + unknown-key warnings) and
+`./build/run --list` (grammar reference). There are 22 ready-made cases in
+`cases/` (Sod, DMR, shear/Blasius, cylinder, nozzle, detonation/deflagration,
+Kelvin–Helmholtz, Rayleigh–Taylor, Richtmyer–Meshkov, shock–bubble, …).
+
+Render the `.vthb` output to video with `tools/schlieren_video.py`
+(schlieren, vorticity, density; ParaView also opens the files directly).
 
 ## Documentation
 
-- [`docs/GUIDE.md`](docs/GUIDE.md) — guide utilisateur : poser un cas en
-  10 min, lire le journal, exploiter les sorties.
-- [`docs/CASE_FORMAT.md`](docs/CASE_FORMAT.md) — référence exhaustive du
-  format de cas `.ini`.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architecture du code
-  (couches, AMR, hybride CPU/GPU ; schémas Mermaid).
-- [`docs/NUMERICS.md`](docs/NUMERICS.md) — méthodes numériques (équations,
-  HLLC, MUSCL/WENO5, AMR Berger-Colella).
-- [`docs/DEVELOPER.md`](docs/DEVELOPER.md) — guide développeur :
-  contribuer, discipline de validation, conventions.
-- [`docs/VALIDATION.md`](docs/VALIDATION.md) — études de vérification &
-  validation : ordre, conservation, lock-step, vs solutions exactes &
-  expériences (résultats chiffrés).
+- [`docs/GUIDE.md`](docs/GUIDE.md) — user guide: set up a case in 10 min, read
+  the log, work with the output.
+- [`docs/CASE_FORMAT.md`](docs/CASE_FORMAT.md) — exhaustive `.ini` case-file
+  reference.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — code architecture (layers,
+  AMR, hybrid CPU/GPU; Mermaid diagrams).
+- [`docs/NUMERICS.md`](docs/NUMERICS.md) — numerical methods (equations, HLLC,
+  MUSCL/WENO5, Berger–Colella AMR).
+- [`docs/DEVELOPER.md`](docs/DEVELOPER.md) — developer guide: contributing,
+  validation discipline, conventions.
+- [`docs/VALIDATION.md`](docs/VALIDATION.md) — verification & validation:
+  order of accuracy, conservation, CPU/GPU lock-step, vs exact solutions and
+  experiments (with numbers).
 
-## Feuille de route
+## Performance (Apple M4, 10-core GPU, 16 GB)
 
-- [x] Phase 0 — socle : CMake, metal-cpp, benchmark saxpy
-- [x] Phase 1 — solveur 1D CPU (Sod, HLLC + MUSCL-Hancock, ordre observé 0.9 vs exact)
-- [x] Phase 2 — 2D uniforme CPU + writer VTK (Sod diagonal ordre 0.97, DMR 480×120 OK)
-- [x] Phase 3 — port GPU du solveur 2D (écart fp32 ~1e-5 vs CPU, 298 Mcell/s à 2880×720, ~10× CPU)
-- [x] Phase 4 — AMR 2 niveaux CPU (L1 = 1.05× l'uniforme fin pour 63% du travail, conservation au plancher fp32)
-- [x] Phase 5 — AMR hybride CPU/GPU (DMR 1/512 : 150 Mcell/s, 30% du travail uniforme, 4.4× l'AMR CPU)
-- [x] Phase 6 — profiling et consolidation (ghost fill par bandes + CPU parallèle via GCD)
-- [x] Phase 7 — subcycling Berger-Colella (1.67× sur DMR 1/512) + termes visqueux NS (ordre 2.33 vs erf, parité GPU)
+Double Mach Reflection, 2-level AMR, t = 0.2, CFL 0.4 (`dmr_amr`):
 
-## Performances (Apple M4, 10 cœurs GPU, 16 GB)
-
-Double Mach Reflection AMR 2 niveaux, t = 0.2, CFL 0.4, `dmr_amr` :
-
-| Résolution fine | Pas | Temps | Débit | Travail vs uniforme |
+| Finest resolution | Steps | Time | Throughput | Work vs uniform |
 |---|---|---|---|---|
 | 1/256 (coarse 512×128) | 2706 | ~1.8–2.8 s | 86–135 Mcell/s | 34 % |
 | 1/512 (coarse 1024×256) | 5624 | ~9.7 s | ~180 Mcell/s | 30 % |
 
-Répartition d'un pas hybride (1/512) : GPU ~80 % (calcul + 1 sync/pas),
-ghost fill ~10 %, regrid ~6 %, reflux + restriction ~4 %. Taille de bloc
-optimale : 8 cellules grossières (sweep 4/8/16). Attention à la variance
-run-à-run sur Apple Silicon (gouverneur de fréquence GPU) : ±30 % sur les
-petits cas.
+Breakdown of a hybrid step (1/512): GPU ~80 % (compute + 1 sync/step), ghost
+fill ~10 %, regrid ~6 %, reflux + restriction ~4 %. Optimal block size: 8
+coarse cells. Expect run-to-run variance on Apple Silicon (GPU frequency
+governor): ±30 % on small cases.
 
-Jalons intermédiaires : solveur 2D uniforme GPU ~300 Mcell/s (≈10× le CPU
-mono-thread) ; AMR hybride ≈4× l'AMR CPU mono-thread à résolution égale.
+Reference points: uniform 2D GPU solver ~300 Mcell/s (≈10× single-thread CPU);
+hybrid AMR ≈4× single-thread CPU AMR at equal resolution.
 
 ## Validation
 
-Tubes à choc de Sod 1D/2D (vs solution exacte de Riemann), Double Mach
-Reflection (Woodward & Colella 1984), couche de cisaillement visqueuse
-(vs profil erf exact).
+Sod shock tubes 1D/2D (vs exact Riemann solution), Double Mach Reflection
+(Woodward & Colella 1984), viscous shear layer (vs exact erf profile), Blasius
+boundary layer, oblique-shock wedge, and immersed-body cases. The CPU
+validation harnesses run in CI on every push (see `.github/workflows/ci.yml`).
+Development follows a strict CPU/GPU lock-step discipline (the CPU path is the
+reference oracle).
 
-## Et après ?
+## Roadmap
 
-Les extensions envisagées (AMR multi-niveaux, WENO, NS sur AMR, rendu
-temps réel, CI…) sont détaillées dans [ROADMAP.md](ROADMAP.md).
+Milestones and planned work (multi-level AMR, WENO, cut-cells, real-time
+rendering, …) are tracked in [ROADMAP.md](ROADMAP.md).
+
+## License
+
+[MIT](LICENSE) © Florian Hermet. Vendored [metal-cpp](third_party/metal-cpp)
+is licensed by Apache under its own terms (see
+`third_party/metal-cpp/LICENSE.txt`).
