@@ -1,58 +1,58 @@
-# Architecture de machmallow
+# machmallow architecture
 
-`machmallow` est un solveur CFD **2D compressible** (Euler + Navier-Stokes)
-à **AMR block-structured hybride CPU/GPU**, écrit *from scratch* en C++20 +
-metal-cpp, ciblant Apple Silicon (un seul Mac, GPU Metal, mémoire unifiée).
-Tout est en **float32** (`Real = float`) — Metal n'a pas de `double`, et le
-CPU partage le type pour un lock-step bit-à-bit avec le GPU.
+`machmallow` is a **2D compressible** CFD solver (Euler + Navier–Stokes) with
+**block-structured hybrid CPU/GPU AMR**, written *from scratch* in C++20 +
+metal-cpp, targeting Apple Silicon (a single Mac, Metal GPU, unified memory).
+Everything is **float32** (`Real = float`) — Metal has no `double`, and the
+CPU shares the type for a bit-for-bit lock-step with the GPU.
 
-Principes directeurs : **lisibilité du code**, **validation quantitative à
-chaque étape**, et une **UX déclarative** (un cas = un fichier `.ini`).
+Guiding principles: **code readability**, **quantitative validation at every
+step**, and a **declarative UX** (one case = one `.ini` file).
 
 ---
 
-## 1. Vue en couches
+## 1. Layered view
 
-Le code est organisé en couches à dépendances strictement descendantes :
-chaque couche n'inclut que les couches au-dessus d'elle.
+The code is organized in layers with strictly downward dependencies: each
+layer only includes the layers above it.
 
 ```mermaid
 flowchart TD
-    subgraph L0["core — socle"]
+    subgraph L0["core — foundation"]
         Types["Types.hpp<br/>Real, GAMMA, PRANDTL, floors"]
-        Grid["Grid.hpp<br/>grille uniforme + ghosts (NG=3)"]
-        Boundary["Boundary.hpp<br/>remplissage des ghosts (BC)"]
-        Config["Config.hpp<br/>parseur INI"]
+        Grid["Grid.hpp<br/>uniform grid + ghosts (NG=3)"]
+        Boundary["Boundary.hpp<br/>ghost fill (BC)"]
+        Config["Config.hpp<br/>INI parser"]
         Parallel["Parallel.hpp<br/>parallelFor (GCD)"]
     end
-    subgraph L1["physics — lois"]
-        Euler["Euler.hpp<br/>Prim/Cons, flux Euler"]
-        TwoGas["TwoGas.hpp<br/>phi/Gamma, flux bi-gaz"]
-        Reaction["Reaction.hpp<br/>source Arrhenius"]
+    subgraph L1["physics — laws"]
+        Euler["Euler.hpp<br/>Prim/Cons, Euler flux"]
+        TwoGas["TwoGas.hpp<br/>phi/Gamma, two-gas flux"]
+        Reaction["Reaction.hpp<br/>Arrhenius source"]
     end
-    subgraph L2["numerics — briques"]
-        Hllc["Hllc.hpp<br/>flux de Riemann HLLC"]
-        Limiter["Limiter.hpp<br/>pente limitée TVD"]
-        Exact["ExactRiemann.hpp<br/>Sod exact (validation)"]
+    subgraph L2["numerics — building blocks"]
+        Hllc["Hllc.hpp<br/>HLLC Riemann flux"]
+        Limiter["Limiter.hpp<br/>TVD slope limiter"]
+        Exact["ExactRiemann.hpp<br/>exact Sod (validation)"]
     end
-    subgraph L3["solver — schémas mono-grille"]
-        Muscl["Muscl2D.hpp<br/>MUSCL-Hancock + visqueux"]
+    subgraph L3["solver — single-grid schemes"]
+        Muscl["Muscl2D.hpp<br/>MUSCL-Hancock + viscous"]
         Weno["Weno2D.hpp<br/>WENO5 + SSP-RK3"]
-        MusclSp["Muscl2DSpecies.hpp<br/>bi-gaz + réaction"]
+        MusclSp["Muscl2DSpecies.hpp<br/>two-gas + reaction"]
     end
-    subgraph L4["amr — hiérarchie adaptative"]
-        Amr2["Amr2.hpp (2 niveaux, CPU)"]
-        AmrML["AmrML.hpp (multi-niveaux, CPU)"]
-        AmrGpu["AmrGpu.hpp (2 niveaux, hybride)"]
-        AmrGpuML["AmrGpuML.hpp (multi-niveaux, hybride)"]
+    subgraph L4["amr — adaptive hierarchy"]
+        Amr2["Amr2.hpp (2 levels, CPU)"]
+        AmrML["AmrML.hpp (multi-level, CPU)"]
+        AmrGpu["AmrGpu.hpp (2 levels, hybrid)"]
+        AmrGpuML["AmrGpuML.hpp (multi-level, hybrid)"]
     end
     subgraph L5["services"]
         Backend["backend/ — Metal<br/>MetalContext, Euler2DGpu"]
-        IO["io/ — VTK, checkpoint, journal"]
+        IO["io/ — VTK, checkpoint, log"]
         Render["render/ — LiveView (Metal)"]
-        Cases["cases/CaseDef.hpp<br/>cas déclaratif"]
+        Cases["cases/CaseDef.hpp<br/>declarative case"]
     end
-    Drivers["drivers/ — exécutables<br/>run (runner déclaratif) + suites de validation"]
+    Drivers["drivers/ — executables<br/>run (declarative runner) + validation suites"]
 
     L0 --> L1 --> L2 --> L3 --> L4
     L3 --> L5
@@ -62,212 +62,208 @@ flowchart TD
     L5 --> Drivers
 ```
 
-Le GPU (couche `backend`) n'est tiré que par `AmrGpu`, `AmrGpuML` et
-`LiveView`. Les classes CPU (`Amr2`, `AmrML`) et tous les schémas
-mono-grille en sont indépendants — d'où le **lock-step CPU/GPU** : la même
-physique tourne des deux côtés et se compare bit-à-bit.
+The GPU (`backend` layer) is only pulled in by `AmrGpu`, `AmrGpuML` and
+`LiveView`. The CPU classes (`Amr2`, `AmrML`) and all single-grid schemes are
+independent of it — hence the **CPU/GPU lock-step**: the same physics runs on
+both sides and is compared bit-for-bit.
 
 ---
 
-## 2. Structures de données fondamentales
+## 2. Fundamental data structures
 
-| Type | Rôle |
+| Type | Role |
 |---|---|
-| `Real` (= `float`) | partout — fp32 imposé par Metal |
-| `Prim {rho,u,v,p}` | variables primitives |
-| `Cons {rho,mx,my,E}` | variables conservatives (état stocké) |
-| `Grid` | grille uniforme + `NG=3` rangées de ghosts ; `idx(i,j)`, `xc(i)`, `yc(j)` |
-| `AmrConfig` | paramètres AMR (niveaux, block, seuils de tag, viscosité, gravité, schéma, espèces, réaction, cap du pool) |
+| `Real` (= `float`) | everywhere — fp32 imposed by Metal |
+| `Prim {rho,u,v,p}` | primitive variables |
+| `Cons {rho,mx,my,E}` | conservative variables (stored state) |
+| `Grid` | uniform grid + `NG=3` ghost rows; `idx(i,j)`, `xc(i)`, `yc(j)` |
+| `AmrConfig` | AMR parameters (levels, block, tag thresholds, viscosity, gravity, scheme, species, reaction, pool cap) |
 
-La grille stocke un tableau plat de `Cons` (interieur `nx×ny` entouré de
-`NG` ghosts de chaque côté). Les cas bi-gaz ajoutent un scalaire
-`(phi=rho·Y, Gamma)` par cellule.
+The grid stores a flat array of `Cons` (an `nx×ny` interior surrounded by `NG`
+ghosts on each side). Two-gas cases add a `(phi=rho·Y, Gamma)` scalar per
+cell.
 
 ---
 
-## 3. Schémas numériques (mono-grille)
+## 3. Numerical schemes (single-grid)
 
-Deux schémas, même interface (`stepXXX(Grid&, dt, scratch, ...)`), choisis
-par `scheme = muscl | weno5` dans le `.ini`.
+Two schemes, same interface (`stepXXX(Grid&, dt, scratch, ...)`), chosen by
+`scheme = muscl | weno5` in the `.ini`.
 
 ```mermaid
 flowchart LR
-    A["état U^n<br/>(ghosts remplis)"] --> B["reconstruction<br/>MUSCL: pentes limitées + 1/2 pas Hancock<br/>WENO5: poids non-linéaires (5 pts)"]
-    B --> C["états de face gauche/droite"]
-    C --> D["flux HLLC aux faces<br/>(Riemann approché)"]
+    A["state U^n<br/>(ghosts filled)"] --> B["reconstruction<br/>MUSCL: limited slopes + 1/2-step Hancock<br/>WENO5: nonlinear weights (5 pts)"]
+    B --> C["left/right face states"]
+    C --> D["HLLC flux at faces<br/>(approximate Riemann)"]
     D --> E{"mu &gt; 0 ?"}
-    E -- oui --> F["+ flux visqueux<br/>(Stokes + Fourier, central 2e ordre)"]
-    E -- non --> G
-    F --> G["mise à jour conservative<br/>U += dt/dx (F_i-1/2 − F_i+1/2)"]
-    G --> H{"gravité / réaction ?"}
-    H -- gravité --> I["source split (point milieu)"]
-    H -- réaction --> J["Strang : R(dt/2)·hydro·R(dt/2)"]
+    E -- yes --> F["+ viscous flux<br/>(Stokes + Fourier, 2nd-order central)"]
+    E -- no --> G
+    F --> G["conservative update<br/>U += dt/dx (F_i-1/2 − F_i+1/2)"]
+    G --> H{"gravity / reaction ?"}
+    H -- gravity --> I["split source (midpoint)"]
+    H -- reaction --> J["Strang: R(dt/2)·hydro·R(dt/2)"]
     I --> K["U^n+1"]
     J --> K
-    H -- non --> K
+    H -- no --> K
 ```
 
-- **`Muscl2D`** : MUSCL-Hancock prédicteur-correcteur + flux HLLC ; flux
-  visqueux central optionnel (`mu>0`) ; source de gravité split. C'est le
-  schéma par défaut, le plus rapide.
-- **`Weno2D`** : reconstruction WENO5 (Jiang-Shu) sur états de face + HLLC,
-  intégration temporelle SSP-RK3 (3 étages). Ordre élevé en régime lisse.
-- **`Muscl2DSpecies`** : variante bi-gaz (transport quasi-conservatif de
-  `Gamma` via la vitesse de contact HLLC) + chemin réactif (`react()`
-  intègre la variable de progrès λ par RK4 sous-cyclé, l'énergie suit le
-  dégagement de chaleur).
+- **`Muscl2D`**: MUSCL-Hancock predictor-corrector + HLLC flux; optional
+  central viscous flux (`mu>0`); split gravity source. The default,
+  fastest scheme.
+- **`Weno2D`**: WENO5 (Jiang-Shu) reconstruction on face states + HLLC,
+  SSP-RK3 time integration (3 stages). High order in smooth regions.
+- **`Muscl2DSpecies`**: two-gas variant (quasi-conservative `Gamma` transport
+  via the HLLC contact velocity) + reactive path (`react()` integrates the
+  progress variable λ by subcycled RK4, energy follows the heat release).
 
-> Vérification : `convergence` mesure l'ordre Euler (onde d'entropie ~5
-> WENO, vortex ~2) ; `mms` (solutions manufacturées) vérifie l'opérateur
-> Navier-Stokes visqueux à l'ordre 2 (cf. `docs`/ROADMAP).
+> Verification: `convergence` measures the Euler order (entropy wave ~5 for
+> WENO, vortex ~2); `mms` (manufactured solutions) verifies the viscous
+> Navier–Stokes operator at order 2 (see `docs`/ROADMAP).
 
 ---
 
-## 4. AMR — raffinement adaptatif block-structured
+## 4. AMR — block-structured adaptive refinement
 
-Schéma de **Berger-Colella** : des *patchs* carrés (blocs de `blockC`
-cellules, raffinés d'un ratio 2) se posent récursivement là où un critère
-de raffinement (gradient de densité, saut de vitesse) le demande. Chaque
-niveau avance à son propre pas de temps (**subcycling**), et la
-conservation aux interfaces grossier/fin est restaurée par **refluxing**.
+**Berger-Colella** scheme: square *patches* (blocks of `blockC` cells,
+refined by a ratio of 2) recursively cover the regions flagged by a
+refinement criterion (density gradient, velocity jump). Each level advances at
+its own time step (**subcycling**), and conservation at coarse/fine
+interfaces is restored by **refluxing**.
 
 ```mermaid
 flowchart TD
-    L0["Niveau 0 — grille de base (couvre tout le domaine)"]
-    L1["Niveau 1 — patchs (blocs raffinés ×2)"]
-    L2["Niveau 2 — patchs (×4)"]
-    L3["Niveau L-1 — patchs les plus fins"]
+    L0["Level 0 — base grid (covers the whole domain)"]
+    L1["Level 1 — patches (blocks refined ×2)"]
+    L2["Level 2 — patches (×4)"]
+    L3["Level L-1 — finest patches"]
     L0 -- "tag + regrid (Berger-Colella)" --> L1
     L1 --> L2
     L2 -.-> L3
-    L1 -- "restriction (fin → grossier)" --> L0
-    L1 -- "refluxing (corrige le flux d'interface)" --> L0
+    L1 -- "restriction (fine → coarse)" --> L0
+    L1 -- "refluxing (corrects the interface flux)" --> L0
 ```
 
-L'avance d'un pas est **récursive avec subcycling** : avancer le niveau `l`
-d'un pas `dt_l`, puis avancer le niveau `l+1` de deux demi-pas `dt_l/2`,
-remplir ses ghosts par prolongation θ-blendée depuis `l`, restreindre et
-refluxer en remontant.
+Advancing one step is **recursive with subcycling**: advance level `l` by one
+step `dt_l`, then advance level `l+1` by two half-steps `dt_l/2`, fill its
+ghosts by θ-blended prolongation from `l`, restrict and reflux on the way
+back up.
 
 ```mermaid
 flowchart TD
-    S["advance(l, dt)"] --> A["remplir ghosts du niveau l<br/>(BC physiques au niveau fin, prolongation sinon)"]
-    A --> B["pas hyperbolique du niveau l (dt)"]
-    B --> C{"niveau l+1 existe ?"}
-    C -- oui --> D["advance(l+1, dt/2)  ×2  (subcycling)"]
+    S["advance(l, dt)"] --> A["fill level l ghosts<br/>(physical BCs at the fine level, prolongation otherwise)"]
+    A --> B["level l hyperbolic step (dt)"]
+    B --> C{"level l+1 exists?"}
+    C -- yes --> D["advance(l+1, dt/2)  ×2  (subcycling)"]
     D --> E["restriction l+1 → l"]
-    E --> F["refluxing à l'interface l / l+1"]
-    C -- non --> G["fin"]
+    E --> F["refluxing at the l / l+1 interface"]
+    C -- no --> G["done"]
     F --> G
 ```
 
-### Quatre implémentations, une sélection automatique
+### Four implementations, one automatic selection
 
-Le runner choisit la classe selon `backend` et la complexité du cas :
+The runner picks the class based on `backend` and case complexity:
 
 ```mermaid
 flowchart TD
-    Start["run cases/X.ini"] --> Bk{"backend ?"}
-    Bk -- cpu --> C1{"2 niveaux ET<br/>ni espèces ni WENO ?"}
-    C1 -- oui --> Amr2["Amr2 (2 niveaux, CPU)"]
-    C1 -- non --> AmrML["AmrML (multi-niveaux, CPU)"]
-    Bk -- hybrid --> C2{"2 niveaux ET<br/>ni espèces ni WENO ?"}
-    C2 -- oui --> AmrGpu["AmrGpu (2 niveaux, hybride)"]
-    C2 -- non --> AmrGpuML["AmrGpuML (multi-niveaux, hybride)"]
+    Start["run cases/X.ini"] --> Bk{"backend?"}
+    Bk -- cpu --> C1{"2 levels AND<br/>neither species nor WENO?"}
+    C1 -- yes --> Amr2["Amr2 (2 levels, CPU)"]
+    C1 -- no --> AmrML["AmrML (multi-level, CPU)"]
+    Bk -- hybrid --> C2{"2 levels AND<br/>neither species nor WENO?"}
+    C2 -- yes --> AmrGpu["AmrGpu (2 levels, hybrid)"]
+    C2 -- no --> AmrGpuML["AmrGpuML (multi-level, hybrid)"]
 ```
 
-`Amr2`/`AmrGpu` sont des chemins rapides à 2 niveaux ; `AmrML`/`AmrGpuML`
-gèrent une profondeur arbitraire, le bi-gaz, WENO5 et la réaction. Les
-versions GPU sont des miroirs *bit-identiques* des versions CPU (gates de
-lock-step dans `mlgpu_amr`, `dmr_amr`, etc.).
+`Amr2`/`AmrGpu` are fast 2-level paths; `AmrML`/`AmrGpuML` handle arbitrary
+depth, two-gas, WENO5 and reaction. The GPU versions are *bit-identical*
+mirrors of the CPU versions (lock-step gates in `mlgpu_amr`, `dmr_amr`, etc.).
 
 ---
 
-## 5. Hybride CPU / GPU
+## 5. Hybrid CPU / GPU
 
-Sur Apple Silicon la **mémoire est unifiée** : les buffers Metal
-(`StorageModeShared`) sont vus à la même adresse par le CPU et le GPU,
-**sans copie**. Le partage du travail :
+On Apple Silicon the **memory is unified**: Metal buffers
+(`StorageModeShared`) are seen at the same address by CPU and GPU, **without a
+copy**. The work split:
 
-- **GPU** : la boucle chaude — flux, mise à jour, dt (réduction) — sur la
-  grille de base et chaque niveau de patchs, en dispatches groupés (un par
-  niveau et par sous-pas), via les kernels de `shaders/euler2d.metal`.
-- **CPU** : la comptabilité — remplissage des ghosts, tagging, regridding,
-  restriction, refluxing — *en place* dans les mêmes buffers.
+- **GPU**: the hot loop — fluxes, update, dt (reduction) — on the base grid
+  and each patch level, in batched dispatches (one per level and per
+  substep), via the kernels in `shaders/euler2d.metal`.
+- **CPU**: the bookkeeping — ghost fill, tagging, regridding, restriction,
+  refluxing — *in place* in the same buffers.
 
 ```mermaid
 sequenceDiagram
     participant CPU
-    participant Mem as "Mémoire unifiée (buffers partagés)"
+    participant Mem as "Unified memory (shared buffers)"
     participant GPU
-    Note over CPU,GPU: un pas de base de AmrGpuML
-    CPU->>Mem: remplir ghosts (base + patchs)
-    CPU->>GPU: encoder flux + update (kernels groupés par niveau)
-    GPU->>Mem: écrire U^n+1 (slots du pool)
+    Note over CPU,GPU: one base step of AmrGpuML
+    CPU->>Mem: fill ghosts (base + patches)
+    CPU->>GPU: encode flux + update (kernels batched per level)
+    GPU->>Mem: write U^n+1 (pool slots)
     GPU-->>CPU: waitUntilCompleted
     CPU->>Mem: restriction / refluxing / tagging
-    CPU->>CPU: regrid (alloue/libère des slots du pool)
+    CPU->>CPU: regrid (allocate/free pool slots)
 ```
 
-Tous les patchs de tous les niveaux vivent dans **un seul pool de slots**
-(forme de patch identique à toute profondeur). Le pool a une **capacité
-configurable** (`amr.max_patches`, par défaut dimensionnée sur ~1/8 du
-working set du device) ; sa saturation lève une erreur claire et
-actionnable (cf. `Euler2DGpu` / `AmrGpuML`).
+All patches of all levels live in **a single slot pool** (identical patch
+shape at any depth). The pool has a **configurable capacity**
+(`amr.max_patches`, by default sized to ~1/8 of the device working set); its
+exhaustion raises a clear, actionable error (see `Euler2DGpu` / `AmrGpuML`).
 
-`Euler2DGpu` encapsule le device Metal, la compilation des kernels et les
-pipelines (MUSCL, WENO, espèces, réaction). `MetalContext` détient le
-`device`, la `queue` et le cache de librairies.
+`Euler2DGpu` wraps the Metal device, the kernel compilation and the pipelines
+(MUSCL, WENO, species, reaction). `MetalContext` holds the `device`, the
+`queue` and the library cache.
 
 ---
 
-## 6. Pipeline d'exécution déclaratif (`run`)
+## 6. Declarative execution pipeline (`run`)
 
-`run` est le point d'entrée principal : il transforme un `.ini` en
-simulation, sans C++ par cas.
+`run` is the main entry point: it turns a `.ini` into a simulation, with no
+per-case C++.
 
 ```mermaid
 flowchart LR
-    INI[".ini (cas)"] --> Cfg["Config (parse INI)"]
-    Cfg --> CD["CaseDef<br/>domaine, états nommés,<br/>régions, BC, espèces, réaction"]
+    INI[".ini (case)"] --> Cfg["Config (parse INI)"]
+    Cfg --> CD["CaseDef<br/>domain, named states,<br/>regions, BC, species, reaction"]
     CD --> AC["AmrConfig"]
-    AC --> Sel["sélection de classe AMR<br/>(backend × complexité)"]
+    AC --> Sel["AMR class selection<br/>(backend × complexity)"]
     Sel --> dt
-    subgraph Loop["boucle : tant que t &lt; t_end"]
+    subgraph Loop["loop: while t &lt; t_end"]
         dt["dt = CFL · maxStableDtAll()"] --> step["amr.step(dt, t)"]
-        step --> out{"frame / journal / live ?"}
+        step --> out{"frame / log / live?"}
         out --> dt
     end
     out -->|VTK| Vti["VtiWriter / VthbWriter (.vthb)"]
-    out -->|live| LV["LiveView (fenêtre Metal)"]
-    out -->|journal| Diag["Diagnostics (.csv)"]
+    out -->|live| LV["LiveView (Metal window)"]
+    out -->|log| Diag["Diagnostics (.csv)"]
     out -->|checkpoint| Ck["Checkpoint"]
     Vti --> Post["tools/schlieren_video.py<br/>(schlieren, AMR, MP4)"]
 ```
 
-`CaseDef` est entièrement déclaratif : états nommés (avec états post-choc
-Rankine-Hugoniot dérivés), régions géométriques (`halfplane`, `circle`,
-`band`, `rect`, `sinex`) avec fronts mobiles, perturbations, et BC par côté
-(`transmissive`, `reflective`, `noslip`, `analytic`, `inflow`, avec split
-`if x < … else …`). Les ghosts `analytic` réévaluent la pile de régions au
-temps `t` — la BC exacte du choc mobile du DMR sort gratuitement de la même
-description que l'IC.
+`CaseDef` is fully declarative: named states (with derived Rankine-Hugoniot
+post-shock states), geometric regions (`halfplane`, `circle`, `band`, `rect`,
+`sinex`) with moving fronts, perturbations, and per-side BCs (`transmissive`,
+`reflective`, `noslip`, `analytic`, `inflow`, with `if x < … else …` split).
+The `analytic` ghosts re-evaluate the region stack at time `t` — the DMR's
+exact moving-shock BC falls out for free from the same description as the IC.
 
 ---
 
-## 7. Services : E/S, rendu, diagnostics
+## 7. Services: I/O, rendering, diagnostics
 
-- **`io/VtiWriter` & `VthbWriter`** : sortie VTK ImageData (`.vti`) et
-  vtkOverlappingAMR (`.vthb`, hiérarchie complète) pour ParaView.
-- **`io/Diagnostics`** : journal CSV (résidus, masse, nb de cellules/patchs,
-  débit) par `diagnostics.every`.
-- **`io/Checkpoint`** : reprise (sérialisation de l'état).
-- **`render/LiveView`** : vue temps réel — un triangle plein écran dont le
-  fragment shader échantillonne **directement** les buffers de simulation
-  (zéro copie), avec contours de patchs AMR et auto-échelle de couleur.
-- **`tools/schlieren_video.py`** : post-traitement hors-ligne — schlieren
-  numérique `|∇ρ|` composé du niveau AMR le plus fin, panneau densité +
-  blocs AMR, annotation pédagogique, export MP4.
+- **`io/VtiWriter` & `VthbWriter`**: VTK ImageData (`.vti`) and
+  vtkOverlappingAMR (`.vthb`, full hierarchy) output for ParaView.
+- **`io/Diagnostics`**: CSV log (residuals, mass, cell/patch counts,
+  throughput) every `diagnostics.every`.
+- **`io/Checkpoint`**: resume (state serialization).
+- **`render/LiveView`**: real-time view — a full-screen triangle whose
+  fragment shader samples the simulation buffers **directly** (zero copy),
+  with AMR patch outlines and auto color scale.
+- **`tools/schlieren_video.py`**: offline post-processing — numerical
+  schlieren `|∇ρ|` composited from the finest AMR level, density + AMR-blocks
+  panel, pedagogical annotation, MP4 export.
 
 ---
 
@@ -275,36 +271,35 @@ description que l'IC.
 
 ```mermaid
 flowchart TD
-    CM["CMakeLists.txt"] --> Lib1["libmm_metal (backend GPU)"]
+    CM["CMakeLists.txt"] --> Lib1["libmm_metal (GPU backend)"]
     CM --> Lib2["libmm_render (LiveView)"]
-    CM --> Exe["~24 exécutables (drivers)"]
-    Exe --> Run["run (runner déclaratif)"]
-    Exe --> Val["suites de validation<br/>sod*, dmr*, weno_suite, convergence, mms,<br/>reactor, hs_suite, blasius, detonation, …"]
-    Val --> CI["CI macOS (.github/workflows/ci.yml)<br/>suite CPU + suite GPU"]
+    CM --> Exe["~24 executables (drivers)"]
+    Exe --> Run["run (declarative runner)"]
+    Exe --> Val["validation suites<br/>sod*, dmr*, weno_suite, convergence, mms,<br/>reactor, hs_suite, blasius, detonation, …"]
+    Val --> CI["macOS CI (.github/workflows/ci.yml)<br/>CPU suite + GPU suite"]
 ```
 
-Chaque ajout fonctionnel vient avec une **porte quantitative** (un driver
-qui renvoie PASS/FAIL sur une métrique chiffrée), idéalement un cas
-déclaratif, et une couverture CI. Les chemins GPU sont comparés *bit-à-bit*
-à leur référence CPU.
+Every functional addition comes with a **quantitative gate** (a driver that
+returns PASS/FAIL on a numeric metric), ideally a declarative case, and CI
+coverage. The GPU paths are compared *bit-for-bit* to their CPU reference.
 
 ---
 
 ## 9. Conventions & invariants
 
-- **fp32 partout** (`Real = float`) — Metal n'a pas de `double` ; le CPU
-  s'aligne pour le lock-step et le layout `float4` zéro-copie.
-- **`NG = 3` ghosts** (requis par le stencil WENO5 ; MUSCL en utilise 2).
-- **BC physiques des patchs de bord : toujours au niveau fin**
-  (`fillPatchPhysical`) — la prolongation des ghosts grossiers casse la
-  cohérence dès qu'une onde touche la frontière.
-- **Portes de conservation calibrées sur le plancher d'arrondi fp32 mesuré**
-  (~1e-8/pas par patch actif), pas sur une valeur idéale.
-- **Non-objectifs** : pas de MPI, pas de modèle de turbulence, pas de
-  solveur implicite, pas de généralité « production » — mais une UX de
-  niveau industriel *est* un objectif (cf. ROADMAP).
+- **fp32 everywhere** (`Real = float`) — Metal has no `double`; the CPU aligns
+  for the lock-step and the zero-copy `float4` layout.
+- **`NG = 3` ghosts** (required by the WENO5 stencil; MUSCL uses 2).
+- **Physical BCs of edge patches: always at the fine level**
+  (`fillPatchPhysical`) — prolongating coarse ghosts breaks consistency as
+  soon as a wave touches the boundary.
+- **Conservation gates calibrated on the measured fp32 rounding floor**
+  (~1e-8/step per active patch), not on an ideal value.
+- **Non-goals**: no MPI, no turbulence model, no implicit solver, no
+  "production" generality — but an industrial-grade UX *is* a goal (see
+  ROADMAP).
 
 ---
 
-*Pour la feuille de route, les jalons (v1.0 → v1.5) et les leçons de
-conception, voir [`ROADMAP.md`](../ROADMAP.md).*
+*For the roadmap, the milestones (v1.0 → v1.5) and the design lessons, see
+[`ROADMAP.md`](../ROADMAP.md).*
