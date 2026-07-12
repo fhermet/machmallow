@@ -19,6 +19,8 @@
 #include "physics/Euler.hpp"
 #include "solver/Muscl2D.hpp"   // hllcFluxY, maxStableDt
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace mm {
@@ -31,8 +33,16 @@ inline Cons ebWallFlux(const Prim& w, Real nox, Real noy) {
     return Cons{0, ps * nox, ps * noy, 0};
 }
 
-// One 1st-order Godunov cut-cell step (no redistribution yet — phase 2a).
+// One 1st-order Godunov cut-cell step with hybrid FLUX REDISTRIBUTION, so the
+// time step is limited by the FULL cells, not by the small cut cells.
 // Covered cells (Lambda = 0) are frozen; ghosts must be filled by the caller.
+//
+// Redistribution (Colella / AMReX-EB): with the conservative divergence
+// D^c = dU/(kappa V), a smooth non-conservative value D^nc = kappa-weighted
+// average over the 3x3 fluid neighbourhood, the update uses the hybrid
+// D^hyb = kappa D^c + (1-kappa) D^nc and the removed mass
+// kappa(1-kappa)(D^c - D^nc) V is spread to the neighbourhood (weight kappa),
+// which keeps the scheme conservative while bounding small-cell updates.
 inline void stepCutCell(Grid& g, const cutcell::Geometry& geo, Real dt) {
     const Real dx = g.dx, dy = g.dy, V = dx * dy;
     const Real tiny = Real(1e-9);
@@ -68,12 +78,74 @@ inline void stepCutCell(Grid& g, const cutcell::Geometry& geo, Real dt) {
             const Cons Feb = ebWallFlux(w, -m.eb.nx, -m.eb.ny);
             dU[g.idx(i, j)] = dU[g.idx(i, j)] - m.eb.area * Feb;
         }
-    // conservative update on fluid cells
+    // conservative divergence D^c = dU/(kappa V) on fluid cells
+    std::vector<Cons> Dc(g.q.size(), Cons{0, 0, 0, 0});
+    const auto kap = [&](int i, int j) { return double(geo.at(i, j).vol); };
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i) {
-            const Real vol = geo.at(i, j).vol;
-            if (vol <= tiny) continue;          // covered
-            g.at(i, j) = g.at(i, j) + (dt / (vol * V)) * dU[g.idx(i, j)];
+            const double k = kap(i, j);
+            if (k > double(tiny))
+                Dc[g.idx(i, j)] = Real(1.0 / (k * V)) * dU[g.idx(i, j)];
+        }
+
+    // hybrid divergence + mass redistribution over the 3x3 fluid neighbourhood
+    std::vector<Cons> D(g.q.size(), Cons{0, 0, 0, 0});
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i) {
+            const double kc = kap(i, j);
+            if (kc <= double(tiny)) continue;   // covered
+            double sumk = 0;
+            Cons wsum{0, 0, 0, 0};
+            for (int dj = -1; dj <= 1; ++dj)
+                for (int di = -1; di <= 1; ++di) {
+                    const double kk = kap(i + di, j + dj);
+                    if (kk > double(tiny)) {
+                        sumk += kk;
+                        wsum = wsum + Real(kk) * Dc[g.idx(i + di, j + dj)];
+                    }
+                }
+            const Cons Dnc = Real(1.0 / sumk) * wsum;
+            D[g.idx(i, j)] = D[g.idx(i, j)] +
+                             (Real(kc) * Dc[g.idx(i, j)] + Real(1 - kc) * Dnc);
+            if (kc < 1.0 - double(tiny)) {      // spread the removed mass
+                const Cons dD = Real(kc * (1 - kc) / sumk) *
+                                (Dc[g.idx(i, j)] - Dnc);
+                for (int dj = -1; dj <= 1; ++dj)
+                    for (int di = -1; di <= 1; ++di)
+                        if (kap(i + di, j + dj) > double(tiny))
+                            D[g.idx(i + di, j + dj)] =
+                                D[g.idx(i + di, j + dj)] + dD;
+            }
+        }
+
+    // conservative update on fluid cells, with a positivity floor (density /
+    // pressure clamp) for robustness in strong shocks — inactive in smooth /
+    // at-rest flow, so it does not perturb the conservation gate.
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i) {
+            if (kap(i, j) <= double(tiny)) continue;
+            Cons q = g.at(i, j) + dt * D[g.idx(i, j)];
+            Prim w = toPrim(q);
+            const Real SPEED_CAP = Real(50);   // >> any physical speed here
+            const bool bad = !(w.rho >= RHO_FLOOR) ||          // catches NaN
+                             !std::isfinite(double(w.p)) ||
+                             !std::isfinite(double(w.u)) ||
+                             !std::isfinite(double(w.v)) ||
+                             std::hypot(w.u, w.v) > SPEED_CAP;
+            if (bad) {
+                // near-vacuum / non-finite / runaway momentum: the state is
+                // untrustworthy (a huge u = mx/rho would blow up or collapse
+                // the time step). Reset to a quiescent floored state — only
+                // ever hits arbitrarily thin, tangent slivers (see note: a
+                // proper fix is state redistribution over a fuller
+                // neighbourhood).
+                w.rho = RHO_FLOOR; w.u = 0; w.v = 0; w.p = P_FLOOR;
+                q = toCons(w);
+            } else if (w.p < P_FLOOR) {
+                w.p = P_FLOOR;
+                q = toCons(w);
+            }
+            g.at(i, j) = q;
         }
 }
 

@@ -1,9 +1,12 @@
-// Phase 2a validation of the cut-cell inviscid solver: WELL-BALANCEDNESS.
-// A uniform state at rest around an immersed cylinder must be preserved to
-// round-off — the aperture-weighted face pressures and the embedded-boundary
-// wall pressure cancel exactly through the divergence closure. This pins the
-// EB flux signs and the aperture/closure assembly before we add a real flow
-// and flux redistribution (phase 2b).
+// Phase 2 validation of the inviscid cut-cell solver (1st order + flux
+// redistribution):
+//   1. well-balancedness — a uniform state at rest around a cylinder is
+//      preserved (face and EB pressures cancel through the closure);
+//   2. conservation — in a closed reflective box with an immersed cylinder,
+//      total mass and energy stay at the float32 floor even though the time
+//      step is set by the FULL cells (this is what flux redistribution buys);
+//   3. physics — a Mach 2 flow over the cylinder builds a bow shock; the
+//      stagnation pressure matches the Rayleigh pitot value (5.64 p_inf).
 
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
@@ -17,43 +20,128 @@
 
 using namespace mm;
 
+namespace {
+
+cutcell::Geometry cylinder(const Grid& g, double cx, double cy, double r) {
+    return cutcell::build(g, [&](double x0, double x1, double y0, double y1) {
+        return cutcell::circleMoments(cx, cy, r, x0, x1, y0, y1);
+    });
+}
+
+// volume-weighted (kappa) totals over fluid cells
+void totals(const Grid& g, const cutcell::Geometry& geo, double& mass,
+           double& energy) {
+    mass = energy = 0;
+    const double V = double(g.dx) * double(g.dy);
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i) {
+            const double k = double(geo.at(i, j).vol);
+            if (k <= 1e-9) continue;
+            mass += k * V * double(g.at(i, j).rho);
+            energy += k * V * double(g.at(i, j).E);
+        }
+}
+
+} // namespace
+
 int main() {
-    const int N = 128;
-    Grid g(N, N, 0, 0, 1, 1);
-    const double cx = 0.5, cy = 0.5, r = 0.2;
-    const auto geo = cutcell::build(
-        g, [&](double x0, double x1, double y0, double y1) {
-            return cutcell::circleMoments(cx, cy, r, x0, x1, y0, y1);
-        });
-    std::printf("cut-cell inviscid — at-rest cylinder r=%.2f on %dx%d "
-                "(cut cells %zu)\n",
-                r, N, N, geo.nCut);
+    bool ok = true;
 
-    const Prim w0{1, 0, 0, 1};
-    const Cons u0 = toCons(w0);
-    for (auto& q : g.q) q = u0;
-
-    for (int s = 0; s < 100; ++s) {
-        fillTransmissiveLeft(g);
-        fillTransmissiveRight(g);
-        fillTransmissiveBottom(g);
-        fillTransmissiveTop(g);
-        const Real dt = maxStableDt(g, Real(0.4));
-        stepCutCell(g, geo, dt);
+    // ---- gate 1: well-balancedness (at rest around a cylinder) ------------
+    {
+        const int N = 128;
+        Grid g(N, N, 0, 0, 1, 1);
+        const auto geo = cylinder(g, 0.5, 0.5, 0.2);
+        const Cons u0 = toCons({1, 0, 0, 1});
+        for (auto& q : g.q) q = u0;
+        for (int s = 0; s < 100; ++s) {
+            fillTransmissiveLeft(g); fillTransmissiveRight(g);
+            fillTransmissiveBottom(g); fillTransmissiveTop(g);
+            stepCutCell(g, geo, maxStableDt(g, Real(0.4)));
+        }
+        double dev = 0;
+        for (int j = NG; j < NG + N; ++j)
+            for (int i = NG; i < NG + N; ++i) {
+                if (geo.at(i, j).vol <= Real(1e-9)) continue;
+                const Cons& q = g.at(i, j);
+                dev = std::max({dev, std::fabs(double(q.rho) - 1),
+                                std::fabs(double(q.mx)), std::fabs(double(q.my)),
+                                std::fabs(double(q.E) - double(u0.E))});
+            }
+        std::printf("gate 1 — at-rest cylinder, 100 steps: max deviation "
+                    "%.3e (gate 1e-5)\n", dev);
+        ok = ok && dev < 1e-5;
     }
 
-    double dev = 0;
-    for (int j = NG; j < NG + N; ++j)
-        for (int i = NG; i < NG + N; ++i) {
-            if (geo.at(i, j).vol <= Real(1e-9)) continue;   // covered
-            const Cons& q = g.at(i, j);
-            dev = std::max({dev, std::fabs(double(q.rho) - double(u0.rho)),
-                            std::fabs(double(q.mx)), std::fabs(double(q.my)),
-                            std::fabs(double(q.E) - double(u0.E))});
+    // ---- gate 2: conservation in a closed box (FRD, dt from full cells) ---
+    {
+        const int N = 128;
+        Grid g(N, N, 0, 0, 1, 1);
+        const auto geo = cylinder(g, 0.5, 0.5, 0.2);
+        for (int j = NG; j < NG + N; ++j)
+            for (int i = NG; i < NG + N; ++i) {
+                const double x = double(g.xc(i)), y = double(g.yc(j));
+                const double rr = (x - 0.3) * (x - 0.3) + (y - 0.3) * (y - 0.3);
+                g.at(i, j) = toCons({1, 0, 0, rr < 0.08 * 0.08 ? Real(4) : Real(1)});
+            }
+        double m0, e0;
+        totals(g, geo, m0, e0);
+        double drift = 0, edrift = 0;
+        for (int s = 0; s < 300; ++s) {
+            fillReflectiveLeft(g); fillReflectiveRight(g);
+            fillReflectiveBottom(g); fillReflectiveTop(g);
+            stepCutCell(g, geo, maxStableDt(g, Real(0.4)));
+            double m, e;
+            totals(g, geo, m, e);
+            drift = std::max(drift, std::fabs(m - m0) / m0);
+            edrift = std::max(edrift, std::fabs(e - e0) / e0);
         }
-    std::printf("  max deviation from rest after 100 steps: %.3e (gate 1e-5)\n",
-                dev);
-    const bool ok = dev < 1e-5;
-    std::printf("%s\n", ok ? "PASS" : "FAIL");
+        std::printf("gate 2 — closed box + cylinder, 300 steps: mass drift "
+                    "%.3e, energy drift %.3e (gate 1e-5)\n", drift, edrift);
+        ok = ok && drift < 1e-5 && edrift < 1e-5;
+    }
+
+    // ---- gate 3: Mach 2 bow shock, stagnation pressure vs Rayleigh pitot --
+    {
+        const int nx = 180, ny = 120;
+        const double Lx = 1.5, Ly = 1.0;
+        Grid g(nx, ny, 0, 0, Real(Lx), Real(Ly));
+        const auto geo = cylinder(g, 0.5, 0.5, 0.15);
+        const Prim fs{Real(1.4), Real(2), 0, Real(1)};   // rho 1.4, M=2 (c=1)
+        const Cons ufs = toCons(fs);
+        for (auto& q : g.q) q = ufs;
+        const double tEnd = 3.0;
+        double t = 0;
+        int steps = 0;
+        while (t < tEnd) {
+            for (int j = 0; j < g.toty(); ++j)     // supersonic inflow (left)
+                for (int k = 0; k < NG; ++k) g.at(k, j) = ufs;
+            fillTransmissiveRight(g);
+            fillTransmissiveBottom(g); fillTransmissiveTop(g);
+            const Real dt = std::min(maxStableDt(g, Real(0.4)), Real(tEnd - t));
+            stepCutCell(g, geo, dt);
+            t += double(dt);
+            ++steps;
+        }
+        double pmax = 0, rmax = 0;
+        bool finite = true;
+        for (int j = NG; j < NG + ny; ++j)
+            for (int i = NG; i < NG + nx; ++i) {
+                if (geo.at(i, j).vol <= Real(1e-9)) continue;
+                const Prim w = toPrim(g.at(i, j));
+                pmax = std::max(pmax, double(w.p));
+                rmax = std::max(rmax, double(w.rho));
+                if (!std::isfinite(double(w.p)) || !std::isfinite(double(w.rho)))
+                    finite = false;
+            }
+        const double pitot = 5.640;    // p0/p_inf behind a normal shock, M=2
+        std::printf("gate 3 — Mach 2 cylinder, %d steps: stagnation p = %.3f "
+                    "vs pitot %.3f (%+.1f%%), rho_max %.2f, finite %d\n",
+                    steps, pmax, pitot, 100 * (pmax / pitot - 1), rmax,
+                    int(finite));
+        ok = ok && finite && std::fabs(pmax / pitot - 1) < 0.15;
+    }
+
+    std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
 }
