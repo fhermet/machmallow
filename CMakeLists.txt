@@ -88,6 +88,9 @@ target_include_directories(mms PRIVATE src)
 add_executable(cutcell_geom src/drivers/cutcell_geom.cpp)
 target_include_directories(cutcell_geom PRIVATE src)
 
+add_executable(cutcell_euler src/drivers/cutcell_euler.cpp)
+target_include_directories(cutcell_euler PRIVATE src)
+
 add_executable(immersed src/drivers/immersed.cpp)
 target_include_directories(immersed PRIVATE src)
 
