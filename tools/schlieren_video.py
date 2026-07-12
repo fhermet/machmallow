@@ -251,9 +251,22 @@ def annotate_dmr(rgb, rho, bounds, title, out):
     # ligne de choc claire passe sous le label.
     halo = [pe.withStroke(linewidth=3 * s, foreground="#111")]
 
+    # keep labels inside the (possibly cropped) frame: drop a label whose
+    # structure is off-frame, and pull its text back in — right-anchoring
+    # it when it would overflow the right edge (e.g. after cropping x).
+    mx = 0.015 * (x1 - x0)
     def lab(text, anchor, text_xy, ha="center"):
+        ax_, ay = anchor
+        if not (x0 <= ax_ <= x1 and y0 <= ay <= y1):
+            return                              # structure cropped out
+        tx, ty = text_xy
+        if tx > x0 + 0.72 * (x1 - x0):          # right side -> right-align
+            tx, ha = min(tx, x1 - mx), "right"
+        elif tx < x0 + 0.28 * (x1 - x0):        # left side -> left-align
+            tx, ha = max(tx, x0 + mx), "left"
+        ty = min(max(ty, y0 + 0.03 * (y1 - y0)), y1 - 0.03 * (y1 - y0))
         ax.annotate(
-            text, xy=px(*anchor), xytext=px(*text_xy), ha=ha,
+            text, xy=px(ax_, ay), xytext=px(tx, ty), ha=ha,
             va="center", fontsize=7 * s, color="white",
             path_effects=halo, fontweight="bold",
             arrowprops=dict(arrowstyle="-", color="white", lw=0.8 * s,
@@ -505,6 +518,10 @@ def main():
                          "le panneau densite+AMR est ajoute comme UNE image "
                          "seule a la toute fin (apres le freeze annote). "
                          "Necessite --freeze.")
+    ap.add_argument("--panel-title",
+                    default="Adaptive mesh refinement (AMR blocks)",
+                    help="titre affiche sur l'image finale du panneau AMR "
+                         "(--panel-at-end)")
     ap.add_argument("--amr-bg", default="light", choices=["light", "dark"],
                     help="fond du panneau densite : light (blanc->teinte, "
                          "maillage chaud) ou dark (colormap saturee)")
@@ -713,7 +730,28 @@ def main():
                                 amr_boxes(amr, bounds_of(last)), bounds_of(last),
                                 light_bg)
             pz = os.path.join(tmp, "_panel.png")
-            Image.fromarray(bot).save(pz)
+            # title on the panel (light bg -> dark text with a white halo)
+            import matplotlib as mpl
+            import matplotlib.pyplot as plt
+            import matplotlib.patheffects as pe
+            mpl.rcParams.update({"font.family": "STIXGeneral",
+                                 "mathtext.fontset": "stix",
+                                 "axes.unicode_minus": False})
+            Hb, Wb = bot.shape[:2]
+            figp = plt.figure(figsize=(Wb / 200, Hb / 200), dpi=200)
+            axp = figp.add_axes([0, 0, 1, 1])
+            axp.imshow(bot)
+            axp.set_axis_off()
+            sp = Hb / 640.0
+            tcol = "#111" if light_bg else "white"
+            hcol = "white" if light_bg else "#111"
+            axp.text(0.5, 0.96, args.panel_title, transform=axp.transAxes,
+                     ha="center", va="top", fontsize=10 * sp,
+                     fontweight="bold", color=tcol,
+                     path_effects=[pe.withStroke(linewidth=3 * sp,
+                                                 foreground=hcol)])
+            figp.savefig(pz, dpi=200)
+            plt.close(figp)
             for _ in range(nfz):
                 shutil.copyfile(pz, os.path.join(tmp, f"f_{oi:04d}.png"))
                 oi += 1
