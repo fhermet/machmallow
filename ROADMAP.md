@@ -466,8 +466,17 @@ normal velocity, slip). First brick laid:
   into the sibling that owns them (reads ghosts, writes interiors, so it is
   order-independent). A body **spanning a 4×4 block of patches** (cut cells on
   the internal sibling seams) now conserves to **9.1e-8** (was ~1.3e-5 without
-  the scatter). Remaining: regrid-driven EB-band refinement, subcycling,
-  `AmrML` (arbitrary depth), then GPU.
+  the scatter).
+  **Phase 5f (increment 3)** (`feature/cutcell-amr-regrid`, gate
+  `cutcell_amr_prod` gate 3): **regrid-driven EB-band refinement**. `regrid()`
+  now tags the embedded-boundary band (coarse cut cells 0<κ<1; the existing ±2
+  dilation extends it into the surrounding fluid without over-refining the solid
+  interior), so refinement follows the body automatically instead of a pinned
+  patch. Gate: the body block is auto-refined and the EB-driven set conserves to
+  **9.2e-8**. (Flow-tag-driven *dynamic* regrid rides the general `Amr2` float32
+  conservation floor, ~few×1e-6 — a tiny/absent body drifts the same way — so it
+  is not cut-cell specific.) Remaining: subcycling, `AmrML` (arbitrary depth),
+  then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

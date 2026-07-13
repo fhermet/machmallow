@@ -208,6 +208,8 @@ public:
 
     void regrid() {
         const int nx = coarse.nx, ny = coarse.ny, bc = cfg_.blockC;
+        if (cutCellOn_() && coarseGeo_.cell.empty())
+            coarseGeo_ = buildGeo_(coarse);
 
         // 1. Tag on relative density gradient, optionally on velocity
         //    jumps normalized by the local sound speed (shear layers and
@@ -255,6 +257,14 @@ public:
                      solCoarse_(NG + i, NG + jp) ||
                      solCoarse_(NG + i, NG + jm)))
                     t = true;
+                // Cut-cell embedded boundary: tag the EB band — cells the
+                // solid cuts (0 < kappa < 1). The ±2 dilation below extends it
+                // into the surrounding fluid, so the body surface is refined
+                // without over-refining the solid interior (kappa = 0 cells).
+                if (!t && cutCellOn_()) {
+                    const Real k = coarseGeo_.at(NG + i, NG + j).vol;
+                    t = k > Real(1e-6) && k < Real(1) - Real(1e-6);
+                }
                 tag[std::size_t(j) * nx + i] = t;
             }
 
