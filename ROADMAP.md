@@ -427,8 +427,15 @@ normal velocity, slip). First brick laid:
   Validated: least-squares gradients reproduce a linear field exactly on the
   irregular cut-cell stencils, and a smooth entropy blob sliding along a 45°
   wall converges at **order 2.1** (design order, unlimited). Conservation and
-  the Mach-2 bow shock still pass with the 2nd-order path. Next: viscous
-  no-slip on the EB, then AMR, then GPU.
+  the Mach-2 bow shock still pass with the 2nd-order path.
+  **Phase 4 done** (`feature/cutcell-viscous`, gate `cutcell_viscous`): viscous
+  Navier–Stokes on cut cells — aperture-weighted Stokes/Fourier face fluxes +
+  a **no-slip embedded-boundary traction** (tangential shear over the normal
+  distance to the wall, adiabatic). Validated on planar **Couette** with the
+  lower wall carried by the EB: the steady profile matches the exact linear
+  solution to **<1 %** (0.28 % at 96², converging). The wall-shear model is
+  ~1st order (order ~1.4); a fluid-centroid / full-stress EB model would lift
+  it. Next: AMR, then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
