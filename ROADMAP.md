@@ -420,8 +420,15 @@ normal velocity, slip). First brick laid:
   Mach-2 bow shock whose stagnation pressure matches the Rayleigh pitot value
   to 0.4 %. Known limit: tangent slivers with a starved neighbourhood fall back
   to a positivity floor — a proper fix is state redistribution / an extended
-  merging neighbourhood (a later phase). Next: 2nd-order at the wall
-  (least-squares gradients), then viscous no-slip, AMR, GPU.
+  merging neighbourhood (a later phase).
+  **Phase 3 done** (`feature/cutcell-o2`, gate `cutcell_o2`): 2nd order —
+  least-squares primitive gradients (Barth-Jespersen limited for shocks),
+  reconstructed to the face centres and the EB centroid, advanced with SSP-RK2.
+  Validated: least-squares gradients reproduce a linear field exactly on the
+  irregular cut-cell stencils, and a smooth entropy blob sliding along a 45°
+  wall converges at **order 2.1** (design order, unlimited). Conservation and
+  the Mach-2 bow shock still pass with the 2nd-order path. Next: viscous
+  no-slip on the EB, then AMR, then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
