@@ -13,10 +13,13 @@
 #include "backend/metal/MetalContext.hpp"
 #include "cases/CaseDef.hpp"
 #include "core/Config.hpp"
+#include "geometry/CutCell.hpp"
 #include "io/Checkpoint.hpp"
 #include "io/Diagnostics.hpp"
+#include "io/VtiWriter.hpp"
 #include "io/VthbWriter.hpp"
 #include "render/LiveView.hpp"
+#include "solver/CutCell2D.hpp"
 
 #include <chrono>
 #include <memory>
@@ -340,6 +343,9 @@ int list() {
         "             (immersed body: same geometric grammar as [ic],\n"
         "              no state ; reflective wall. backend cpu + muscl\n"
         "              single-gas ; base grid only)\n"
+        "  top level  solid_method = staircase (default) | cutcell\n"
+        "             (cutcell: exact embedded boundary, 2nd order + no-slip,\n"
+        "              cpu single-level, one circle/half-plane [solid])\n"
         "  [bc]       x|y = periodic\n"
         "             left|right|bottom|top = transmissive | reflective\n"
         "                 | analytic | inflow X\n"
@@ -365,6 +371,61 @@ int list() {
         "  [diagnostics]  every (base steps, 0 = off) file (csv:\n"
         "             step t dt cells patches extrema mass energies\n"
         "             enstrophy perf)\n");
+    return EXIT_SUCCESS;
+}
+
+// Single-level cut-cell run driven by the case file (solid_method = cutcell).
+// Supports one analytic circle / half-plane [solid]; MUSCL-class 2nd-order
+// cut-cell scheme (SSP-RK2), optional viscosity. No AMR yet.
+int cutCellRun(const CaseDef& cd, const Config& cfg, const AmrConfig& acfg) {
+    int shape;
+    Real sp[3];
+    if (!cd.cutCellSolid(shape, sp)) {
+        std::fprintf(stderr, "cutcell: needs exactly one circle or half-plane "
+                             "[solid] region\n");
+        return EXIT_FAILURE;
+    }
+    Grid g(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly);
+    const auto momentFn = [&](double x0, double x1, double y0, double y1) {
+        return shape == 0
+                   ? cutcell::circleMoments(sp[0], sp[1], sp[2], x0, x1, y0, y1)
+                   : cutcell::halfplaneMoments(sp[0], sp[1], sp[2], x0, x1, y0,
+                                               y1);
+    };
+    const auto geo = cutcell::build(g, momentFn);
+    for (int j = 0; j < g.toty(); ++j)
+        for (int i = 0; i < g.totx(); ++i)
+            g.at(i, j) = cd.state(g.xc(i), g.yc(j), 0);
+
+    const double tEnd = cfg.getReal("t_end", 0.2), cfl = cfg.getReal("cfl", 0.4);
+    const Real mu = acfg.mu;
+    const int frames = cfg.getInt("output.frames", 4);
+    const std::string prefix = cfg.getString("output.prefix", "out/run");
+    std::filesystem::create_directories(
+        std::filesystem::path(prefix).parent_path());
+    std::printf("cut-cell (single level) | %dx%d | %s solid | mu %g | cut "
+                "cells %zu\n",
+                cd.nx, cd.ny, shape == 0 ? "circle" : "half-plane", double(mu),
+                geo.nCut);
+
+    double tNow = 0;
+    const auto fill = [&](Grid& gg) { cd.fillGhosts(gg, tNow); };
+    double t = 0;
+    int steps = 0, nextFrame = 0;
+    while (t < tEnd * (1 - 1e-9)) {
+        if (frames > 0 && t >= tEnd * nextFrame / frames) {
+            writeVti(prefix + "_" + std::to_string(nextFrame) + ".vti", g);
+            ++nextFrame;
+        }
+        tNow = t;
+        const Real dt = std::min(maxStableDt(g, Real(cfl), mu), Real(tEnd - t));
+        stepCutCell(g, geo, dt, fill, /*limited=*/true, mu);
+        t += double(dt);
+        ++steps;
+    }
+    writeVti(prefix + "_" + std::to_string(nextFrame) + ".vti", g);
+    std::printf("done: %d steps, t = %.4f, output %s_*.vti\n", steps, t,
+                prefix.c_str());
     return EXIT_SUCCESS;
 }
 
@@ -445,6 +506,7 @@ int main(int argc, char** argv) {
                         double(acfg.tagThreshold),
                         double(acfg.tagVelocity), acfg.regridEvery,
                         int(acfg.subcycle));
+            cfg.getString("solid_method", "");
             cfg.getString("output.prefix", "");
             cfg.getString("output.checkpoint", "");
             cfg.getInt("output.max_steps", 0);
@@ -456,6 +518,10 @@ int main(int argc, char** argv) {
             std::printf("config OK\n");
             return EXIT_SUCCESS;
         }
+
+        // Cut-cell path (single level for now) — opt-in per case.
+        if (cfg.getString("solid_method", "staircase") == "cutcell")
+            return cutCellRun(cd, cfg, acfg);
 
         int rc;
         if (backend == "cpu") {
