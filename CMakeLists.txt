@@ -85,6 +85,9 @@ add_executable(convergence src/drivers/convergence.cpp)
 add_executable(mms src/drivers/mms.cpp)
 target_include_directories(mms PRIVATE src)
 
+add_executable(cutcell_geom src/drivers/cutcell_geom.cpp)
+target_include_directories(cutcell_geom PRIVATE src)
+
 add_executable(immersed src/drivers/immersed.cpp)
 target_include_directories(immersed PRIVATE src)
 

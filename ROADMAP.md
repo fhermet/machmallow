@@ -406,7 +406,13 @@ normal velocity, slip). First brick laid:
   per-slot pool mask + base mask, geometric queries for the plumbing): CPU↔GPU
   lock-step at **3 levels** verified (`immersed_gpu`, discrepancy 7.5e-4).
   Solids now run in `hybrid` at arbitrary depth.
-- [ ] cut-cells (remove the staircase) — the only remaining item of the facet.
+- [~] cut-cells (remove the staircase) — the only remaining item of the facet.
+  **Phase 1 done** (`feature/cutcell-geometry`, gate `cutcell_geom`): the EB
+  moment engine `src/geometry/CutCell.hpp` — exact volume fractions, face
+  apertures and the divergence-closed embedded-boundary face (area + normal)
+  for analytic circle/half-plane (cylinder/wedge). Fluid area exact at every
+  resolution; EB perimeter converges O(dx²) to the exact interface. Next:
+  inviscid cut-cell FV with flux redistribution (`feature/cutcell-euler`).
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
