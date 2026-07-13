@@ -447,8 +447,19 @@ normal velocity, slip). First brick laid:
   from the declarative case system — `solid_method = cutcell` in an INI runs
   the 2nd-order (viscous-capable) cut-cell solver on the base grid through
   `./build/run` (`cases/cylinder_cutcell.ini`: exact-boundary Mach-2 bow shock,
-  one circle/half-plane [solid], cpu single-level). Remaining: fold the
-  multi-level coupling into the production `AmrML`, then GPU.
+  one circle/half-plane [solid], cpu single-level).
+  **Phase 5d (increment 1)** (`feature/cutcell-amr-prod`, gate
+  `cutcell_amr_prod`): cut cells wired into the **production `Amr2`** (2 levels,
+  single-rate, CPU) — per-patch analytic geometry built at `makePatch_`,
+  aperture-weighted flux-recording advance (`cutCellStepFluxed`) on the base
+  grid and every patch, **cut-aware reflux** (`dt/(κV)`·(Σ fine − coarse) with
+  extensive fluxes, reducing to the uniform `(dt/dx)F` when κ=1) and
+  **κ-weighted restriction**, all behind `cfg.cutCell` + `Amr2::momentFn` (the
+  staircase path is untouched). Gate: composite mass drift **6.7e-8 with reflux
+  vs 1.2e-4 without (1800× better)** for a body contained in one refined patch.
+  Remaining: **cross-patch FRD** (a body spanning several patches leaks at the
+  fine sibling seams — the redistribution must cross patch boundaries), then
+  regrid-driven refinement, subcycling, `AmrML` (arbitrary depth), then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

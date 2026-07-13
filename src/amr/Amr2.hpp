@@ -12,8 +12,10 @@
 
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
+#include "geometry/CutCell.hpp"
 #include "numerics/Limiter.hpp"
 #include "physics/Reaction.hpp"
+#include "solver/CutCell2D.hpp"
 #include "solver/Muscl2D.hpp"
 
 #include <algorithm>
@@ -47,6 +49,10 @@ struct AmrConfig {
     Real gamma1 = Real(1.4), gamma2 = Real(1.4);
     bool periodicX = false;     // periodic domain (patch ghosts, reflux
     bool periodicY = false;     // and side masks wrap accordingly)
+    bool cutCell = false;       // embedded-boundary cut cells (CPU, single-
+                                // rate, Amr2): aperture-weighted fluxes +
+                                // flux redistribution instead of a staircase
+                                // mask. Requires Amr2::momentFn.
 };
 
 class Amr2 {
@@ -56,6 +62,7 @@ public:
         int ci0, cj0; // coarse-cell origin of the block
         Grid grid;    // fine grid: 2*blockC cells square + ghosts
         std::vector<std::uint8_t> solid; // immersed mask (empty = none)
+        cutcell::Geometry geo; // cut-cell moments (empty unless cfg.cutCell)
     };
 
     Grid coarse;
@@ -75,6 +82,12 @@ public:
     // Refinement near solids is not yet supported — the case runner
     // disables AMR when solids are present, so only the coarse grid runs.
     std::function<std::uint8_t(Real, Real)> solidAt;
+
+    // Cut-cell embedded boundary: analytic moments for the cell box
+    // [x0,x1] x [y0,y1] (fluid volume fraction, face apertures, EB face).
+    // When set together with cfg.cutCell, the solver uses aperture-weighted
+    // cut-cell fluxes + flux redistribution instead of the staircase mask.
+    std::function<CellMoments(double, double, double, double)> momentFn;
 
     Amr2(int nx, int ny, Real x0, Real y0, Real lx, Real ly, AmrConfig cfg)
         : coarse(nx, ny, x0, y0, lx, ly), cfg_(cfg), nbx_(nx / cfg.blockC),
@@ -136,7 +149,11 @@ public:
     }
 
     void step(Real dt, double t) {
-        if (cfg_.subcycle && !patches.empty())
+        if (cutCellOn_() && coarseGeo_.cell.empty())
+            coarseGeo_ = buildGeo_(coarse);
+        if (cutCellOn_())
+            stepCutSingleRate_(dt, t); // single-rate CPU cut cells
+        else if (cfg_.subcycle && !patches.empty())
             stepSubcycled_(dt, t);
         else
             stepSingleRate_(dt, t);
@@ -367,6 +384,112 @@ private:
         }
     }
 
+    // ---- cut-cell embedded boundary (single-rate, CPU) -------------------
+
+    bool cutCellOn_() const { return cfg_.cutCell && bool(momentFn); }
+
+    cutcell::Geometry buildGeo_(const Grid& g) const {
+        return cutcell::build(g, [&](double x0, double x1, double y0,
+                                     double y1) {
+            return momentFn(x0, x1, y0, y1);
+        });
+    }
+
+    // One single-rate cut-cell step: advance coarse and every patch with the
+    // 1st-order flux-recording cut-cell operator (aperture-weighted fluxes +
+    // FRD + positivity floor), then reflux each coarse-fine interface so its
+    // coarse flux is replaced by the sum of the fine fluxes there. Ghosts are
+    // filled from the t^n state before any level advances.
+    void stepCutSingleRate_(Real dt, double t) {
+        fillPhysicalGhosts(coarse, t);
+        fillAllPatchGhosts_(t, Real(-1)); // patch ghosts from coarse t^n
+
+        // ghosts already set -> no-op fill inside the operator.
+        const auto noFill = [](Grid&) {};
+        cutCellStepFluxed(coarse, coarseGeo_, dt, noFill, cutFxC_, cutFyC_);
+        for (Patch& p : patches) {
+            cutCellStepFluxed(p.grid, p.geo, dt, noFill, cutFxF_, cutFyF_);
+            if (cfg_.reflux) cutReflux_(p, dt);
+        }
+    }
+
+    // Cut-aware reflux: for each uncovered coarse cell just outside the patch,
+    // replace the coarse interface flux by the sum of the two fine fluxes on
+    // that face. Extensive (aperture-weighted) fluxes make this reduce to the
+    // uniform (dt/dx)*F reflux when kappa = apertures = 1. correction is
+    // applied as dt/(kappa*V_c)*dF through the positivity floor.
+    void cutReflux_(const Patch& p, Real dt) {
+        const int bc = cfg_.blockC, nf = 2 * bc;
+        const Real Vc = coarse.dx * coarse.dy;
+        const auto corr = [&](int ci, int cj, const Cons& d) {
+            const double k = double(coarseGeo_.at(NG + ci, NG + cj).vol);
+            if (k > 1e-9)
+                coarse.at(NG + ci, NG + cj) =
+                    floorState(coarse.at(NG + ci, NG + cj) +
+                               Real(dt / (k * Vc)) * d);
+        };
+        if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
+            for (int r = 0; r < bc; ++r) {
+                const int cj = p.cj0 + r, jf = 2 * r;
+                const Cons sf = cutFxF_[p.grid.idx(NG - 1, NG + jf)] +
+                                cutFxF_[p.grid.idx(NG - 1, NG + jf + 1)];
+                corr(n.cell, cj,
+                     cutFxC_[coarse.idx(NG + n.cell, NG + cj)] - sf);
+            }
+        if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
+            for (int r = 0; r < bc; ++r) {
+                const int cj = p.cj0 + r, jf = 2 * r;
+                const Cons sf = cutFxF_[p.grid.idx(NG + nf - 1, NG + jf)] +
+                                cutFxF_[p.grid.idx(NG + nf - 1, NG + jf + 1)];
+                corr(n.cell, cj,
+                     sf - cutFxC_[coarse.idx(NG + n.cell - 1, NG + cj)]);
+            }
+        if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
+            for (int r = 0; r < bc; ++r) {
+                const int ci = p.ci0 + r, iff = 2 * r;
+                const Cons sf = cutFyF_[p.grid.idx(NG + iff, NG - 1)] +
+                                cutFyF_[p.grid.idx(NG + iff + 1, NG - 1)];
+                corr(ci, n.cell,
+                     cutFyC_[coarse.idx(NG + ci, NG + n.cell)] - sf);
+            }
+        if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
+            for (int r = 0; r < bc; ++r) {
+                const int ci = p.ci0 + r, iff = 2 * r;
+                const Cons sf = cutFyF_[p.grid.idx(NG + iff, NG + nf - 1)] +
+                                cutFyF_[p.grid.idx(NG + iff + 1, NG + nf - 1)];
+                corr(ci, n.cell,
+                     sf - cutFyC_[coarse.idx(NG + ci, NG + n.cell - 1)]);
+            }
+    }
+
+    // Volume-weighted (kappa) restriction of each 2x2 fine block onto its
+    // covered coarse cell. Exact-moment geometry makes this conservative: the
+    // coarse fluid volume equals the sum of the four children's fluid volumes.
+    void restrictCut_() {
+        for (const Patch& p : patches)
+            for (int b = 0; b < cfg_.blockC; ++b)
+                for (int a = 0; a < cfg_.blockC; ++a) {
+                    const int ci = NG + p.ci0 + a, cj = NG + p.cj0 + b;
+                    double nr = 0, nmx = 0, nmy = 0, nE = 0, den = 0;
+                    for (int dj = 0; dj < 2; ++dj)
+                        for (int di = 0; di < 2; ++di) {
+                            const int fi = NG + 2 * a + di, fj = NG + 2 * b + dj;
+                            const double k = double(p.geo.at(fi, fj).vol);
+                            if (k <= 1e-9) continue;
+                            const Cons& q = p.grid.at(fi, fj);
+                            nr += k * double(q.rho);
+                            nmx += k * double(q.mx);
+                            nmy += k * double(q.my);
+                            nE += k * double(q.E);
+                            den += k;
+                        }
+                    if (den > 1e-12)
+                        coarse.at(ci, cj) =
+                            Cons{Real(nr / den), Real(nmx / den),
+                                 Real(nmy / den), Real(nE / den)};
+                }
+    }
+
     Patch makePatch_(int bi, int bj) {
         const int bc = cfg_.blockC, nf = 2 * bc;
         const int ci0 = bi * bc, cj0 = bj * bc;
@@ -382,6 +505,7 @@ private:
                     prolong_(gfi / 2, gfj / 2, gfi & 1, gfj & 1);
             }
         buildPatchSolid_(p);
+        if (cutCellOn_()) p.geo = buildGeo_(p.grid);
         return p;
     }
 
@@ -565,6 +689,7 @@ private:
     // fine children contribute (solid children carry frozen data). Without
     // a mask this is the plain 0.25*sum.
     void restrictFine_() {
+        if (cutCellOn_()) { restrictCut_(); return; }
         for (const Patch& p : patches) {
             const std::uint8_t* ps = psolid_(p);
             for (int b = 0; b < cfg_.blockC; ++b)
@@ -599,6 +724,8 @@ private:
     Scratch2D scratchC_, scratchF_;
     std::vector<Cons> coarseOld_; // coarse t^n copy (subcycled ghosts)
     std::vector<std::uint8_t> coarseSolidMask_; // 1 = solid (empty = none)
+    cutcell::Geometry coarseGeo_; // cut-cell moments (empty unless cfg.cutCell)
+    std::vector<Cons> cutFxC_, cutFyC_, cutFxF_, cutFyF_; // extensive fluxes
     int stepCount_ = 0;
 };
 
