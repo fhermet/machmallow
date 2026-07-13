@@ -265,6 +265,91 @@ inline std::vector<Cons> cutCellDiv(const Grid& g,
     return D;
 }
 
+inline Cons floorState(const Cons& q);   // defined below
+
+// 1st-order forward-Euler cut-cell step that RECORDS the aperture-weighted
+// extensive face fluxes (Fx/Fy, indexed by the lower cell of each face), for
+// AMR flux-register refluxing. FRD + positivity floor applied. Ghosts filled
+// by the caller's `fill`.
+template <class Fill>
+inline void cutCellStepFluxed(Grid& g, const cutcell::Geometry& geo, Real dt,
+                              Fill fill, std::vector<Cons>& Fx,
+                              std::vector<Cons>& Fy) {
+    const Real dx = g.dx, dy = g.dy, V = dx * dy, tiny = Real(1e-9);
+    const auto kap = [&](int i, int j) { return double(geo.at(i, j).vol); };
+    fill(g);
+    Fx.assign(g.q.size(), Cons{0, 0, 0, 0});
+    Fy.assign(g.q.size(), Cons{0, 0, 0, 0});
+    std::vector<Cons> dU(g.q.size(), Cons{0, 0, 0, 0});
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG - 1; i < NG + g.nx; ++i) {
+            const Real a = geo.at(i, j).apXhi;
+            if (a <= tiny) continue;
+            const Cons f = (a * dy) *
+                           hllcFluxX(toPrim(g.at(i, j)), toPrim(g.at(i + 1, j)));
+            Fx[g.idx(i, j)] = f;
+            dU[g.idx(i, j)] = dU[g.idx(i, j)] - f;
+            dU[g.idx(i + 1, j)] = dU[g.idx(i + 1, j)] + f;
+        }
+    for (int i = NG; i < NG + g.nx; ++i)
+        for (int j = NG - 1; j < NG + g.ny; ++j) {
+            const Real a = geo.at(i, j).apYhi;
+            if (a <= tiny) continue;
+            const Cons f = (a * dx) *
+                           hllcFluxY(toPrim(g.at(i, j)), toPrim(g.at(i, j + 1)));
+            Fy[g.idx(i, j)] = f;
+            dU[g.idx(i, j)] = dU[g.idx(i, j)] - f;
+            dU[g.idx(i, j + 1)] = dU[g.idx(i, j + 1)] + f;
+        }
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i) {
+            const CellMoments& m = geo.at(i, j);
+            if (m.vol <= tiny || m.vol >= Real(1) - tiny || m.eb.area <= tiny)
+                continue;
+            const Prim w = toPrim(g.at(i, j));
+            dU[g.idx(i, j)] =
+                dU[g.idx(i, j)] - m.eb.area * ebWallFlux(w, -m.eb.nx, -m.eb.ny);
+        }
+    // FRD (same as cutCellDiv) then forward-Euler update
+    std::vector<Cons> Dc(g.q.size(), Cons{0, 0, 0, 0});
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i)
+            if (kap(i, j) > double(tiny))
+                Dc[g.idx(i, j)] = Real(1.0 / (kap(i, j) * V)) * dU[g.idx(i, j)];
+    std::vector<Cons> D(g.q.size(), Cons{0, 0, 0, 0});
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i) {
+            const double kc = kap(i, j);
+            if (kc <= double(tiny)) continue;
+            double sumk = 0;
+            Cons wsum{0, 0, 0, 0};
+            for (int dj = -1; dj <= 1; ++dj)
+                for (int di = -1; di <= 1; ++di) {
+                    const double kk = kap(i + di, j + dj);
+                    if (kk > double(tiny)) {
+                        sumk += kk;
+                        wsum = wsum + Real(kk) * Dc[g.idx(i + di, j + dj)];
+                    }
+                }
+            const Cons Dnc = Real(1.0 / sumk) * wsum;
+            D[g.idx(i, j)] = D[g.idx(i, j)] +
+                             (Real(kc) * Dc[g.idx(i, j)] + Real(1 - kc) * Dnc);
+            if (kc < 1.0 - double(tiny)) {
+                const Cons dD =
+                    Real(kc * (1 - kc) / sumk) * (Dc[g.idx(i, j)] - Dnc);
+                for (int dj = -1; dj <= 1; ++dj)
+                    for (int di = -1; di <= 1; ++di)
+                        if (kap(i + di, j + dj) > double(tiny))
+                            D[g.idx(i + di, j + dj)] =
+                                D[g.idx(i + di, j + dj)] + dD;
+            }
+        }
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i)
+            if (kap(i, j) > double(tiny))
+                g.at(i, j) = floorState(g.at(i, j) + dt * D[g.idx(i, j)]);
+}
+
 // positivity-preserving state (resets near-vacuum / runaway slivers).
 inline Cons floorState(const Cons& q) {
     Prim w = toPrim(q);

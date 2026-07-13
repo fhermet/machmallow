@@ -435,7 +435,15 @@ normal velocity, slip). First brick laid:
   lower wall carried by the EB: the steady profile matches the exact linear
   solution to **<1 %** (0.28 % at 96², converging). The wall-shear model is
   ~1st order (order ~1.4); a fluid-centroid / full-stress EB model would lift
-  it. Next: AMR, then GPU.
+  it.
+  **Phase 5 done** (`feature/cutcell-amr`, gate `cutcell_amr`, standalone
+  2-level demonstrator): (5a) with exact moments a coarse cut cell's fluid
+  volume equals the sum of its four fine children's (7.7e-12) → volume-weighted
+  restriction is conservative (integral preserved to 5e-16); (5b) a 2-level
+  advance (base + a patch containing the body) with flux-register **refluxing**
+  keeps the composite mass at the float32 floor — **9e-8 with reflux vs 1.1e-3
+  without (12000× better)**. Remaining: (5c) fold this into the production
+  `AmrML` (the large refactor), then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
