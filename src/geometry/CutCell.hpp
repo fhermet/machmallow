@@ -107,6 +107,28 @@ inline CellMoments circleMoments(double cx, double cy, double r, double x0,
     m.apXhi = Real(edgeFluidCircle(r * r - (x1 - cx) * (x1 - cx), y0, y1, cy));
     m.apYlo = Real(edgeFluidCircle(r * r - (y0 - cy) * (y0 - cy), x0, x1, cx));
     m.apYhi = Real(edgeFluidCircle(r * r - (y1 - cy) * (y1 - cy), x0, x1, cx));
+    // EB centroid = midpoint of the arc's endpoints on the cell edges
+    double sx = 0, sy = 0;
+    int n = 0;
+    const auto addH = [&](double Y, double xa, double xb) {
+        const double d = r * r - (Y - cy) * (Y - cy);
+        if (d > 0) {
+            const double h = std::sqrt(d);
+            for (double xx : {cx - h, cx + h})
+                if (xx >= xa && xx <= xb) { sx += xx; sy += Y; ++n; }
+        }
+    };
+    const auto addV = [&](double X, double ya, double yb) {
+        const double d = r * r - (X - cx) * (X - cx);
+        if (d > 0) {
+            const double h = std::sqrt(d);
+            for (double yy : {cy - h, cy + h})
+                if (yy >= ya && yy <= yb) { sx += X; sy += yy; ++n; }
+        }
+    };
+    addH(y0, x0, x1); addH(y1, x0, x1); addV(x0, y0, y1); addV(x1, y0, y1);
+    m.eb.cx = Real(n ? sx / n : 0.5 * (x0 + x1));
+    m.eb.cy = Real(n ? sy / n : 0.5 * (y0 + y1));
     return m;
 }
 
@@ -147,6 +169,23 @@ inline CellMoments halfplaneMoments(double a, double b, double c, double x0,
     m.apXhi = Real(frac(g(x1, y0), g(x1, y1)));
     m.apYlo = Real(frac(g(x0, y0), g(x1, y0)));
     m.apYhi = Real(frac(g(x0, y1), g(x1, y1)));
+    // EB centroid = midpoint of the cut segment's endpoints on the cell edges
+    double sx = 0, sy = 0;
+    int n = 0;
+    const std::array<std::array<double, 2>, 4> box2{
+        {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}};
+    for (int i = 0; i < 4; ++i) {
+        const auto P = box2[i], Q = box2[(i + 1) % 4];
+        const double gp = g(P[0], P[1]), gq = g(Q[0], Q[1]);
+        if ((gp >= 0) != (gq >= 0)) {
+            const double t = gp / (gp - gq);
+            sx += P[0] + t * (Q[0] - P[0]);
+            sy += P[1] + t * (Q[1] - P[1]);
+            ++n;
+        }
+    }
+    m.eb.cx = Real(n ? sx / n : 0.5 * (x0 + x1));
+    m.eb.cy = Real(n ? sy / n : 0.5 * (y0 + y1));
     return m;
 }
 
