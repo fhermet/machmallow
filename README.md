@@ -121,7 +121,9 @@ from here by adding what you need:
 - **Physics**: `mu = 1e-3` (Navier–Stokes, no-slip walls), a `[species]` block
   + `gas = 2` states (two-gas), a `[reaction]` block (Arrhenius —
   detonation/deflagration), `scheme = weno5` (high-order, single-gas).
-- **Immersed bodies**: a `[solid]` section using the same region grammar.
+- **Immersed bodies**: a `[solid]` section using the same region grammar
+  (staircase by default; `solid_method = cutcell` for an exact embedded
+  boundary — 2nd-order, no-slip, cpu single-level, one circle/half-plane).
 - **AMR**: an `[amr]` block (`levels`, `block`, `tag_threshold`,
   `tag_velocity`, `subcycle`, `regrid_every`).
 - **Boundaries**: `transmissive`, `reflective`, `inflow <state>`, `periodic`

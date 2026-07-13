@@ -207,6 +207,20 @@ public:
 
     // Immersed solids: any declared [solid] region present?
     bool hasSolids() const { return !solids_.empty(); }
+
+    // Cut-cell path: describe the single analytic solid if it is a supported
+    // shape. shape 0 = circle (p = cx,cy,r), 1 = half-plane (p = a,b,c, solid
+    // where a*x+b*y<c). Returns false otherwise (0 or >1 solids, or an
+    // unsupported shape) — the caller falls back to the staircase mask.
+    bool cutCellSolid(int& shape, Real p[3]) const {
+        if (solids_.size() != 1) return false;
+        const Region& r = solids_[0];
+        if (r.shape == Region::Shape::Circle) shape = 0;
+        else if (r.shape == Region::Shape::HalfPlane) shape = 1;
+        else return false;
+        p[0] = r.p[0]; p[1] = r.p[1]; p[2] = r.p[2];
+        return true;
+    }
     // 1 if (x, y) falls inside a solid region, else 0 (static: no t).
     std::uint8_t solidAt(Real x, Real y) const {
         for (const Region& r : solids_)

@@ -442,8 +442,13 @@ normal velocity, slip). First brick laid:
   restriction is conservative (integral preserved to 5e-16); (5b) a 2-level
   advance (base + a patch containing the body) with flux-register **refluxing**
   keeps the composite mass at the float32 floor — **9e-8 with reflux vs 1.1e-3
-  without (12000× better)**. Remaining: (5c) fold this into the production
-  `AmrML` (the large refactor), then GPU.
+  without (12000× better)**.
+  **Phase 5c (partial)** (`feature/cutcell-run`): cut cells are now reachable
+  from the declarative case system — `solid_method = cutcell` in an INI runs
+  the 2nd-order (viscous-capable) cut-cell solver on the base grid through
+  `./build/run` (`cases/cylinder_cutcell.ini`: exact-boundary Mach-2 bow shock,
+  one circle/half-plane [solid], cpu single-level). Remaining: fold the
+  multi-level coupling into the production `AmrML`, then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
