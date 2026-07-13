@@ -475,8 +475,15 @@ normal velocity, slip). First brick laid:
   patch. Gate: the body block is auto-refined and the EB-driven set conserves to
   **9.2e-8**. (Flow-tag-driven *dynamic* regrid rides the general `Amr2` float32
   conservation floor, ~few×1e-6 — a tiny/absent body drifts the same way — so it
-  is not cut-cell specific.) Remaining: subcycling, `AmrML` (arbitrary depth),
-  then GPU.
+  is not cut-cell specific.)
+  **Phase 5g (increment 4)** (`feature/cutcell-amr-subcycle`, gate
+  `cutcell_amr_prod` gate 4): **Berger-Colella subcycling**. The base grid takes
+  one dtC, each patch two dtF = dtC/2 substeps with time-interpolated coarse
+  ghosts (the θ = ½ blend of tⁿ/tⁿ⁺¹). The reflux is split — `cutRefluxBackout_`
+  removes the single coarse flux (×dtC), `cutRefluxFineApply_` applies each
+  substep's fine flux (×dtF, twice = dtC) — and the composite cross-patch FRD
+  runs per substep. Gate: composite mass drift **2.1e-8** subcycled. Remaining:
+  `AmrML` (arbitrary depth), then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
