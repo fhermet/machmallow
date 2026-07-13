@@ -91,6 +91,9 @@ target_include_directories(cutcell_geom PRIVATE src)
 add_executable(cutcell_o2 src/drivers/cutcell_o2.cpp)
 target_include_directories(cutcell_o2 PRIVATE src)
 
+add_executable(cutcell_viscous src/drivers/cutcell_viscous.cpp)
+target_include_directories(cutcell_viscous PRIVATE src)
+
 add_executable(cutcell_euler src/drivers/cutcell_euler.cpp)
 target_include_directories(cutcell_euler PRIVATE src)
 

@@ -128,12 +128,14 @@ inline std::vector<PrimGrad> lsqGradients(const Grid& g,
 // filled by the caller. Uses 2nd-order reconstruction of the face / EB states.
 inline std::vector<Cons> cutCellDiv(const Grid& g,
                                     const cutcell::Geometry& geo,
-                                    bool limited = true) {
+                                    bool limited = true, Real mu = 0) {
     const Real dx = g.dx, dy = g.dy, V = dx * dy;
     const Real tiny = Real(1e-9);
     const Real hx = Real(0.5) * dx, hy = Real(0.5) * dy;
     const auto grad = lsqGradients(g, geo, limited);
     const auto kap = [&](int i, int j) { return double(geo.at(i, j).vol); };
+    const Real kT = mu > 0 ? heatConductivity(mu) : Real(0);
+    const Real c23 = Real(2.0 / 3.0), c43 = Real(4.0 / 3.0);
     std::vector<Cons> dU(g.q.size(), Cons{0, 0, 0, 0});
 
     // x-faces (boundary faces use constant reconstruction so the ghost flux
@@ -148,7 +150,24 @@ inline std::vector<Cons> cutCellDiv(const Grid& g,
                                         grad[g.idx(i, j)], ox, 0);
             const Prim wR = reconstruct(toPrim(g.at(i + 1, j)),
                                         grad[g.idx(i + 1, j)], -ox, 0);
-            const Cons f = (a * dy) * hllcFluxX(wL, wR);
+            Cons f = (a * dy) * hllcFluxX(wL, wR);
+            if (mu > 0) {                          // viscous (Stokes + Fourier)
+                const Prim a0 = toPrim(g.at(i, j)), a1 = toPrim(g.at(i + 1, j));
+                const PrimGrad& ga = grad[g.idx(i, j)];
+                const PrimGrad& gb = grad[g.idx(i + 1, j)];
+                const Real ux = (a1.u - a0.u) / dx;          // normal: central
+                const Real vx = (a1.v - a0.v) / dx;
+                const Real uy = Real(0.5) * (ga.dy.u + gb.dy.u); // tangential
+                const Real vy = Real(0.5) * (ga.dy.v + gb.dy.v);
+                const Real txx = mu * (c43 * ux - c23 * vy);
+                const Real txy = mu * (uy + vx);
+                const Real ub = Real(0.5) * (a0.u + a1.u);
+                const Real vb = Real(0.5) * (a0.v + a1.v);
+                const Real Tx = (a1.p / a1.rho - a0.p / a0.rho) / dx;
+                f.mx -= (a * dy) * txx;
+                f.my -= (a * dy) * txy;
+                f.E -= (a * dy) * (ub * txx + vb * txy + kT * Tx);
+            }
             dU[g.idx(i, j)] = dU[g.idx(i, j)] - f;
             dU[g.idx(i + 1, j)] = dU[g.idx(i + 1, j)] + f;
         }
@@ -162,7 +181,24 @@ inline std::vector<Cons> cutCellDiv(const Grid& g,
                                         grad[g.idx(i, j)], 0, oy);
             const Prim wT = reconstruct(toPrim(g.at(i, j + 1)),
                                         grad[g.idx(i, j + 1)], 0, -oy);
-            const Cons f = (a * dx) * hllcFluxY(wB, wT);
+            Cons f = (a * dx) * hllcFluxY(wB, wT);
+            if (mu > 0) {
+                const Prim a0 = toPrim(g.at(i, j)), a1 = toPrim(g.at(i, j + 1));
+                const PrimGrad& ga = grad[g.idx(i, j)];
+                const PrimGrad& gb = grad[g.idx(i, j + 1)];
+                const Real uy = (a1.u - a0.u) / dy;          // normal: central
+                const Real vy = (a1.v - a0.v) / dy;
+                const Real ux = Real(0.5) * (ga.dx.u + gb.dx.u); // tangential
+                const Real vx = Real(0.5) * (ga.dx.v + gb.dx.v);
+                const Real txy = mu * (uy + vx);
+                const Real tyy = mu * (c43 * vy - c23 * ux);
+                const Real ub = Real(0.5) * (a0.u + a1.u);
+                const Real vb = Real(0.5) * (a0.v + a1.v);
+                const Real Ty = (a1.p / a1.rho - a0.p / a0.rho) / dy;
+                f.mx -= (a * dx) * txy;
+                f.my -= (a * dx) * tyy;
+                f.E -= (a * dx) * (ub * txy + vb * tyy + kT * Ty);
+            }
             dU[g.idx(i, j)] = dU[g.idx(i, j)] - f;
             dU[g.idx(i, j + 1)] = dU[g.idx(i, j + 1)] + f;
         }
@@ -175,8 +211,18 @@ inline std::vector<Cons> cutCellDiv(const Grid& g,
             const Real ox = m.eb.cx - g.xc(i), oy = m.eb.cy - g.yc(j);
             const Prim w = reconstruct(toPrim(g.at(i, j)), grad[g.idx(i, j)],
                                        ox, oy);
-            dU[g.idx(i, j)] =
-                dU[g.idx(i, j)] - m.eb.area * ebWallFlux(w, -m.eb.nx, -m.eb.ny);
+            Cons feb = ebWallFlux(w, -m.eb.nx, -m.eb.ny);
+            if (mu > 0) {
+                // no-slip: tangential shear over the normal distance to the
+                // wall (u_wall = 0). Adiabatic -> no heat / energy flux.
+                const Real dn = std::max(std::fabs(ox * m.eb.nx + oy * m.eb.ny),
+                                         Real(0.25) * dx);
+                const Real un = w.u * m.eb.nx + w.v * m.eb.ny;
+                const Real utx = w.u - un * m.eb.nx, uty = w.v - un * m.eb.ny;
+                feb.mx += mu * utx / dn;         // outward momentum flux
+                feb.my += mu * uty / dn;
+            }
+            dU[g.idx(i, j)] = dU[g.idx(i, j)] - m.eb.area * feb;
         }
 
     // conservative divergence D^c = dU/(kappa V)
@@ -236,12 +282,12 @@ inline Cons floorState(const Cons& q) {
 // it is called before each stage (covered cells stay frozen).
 template <class Fill>
 inline void stepCutCell(Grid& g, const cutcell::Geometry& geo, Real dt,
-                        Fill fill, bool limited = true) {
+                        Fill fill, bool limited = true, Real mu = 0) {
     const Real tiny = Real(1e-9);
     const auto kap = [&](int i, int j) { return double(geo.at(i, j).vol); };
 
     fill(g);
-    const std::vector<Cons> D1 = cutCellDiv(g, geo, limited);
+    const std::vector<Cons> D1 = cutCellDiv(g, geo, limited, mu);
     Grid g1 = g;                                   // stage-1 state (U1)
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i)
@@ -249,7 +295,7 @@ inline void stepCutCell(Grid& g, const cutcell::Geometry& geo, Real dt,
                 g1.at(i, j) = floorState(g.at(i, j) + dt * D1[g.idx(i, j)]);
 
     fill(g1);
-    const std::vector<Cons> D2 = cutCellDiv(g1, geo, limited);
+    const std::vector<Cons> D2 = cutCellDiv(g1, geo, limited, mu);
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i)
             if (kap(i, j) > double(tiny)) {
