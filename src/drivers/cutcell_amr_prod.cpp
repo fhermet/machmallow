@@ -29,7 +29,7 @@ namespace {
 
 // Worst relative composite-mass drift over a fixed-patch 2-level cut-cell run
 // driven by Amr2, with the flux register (reflux) on or off.
-double amr2MassDrift(bool reflux) {
+double amr2MassDrift(bool reflux, bool subcycle = false) {
     const int NC = 48, bc = 8;                 // coarse cells, block size
     const double cx = 0.5, cy = 0.5, r = 0.2;  // immersed cylinder
     const auto circle = [&](double x0, double x1, double y0, double y1) {
@@ -41,7 +41,7 @@ double amr2MassDrift(bool reflux) {
     cfg.maxLevels = 2;
     cfg.cutCell = true;
     cfg.reflux = reflux;
-    cfg.subcycle = false;
+    cfg.subcycle = subcycle;
     cfg.regridEvery = 1 << 30;                 // pinned patches: never retag
     cfg.mu = 0;
 
@@ -203,6 +203,11 @@ int main() {
                 "%d patches, composite drift %.3e (gate 1e-6)\n",
                 bodyRefined ? "yes" : "NO", nPatches, driftRegrid);
     ok = ok && bodyRefined && driftRegrid < 1e-6;
+
+    const double driftSub = amr2MassDrift(true, /*subcycle=*/true);
+    std::printf("gate 4 — subcycled (coarse dt, fine 2x dt/2): composite drift "
+                "%.3e (gate 1e-6)\n", driftSub);
+    ok = ok && driftSub < 1e-6;
 
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
