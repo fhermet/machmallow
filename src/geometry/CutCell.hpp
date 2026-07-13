@@ -192,9 +192,9 @@ inline Geometry build(const Grid& g, F momentFn) {
             CellMoments m =
                 momentFn(xc - hx, xc + hx, yc - hy, yc + hy);
             closeEB(m, g.dx, g.dy);
-            if (m.vol > Real(1) - Real(1e-9))
+            if (m.vol > Real(1) - Real(1e-6))   // 1e-6 > fp32 epsilon
                 ++G.nFull;
-            else if (m.vol < Real(1e-9))
+            else if (m.vol < Real(1e-6))
                 ++G.nCovered;
             else
                 ++G.nCut;

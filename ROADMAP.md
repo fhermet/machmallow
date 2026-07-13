@@ -411,8 +411,17 @@ normal velocity, slip). First brick laid:
   moment engine `src/geometry/CutCell.hpp` — exact volume fractions, face
   apertures and the divergence-closed embedded-boundary face (area + normal)
   for analytic circle/half-plane (cylinder/wedge). Fluid area exact at every
-  resolution; EB perimeter converges O(dx²) to the exact interface. Next:
-  inviscid cut-cell FV with flux redistribution (`feature/cutcell-euler`).
+  resolution; EB perimeter converges O(dx²) to the exact interface.
+  **Phase 2 done** (`feature/cutcell-euler`, gate `cutcell_euler`): inviscid
+  1st-order cut-cell FV (`src/solver/CutCell2D.hpp`) — aperture-weighted HLLC
+  faces + exact slip-wall EB flux, hybrid **flux redistribution** so the step
+  is set by the full cells. Validated: uniform-at-rest preserved (well-
+  balanced), mass/energy conserved to the fp32 floor with full-cell dt, and a
+  Mach-2 bow shock whose stagnation pressure matches the Rayleigh pitot value
+  to 0.4 %. Known limit: tangent slivers with a starved neighbourhood fall back
+  to a positivity floor — a proper fix is state redistribution / an extended
+  merging neighbourhood (a later phase). Next: 2nd-order at the wall
+  (least-squares gradients), then viscous no-slip, AMR, GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
