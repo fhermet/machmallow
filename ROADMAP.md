@@ -457,9 +457,33 @@ normal velocity, slip). First brick laid:
   **κ-weighted restriction**, all behind `cfg.cutCell` + `Amr2::momentFn` (the
   staircase path is untouched). Gate: composite mass drift **6.7e-8 with reflux
   vs 1.2e-4 without (1800× better)** for a body contained in one refined patch.
-  Remaining: **cross-patch FRD** (a body spanning several patches leaks at the
-  fine sibling seams — the redistribution must cross patch boundaries), then
-  regrid-driven refinement, subcycling, `AmrML` (arbitrary depth), then GPU.
+  **Phase 5e (increment 2)** (`feature/cutcell-amr-frd`, gate
+  `cutcell_amr_prod`): **cross-patch flux redistribution**. `cutCellStepFluxed`
+  is split into `cutCellDc` (conservative divergence + recorded fluxes) and
+  `cutCellHybridD` (hybrid divergence + redistribution); the fine patches now
+  advance as a **composite** — Dc ghosts are filled from same-level siblings,
+  and the redistribution that lands in a patch's ghost cells is **scattered**
+  into the sibling that owns them (reads ghosts, writes interiors, so it is
+  order-independent). A body **spanning a 4×4 block of patches** (cut cells on
+  the internal sibling seams) now conserves to **9.1e-8** (was ~1.3e-5 without
+  the scatter).
+  **Phase 5f (increment 3)** (`feature/cutcell-amr-regrid`, gate
+  `cutcell_amr_prod` gate 3): **regrid-driven EB-band refinement**. `regrid()`
+  now tags the embedded-boundary band (coarse cut cells 0<κ<1; the existing ±2
+  dilation extends it into the surrounding fluid without over-refining the solid
+  interior), so refinement follows the body automatically instead of a pinned
+  patch. Gate: the body block is auto-refined and the EB-driven set conserves to
+  **9.2e-8**. (Flow-tag-driven *dynamic* regrid rides the general `Amr2` float32
+  conservation floor, ~few×1e-6 — a tiny/absent body drifts the same way — so it
+  is not cut-cell specific.)
+  **Phase 5g (increment 4)** (`feature/cutcell-amr-subcycle`, gate
+  `cutcell_amr_prod` gate 4): **Berger-Colella subcycling**. The base grid takes
+  one dtC, each patch two dtF = dtC/2 substeps with time-interpolated coarse
+  ghosts (the θ = ½ blend of tⁿ/tⁿ⁺¹). The reflux is split — `cutRefluxBackout_`
+  removes the single coarse flux (×dtC), `cutRefluxFineApply_` applies each
+  substep's fine flux (×dtF, twice = dtC) — and the composite cross-patch FRD
+  runs per substep. Gate: composite mass drift **2.1e-8** subcycled. Remaining:
+  `AmrML` (arbitrary depth), then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

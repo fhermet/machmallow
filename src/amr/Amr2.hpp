@@ -151,7 +151,9 @@ public:
     void step(Real dt, double t) {
         if (cutCellOn_() && coarseGeo_.cell.empty())
             coarseGeo_ = buildGeo_(coarse);
-        if (cutCellOn_())
+        if (cutCellOn_() && cfg_.subcycle && !patches.empty())
+            stepCutSubcycled_(dt, t); // subcycled CPU cut cells
+        else if (cutCellOn_())
             stepCutSingleRate_(dt, t); // single-rate CPU cut cells
         else if (cfg_.subcycle && !patches.empty())
             stepSubcycled_(dt, t);
@@ -208,6 +210,8 @@ public:
 
     void regrid() {
         const int nx = coarse.nx, ny = coarse.ny, bc = cfg_.blockC;
+        if (cutCellOn_() && coarseGeo_.cell.empty())
+            coarseGeo_ = buildGeo_(coarse);
 
         // 1. Tag on relative density gradient, optionally on velocity
         //    jumps normalized by the local sound speed (shear layers and
@@ -255,6 +259,14 @@ public:
                      solCoarse_(NG + i, NG + jp) ||
                      solCoarse_(NG + i, NG + jm)))
                     t = true;
+                // Cut-cell embedded boundary: tag the EB band — cells the
+                // solid cuts (0 < kappa < 1). The ±2 dilation below extends it
+                // into the surrounding fluid, so the body surface is refined
+                // without over-refining the solid interior (kappa = 0 cells).
+                if (!t && cutCellOn_()) {
+                    const Real k = coarseGeo_.at(NG + i, NG + j).vol;
+                    t = k > Real(1e-6) && k < Real(1) - Real(1e-6);
+                }
                 tag[std::size_t(j) * nx + i] = t;
             }
 
@@ -395,22 +407,129 @@ private:
         });
     }
 
-    // One single-rate cut-cell step: advance coarse and every patch with the
-    // 1st-order flux-recording cut-cell operator (aperture-weighted fluxes +
-    // FRD + positivity floor), then reflux each coarse-fine interface so its
-    // coarse flux is replaced by the sum of the fine fluxes there. Ghosts are
-    // filled from the t^n state before any level advances.
+    // One single-rate cut-cell step. Ghosts are filled from the t^n state, the
+    // base grid advances with the single-grid cut-cell operator, and the fine
+    // patches advance as a COMPOSITE so flux redistribution crosses patch
+    // boundaries (a body spanning several patches would otherwise leak mass at
+    // the sibling seams). Each coarse-fine interface is then refluxed (back the
+    // coarse flux out, apply the fine flux) once.
     void stepCutSingleRate_(Real dt, double t) {
         fillPhysicalGhosts(coarse, t);
         fillAllPatchGhosts_(t, Real(-1)); // patch ghosts from coarse t^n
 
-        // ghosts already set -> no-op fill inside the operator.
-        const auto noFill = [](Grid&) {};
-        cutCellStepFluxed(coarse, coarseGeo_, dt, noFill, cutFxC_, cutFyC_);
-        for (Patch& p : patches) {
-            cutCellStepFluxed(p.grid, p.geo, dt, noFill, cutFxF_, cutFyF_);
-            if (cfg_.reflux) cutReflux_(p, dt);
-        }
+        // base grid: single grid, no siblings -> the single-grid operator.
+        cutCellStepFluxed(coarse, coarseGeo_, dt, [](Grid&) {}, cutFxC_,
+                          cutFyC_);
+        advanceCutFinePatches_(dt);
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < patches.size(); ++k) {
+                cutRefluxBackout_(patches[k], dt);
+                cutRefluxFineApply_(patches[k], dt, pFx_[k], pFy_[k]);
+            }
+    }
+
+    // Berger-Colella subcycling for cut cells: the base grid advances one dtC,
+    // each patch takes two dtF = dtC/2 substeps with time-interpolated coarse
+    // ghosts. Refluxing accumulates: back the (single) coarse flux out once,
+    // apply each substep's fine flux (2 x dtF = dtC). The fine advance is the
+    // same composite (cross-patch FRD) as single-rate, run per substep.
+    void stepCutSubcycled_(Real dtC, double t) {
+        const Real dtF = dtC / 2;
+        coarseOld_ = coarse.q; // t^n copy for the theta-blend prolongation
+
+        fillPhysicalGhosts(coarse, t);
+        fillAllPatchGhosts_(t, Real(-1)); // substep-1 ghosts at t^n
+
+        cutCellStepFluxed(coarse, coarseGeo_, dtC, [](Grid&) {}, cutFxC_,
+                          cutFyC_);
+        if (cfg_.reflux)
+            for (Patch& p : patches) cutRefluxBackout_(p, dtC);
+
+        advanceCutFinePatches_(dtF); // substep 1
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < patches.size(); ++k)
+                cutRefluxFineApply_(patches[k], dtF, pFx_[k], pFy_[k]);
+
+        // substep 2: siblings are current; coarse prolongation blends t^n/t^n+1.
+        fillAllPatchGhosts_(t + dtF, Real(0.5));
+        advanceCutFinePatches_(dtF); // substep 2
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < patches.size(); ++k)
+                cutRefluxFineApply_(patches[k], dtF, pFx_[k], pFy_[k]);
+    }
+
+    // Composite advance of the fine patches (no reflux): compute each patch's
+    // conservative divergence Dc, fill Dc ghosts from same-level siblings, form
+    // the hybrid divergence + redistribution, SCATTER the redistribution that
+    // lands in a patch's ghosts into the sibling that owns those cells, then
+    // update. Records the per-patch extensive fluxes (pFx_/pFy_) for reflux.
+    void advanceCutFinePatches_(Real dt) {
+        const std::size_t np = patches.size();
+        if (np == 0) return;
+        pDc_.resize(np);
+        pD_.resize(np);
+        pFx_.resize(np);
+        pFy_.resize(np);
+        for (std::size_t k = 0; k < np; ++k)
+            pDc_[k] = cutCellDc(patches[k].grid, patches[k].geo, pFx_[k],
+                                pFy_[k]);
+        for (std::size_t k = 0; k < np; ++k) fillPatchDcGhosts_(k);
+        for (std::size_t k = 0; k < np; ++k)
+            pD_[k] = cutCellHybridD(patches[k].grid, patches[k].geo, pDc_[k]);
+        for (std::size_t k = 0; k < np; ++k) scatterPatchDGhosts_(k);
+        for (std::size_t k = 0; k < np; ++k)
+            applyCutUpdate(patches[k].grid, patches[k].geo, pD_[k], dt);
+    }
+
+    // Global fine-cell (gfi,gfj) that a patch cell (i,j) maps to, with periodic
+    // wrap. Returns the owning patch index (-1 if none / coarse-fine / domain).
+    int siblingCell_(const Patch& p, int i, int j, int& si, int& sj) const {
+        const int nxf = 2 * coarse.nx, nyf = 2 * coarse.ny;
+        int gfi = 2 * p.ci0 + (i - NG), gfj = 2 * p.cj0 + (j - NG);
+        if (cfg_.periodicX) gfi = (gfi % nxf + nxf) % nxf;
+        if (cfg_.periodicY) gfj = (gfj % nyf + nyf) % nyf;
+        if (gfi < 0 || gfi >= nxf || gfj < 0 || gfj >= nyf) return -1;
+        const int bi = gfi / (2 * cfg_.blockC), bj = gfj / (2 * cfg_.blockC);
+        const int pi = blockOf_[std::size_t(bj) * nbx_ + bi];
+        if (pi < 0) return -1;
+        const Patch& s = patches[pi];
+        si = NG + gfi - 2 * s.ci0;
+        sj = NG + gfj - 2 * s.cj0;
+        return pi;
+    }
+
+    // Fill patch k's Dc ghosts from the sibling patch that owns each ghost cell
+    // (same-level copy). Ghosts with no sibling (coarse-fine / domain) stay 0.
+    void fillPatchDcGhosts_(std::size_t k) {
+        const Patch& p = patches[k];
+        const int nf = p.grid.nx;
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i) {
+                if (i >= NG && i < NG + nf && j >= NG && j < NG + nf) continue;
+                int si, sj;
+                const int pi = siblingCell_(p, i, j, si, sj);
+                if (pi >= 0)
+                    pDc_[k][p.grid.idx(i, j)] = pDc_[pi][patches[pi].grid.idx(
+                        si, sj)];
+            }
+    }
+
+    // Scatter the redistribution that landed in patch k's ghost cells into the
+    // sibling interior cell that owns them (reads only ghosts, writes only
+    // interiors -> order-independent across patches).
+    void scatterPatchDGhosts_(std::size_t k) {
+        const Patch& p = patches[k];
+        const int nf = p.grid.nx;
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i) {
+                if (i >= NG && i < NG + nf && j >= NG && j < NG + nf) continue;
+                int si, sj;
+                const int pi = siblingCell_(p, i, j, si, sj);
+                if (pi >= 0) {
+                    const std::size_t d = patches[pi].grid.idx(si, sj);
+                    pD_[pi][d] = pD_[pi][d] + pD_[k][p.grid.idx(i, j)];
+                }
+            }
     }
 
     // Cut-aware reflux: for each uncovered coarse cell just outside the patch,
@@ -418,47 +537,81 @@ private:
     // that face. Extensive (aperture-weighted) fluxes make this reduce to the
     // uniform (dt/dx)*F reflux when kappa = apertures = 1. correction is
     // applied as dt/(kappa*V_c)*dF through the positivity floor.
-    void cutReflux_(const Patch& p, Real dt) {
+    // Reflux, split so subcycling can accumulate several fine substeps against
+    // one coarse step. Both parts apply dt/(kappa V_c)*flux (extensive) to the
+    // uncovered coarse cell just outside the patch, through the positivity
+    // floor, and reduce to the uniform reflux when kappa = apertures = 1.
+    Cons cutRefluxCorr_(int ci, int cj, const Cons& d, Real dt) {
+        const double k = double(coarseGeo_.at(NG + ci, NG + cj).vol);
+        if (k > 1e-9)
+            return floorState(coarse.at(NG + ci, NG + cj) +
+                              Real(dt / (k * coarse.dx * coarse.dy)) * d);
+        return coarse.at(NG + ci, NG + cj);
+    }
+
+    // Back the COARSE interface flux out of the uncovered neighbour (once, at
+    // dtC).
+    void cutRefluxBackout_(const Patch& p, Real dtC) {
+        const int bc = cfg_.blockC;
+        if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + n.cell, NG + p.cj0 + r) = cutRefluxCorr_(
+                    n.cell, p.cj0 + r,
+                    cutFxC_[coarse.idx(NG + n.cell, NG + p.cj0 + r)], dtC);
+        if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + n.cell, NG + p.cj0 + r) = cutRefluxCorr_(
+                    n.cell, p.cj0 + r,
+                    Real(-1) *
+                        cutFxC_[coarse.idx(NG + n.cell - 1, NG + p.cj0 + r)],
+                    dtC);
+        if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + p.ci0 + r, NG + n.cell) = cutRefluxCorr_(
+                    p.ci0 + r, n.cell,
+                    cutFyC_[coarse.idx(NG + p.ci0 + r, NG + n.cell)], dtC);
+        if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
+            for (int r = 0; r < bc; ++r)
+                coarse.at(NG + p.ci0 + r, NG + n.cell) = cutRefluxCorr_(
+                    p.ci0 + r, n.cell,
+                    Real(-1) *
+                        cutFyC_[coarse.idx(NG + p.ci0 + r, NG + n.cell - 1)],
+                    dtC);
+    }
+
+    // Apply this substep's FINE flux (sum of the two fine faces) to the
+    // uncovered neighbour (at dtF; called once per substep). Uses the patch's
+    // recorded extensive fluxes (pFx_/pFy_).
+    void cutRefluxFineApply_(const Patch& p, Real dtF, const std::vector<Cons>& Fx,
+                             const std::vector<Cons>& Fy) {
         const int bc = cfg_.blockC, nf = 2 * bc;
-        const Real Vc = coarse.dx * coarse.dy;
-        const auto corr = [&](int ci, int cj, const Cons& d) {
-            const double k = double(coarseGeo_.at(NG + ci, NG + cj).vol);
-            if (k > 1e-9)
-                coarse.at(NG + ci, NG + cj) =
-                    floorState(coarse.at(NG + ci, NG + cj) +
-                               Real(dt / (k * Vc)) * d);
-        };
         if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
-                const int cj = p.cj0 + r, jf = 2 * r;
-                const Cons sf = cutFxF_[p.grid.idx(NG - 1, NG + jf)] +
-                                cutFxF_[p.grid.idx(NG - 1, NG + jf + 1)];
-                corr(n.cell, cj,
-                     cutFxC_[coarse.idx(NG + n.cell, NG + cj)] - sf);
+                const Cons sf = Fx[p.grid.idx(NG - 1, NG + 2 * r)] +
+                                Fx[p.grid.idx(NG - 1, NG + 2 * r + 1)];
+                coarse.at(NG + n.cell, NG + p.cj0 + r) =
+                    cutRefluxCorr_(n.cell, p.cj0 + r, Real(-1) * sf, dtF);
             }
         if (const SideNb n = rightNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r) {
-                const int cj = p.cj0 + r, jf = 2 * r;
-                const Cons sf = cutFxF_[p.grid.idx(NG + nf - 1, NG + jf)] +
-                                cutFxF_[p.grid.idx(NG + nf - 1, NG + jf + 1)];
-                corr(n.cell, cj,
-                     sf - cutFxC_[coarse.idx(NG + n.cell - 1, NG + cj)]);
+                const Cons sf = Fx[p.grid.idx(NG + nf - 1, NG + 2 * r)] +
+                                Fx[p.grid.idx(NG + nf - 1, NG + 2 * r + 1)];
+                coarse.at(NG + n.cell, NG + p.cj0 + r) =
+                    cutRefluxCorr_(n.cell, p.cj0 + r, sf, dtF);
             }
         if (const SideNb n = bottomNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
-                const int ci = p.ci0 + r, iff = 2 * r;
-                const Cons sf = cutFyF_[p.grid.idx(NG + iff, NG - 1)] +
-                                cutFyF_[p.grid.idx(NG + iff + 1, NG - 1)];
-                corr(ci, n.cell,
-                     cutFyC_[coarse.idx(NG + ci, NG + n.cell)] - sf);
+                const Cons sf = Fy[p.grid.idx(NG + 2 * r, NG - 1)] +
+                                Fy[p.grid.idx(NG + 2 * r + 1, NG - 1)];
+                coarse.at(NG + p.ci0 + r, NG + n.cell) =
+                    cutRefluxCorr_(p.ci0 + r, n.cell, Real(-1) * sf, dtF);
             }
         if (const SideNb n = topNb_(p); n.ok && !covered(p.bi, n.block))
             for (int r = 0; r < bc; ++r) {
-                const int ci = p.ci0 + r, iff = 2 * r;
-                const Cons sf = cutFyF_[p.grid.idx(NG + iff, NG + nf - 1)] +
-                                cutFyF_[p.grid.idx(NG + iff + 1, NG + nf - 1)];
-                corr(ci, n.cell,
-                     sf - cutFyC_[coarse.idx(NG + ci, NG + n.cell - 1)]);
+                const Cons sf = Fy[p.grid.idx(NG + 2 * r, NG + nf - 1)] +
+                                Fy[p.grid.idx(NG + 2 * r + 1, NG + nf - 1)];
+                coarse.at(NG + p.ci0 + r, NG + n.cell) =
+                    cutRefluxCorr_(p.ci0 + r, n.cell, sf, dtF);
             }
     }
 
@@ -725,7 +878,9 @@ private:
     std::vector<Cons> coarseOld_; // coarse t^n copy (subcycled ghosts)
     std::vector<std::uint8_t> coarseSolidMask_; // 1 = solid (empty = none)
     cutcell::Geometry coarseGeo_; // cut-cell moments (empty unless cfg.cutCell)
-    std::vector<Cons> cutFxC_, cutFyC_, cutFxF_, cutFyF_; // extensive fluxes
+    std::vector<Cons> cutFxC_, cutFyC_;          // base extensive fluxes
+    std::vector<std::vector<Cons>> pDc_, pD_;    // per-patch divergences
+    std::vector<std::vector<Cons>> pFx_, pFy_;   // per-patch extensive fluxes
     int stepCount_ = 0;
 };
 
