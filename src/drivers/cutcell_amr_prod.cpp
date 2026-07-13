@@ -7,8 +7,10 @@
 //
 //   gate 1 — composite mass is conserved over the run WITH reflux (< 1e-6);
 //   gate 2 — reflux matters: turning it off makes the drift >=100x worse.
-// The refined region is pinned around the body (regrid disabled) so the
-// coarse-fine interfaces sit in clean fluid, isolating the reflux path.
+// The body SPANS a 4x4 block of refined patches (regrid disabled), so cut
+// cells sit on internal sibling seams: this exercises both the cut-aware
+// reflux at the coarse-fine boundary AND the cross-patch flux redistribution
+// (the fine sibling seams). Without cross-patch FRD the seams leak (~1e-5).
 
 #include "amr/Amr2.hpp"
 #include "core/Boundary.hpp"
@@ -28,8 +30,8 @@ namespace {
 // Worst relative composite-mass drift over a fixed-patch 2-level cut-cell run
 // driven by Amr2, with the flux register (reflux) on or off.
 double amr2MassDrift(bool reflux) {
-    const int NC = 48, bc = 16;                // coarse cells, block size
-    const double cx = 0.5, cy = 0.5, r = 0.1;  // immersed cylinder
+    const int NC = 48, bc = 8;                 // coarse cells, block size
+    const double cx = 0.5, cy = 0.5, r = 0.2;  // immersed cylinder
     const auto circle = [&](double x0, double x1, double y0, double y1) {
         return cutcell::circleMoments(cx, cy, r, x0, x1, y0, y1);
     };
@@ -60,11 +62,13 @@ double amr2MassDrift(bool reflux) {
             amr.coarse.at(i, j) = ic(double(amr.coarse.xc(i)),
                                      double(amr.coarse.yc(j)));
 
-    // Pin a single refined patch (the centre block [1/3,2/3]^2) containing
-    // the whole body plus a fluid halo, so the coarse-fine interfaces stay in
-    // clean fluid and every cut cell is interior to the one patch (matches the
-    // standalone cutcell_amr topology; cross-patch FRD is a later increment).
-    std::vector<std::pair<int, int>> blocks{{1, 1}};
+    // Pin a 4x4 block of refined patches around the body so the body SPANS
+    // several patches: cut cells sit on internal sibling seams, exercising the
+    // cross-patch flux redistribution. Coarse-fine interfaces (blocks 0 and 5)
+    // stay in clean fluid.
+    std::vector<std::pair<int, int>> blocks;
+    for (int bj = 1; bj <= 4; ++bj)
+        for (int bi = 1; bi <= 4; ++bi) blocks.emplace_back(bi, bj);
     amr.restoreBlocks(blocks, 0);
     for (Amr2::Patch& p : amr.patches)
         for (int j = NG; j < NG + p.grid.ny; ++j)

@@ -267,17 +267,15 @@ inline std::vector<Cons> cutCellDiv(const Grid& g,
 
 inline Cons floorState(const Cons& q);   // defined below
 
-// 1st-order forward-Euler cut-cell step that RECORDS the aperture-weighted
-// extensive face fluxes (Fx/Fy, indexed by the lower cell of each face), for
-// AMR flux-register refluxing. FRD + positivity floor applied. Ghosts filled
-// by the caller's `fill`.
-template <class Fill>
-inline void cutCellStepFluxed(Grid& g, const cutcell::Geometry& geo, Real dt,
-                              Fill fill, std::vector<Cons>& Fx,
-                              std::vector<Cons>& Fy) {
+// Conservative cut-cell divergence D^c = dU/(kappa V) (1st order), RECORDING
+// the aperture-weighted extensive face fluxes (Fx/Fy, indexed by the lower cell
+// of each face) for AMR flux-register refluxing. Ghosts must be filled by the
+// caller. Dc is returned on the interior (ghost entries are zero).
+inline std::vector<Cons> cutCellDc(const Grid& g, const cutcell::Geometry& geo,
+                                   std::vector<Cons>& Fx,
+                                   std::vector<Cons>& Fy) {
     const Real dx = g.dx, dy = g.dy, V = dx * dy, tiny = Real(1e-9);
     const auto kap = [&](int i, int j) { return double(geo.at(i, j).vol); };
-    fill(g);
     Fx.assign(g.q.size(), Cons{0, 0, 0, 0});
     Fy.assign(g.q.size(), Cons{0, 0, 0, 0});
     std::vector<Cons> dU(g.q.size(), Cons{0, 0, 0, 0});
@@ -310,12 +308,26 @@ inline void cutCellStepFluxed(Grid& g, const cutcell::Geometry& geo, Real dt,
             dU[g.idx(i, j)] =
                 dU[g.idx(i, j)] - m.eb.area * ebWallFlux(w, -m.eb.nx, -m.eb.ny);
         }
-    // FRD (same as cutCellDiv) then forward-Euler update
     std::vector<Cons> Dc(g.q.size(), Cons{0, 0, 0, 0});
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i)
             if (kap(i, j) > double(tiny))
                 Dc[g.idx(i, j)] = Real(1.0 / (kap(i, j) * V)) * dU[g.idx(i, j)];
+    return Dc;
+}
+
+// Hybrid divergence D^hyb = kappa D^c + (1-kappa) D^nc plus flux
+// redistribution over the 3x3 fluid neighbourhood. Dc must be supplied with
+// its GHOSTS FILLED (from same-level neighbours) so cut cells touching a patch
+// boundary see the neighbour's divergence. The returned D holds, in its GHOST
+// cells, the redistribution destined for the neighbour that owns them — a
+// composite caller must scatter those into the owning grid to stay
+// conservative (a single-grid caller simply drops them, as before).
+inline std::vector<Cons> cutCellHybridD(const Grid& g,
+                                        const cutcell::Geometry& geo,
+                                        const std::vector<Cons>& Dc) {
+    const Real tiny = Real(1e-9);
+    const auto kap = [&](int i, int j) { return double(geo.at(i, j).vol); };
     std::vector<Cons> D(g.q.size(), Cons{0, 0, 0, 0});
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i) {
@@ -344,10 +356,32 @@ inline void cutCellStepFluxed(Grid& g, const cutcell::Geometry& geo, Real dt,
                                 D[g.idx(i + di, j + dj)] + dD;
             }
         }
+    return D;
+}
+
+// Positivity-floored forward-Euler update of the fluid cells from a divergence.
+inline void applyCutUpdate(Grid& g, const cutcell::Geometry& geo,
+                           const std::vector<Cons>& D, Real dt) {
+    const Real tiny = Real(1e-9);
     for (int j = NG; j < NG + g.ny; ++j)
         for (int i = NG; i < NG + g.nx; ++i)
-            if (kap(i, j) > double(tiny))
+            if (double(geo.at(i, j).vol) > double(tiny))
                 g.at(i, j) = floorState(g.at(i, j) + dt * D[g.idx(i, j)]);
+}
+
+// 1st-order forward-Euler cut-cell step that RECORDS the aperture-weighted
+// extensive face fluxes (Fx/Fy) for AMR flux-register refluxing. FRD +
+// positivity floor applied. Ghosts filled by the caller's `fill`. Single-grid
+// convenience: the redistribution that lands in ghost cells is dropped (there
+// is no neighbouring grid to receive it).
+template <class Fill>
+inline void cutCellStepFluxed(Grid& g, const cutcell::Geometry& geo, Real dt,
+                              Fill fill, std::vector<Cons>& Fx,
+                              std::vector<Cons>& Fy) {
+    fill(g);
+    const std::vector<Cons> Dc = cutCellDc(g, geo, Fx, Fy);
+    const std::vector<Cons> D = cutCellHybridD(g, geo, Dc);
+    applyCutUpdate(g, geo, D, dt);
 }
 
 // positivity-preserving state (resets near-vacuum / runaway slivers).

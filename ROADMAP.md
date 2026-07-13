@@ -457,9 +457,17 @@ normal velocity, slip). First brick laid:
   **κ-weighted restriction**, all behind `cfg.cutCell` + `Amr2::momentFn` (the
   staircase path is untouched). Gate: composite mass drift **6.7e-8 with reflux
   vs 1.2e-4 without (1800× better)** for a body contained in one refined patch.
-  Remaining: **cross-patch FRD** (a body spanning several patches leaks at the
-  fine sibling seams — the redistribution must cross patch boundaries), then
-  regrid-driven refinement, subcycling, `AmrML` (arbitrary depth), then GPU.
+  **Phase 5e (increment 2)** (`feature/cutcell-amr-frd`, gate
+  `cutcell_amr_prod`): **cross-patch flux redistribution**. `cutCellStepFluxed`
+  is split into `cutCellDc` (conservative divergence + recorded fluxes) and
+  `cutCellHybridD` (hybrid divergence + redistribution); the fine patches now
+  advance as a **composite** — Dc ghosts are filled from same-level siblings,
+  and the redistribution that lands in a patch's ghost cells is **scattered**
+  into the sibling that owns them (reads ghosts, writes interiors, so it is
+  order-independent). A body **spanning a 4×4 block of patches** (cut cells on
+  the internal sibling seams) now conserves to **9.1e-8** (was ~1.3e-5 without
+  the scatter). Remaining: regrid-driven EB-band refinement, subcycling,
+  `AmrML` (arbitrary depth), then GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
