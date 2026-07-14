@@ -6,6 +6,7 @@
 // step2D (the Cartesian solver) is left untouched.
 #pragma once
 
+#include "core/Boundary.hpp"    // SideLeft/Right/Bottom/Top
 #include "core/Grid.hpp"
 #include "geometry/CutCell.hpp"
 #include "numerics/Hllc.hpp"
@@ -305,6 +306,81 @@ inline std::vector<Cons> cutCellDc(const Grid& g, const cutcell::Geometry& geo,
             if (m.vol <= tiny || m.vol >= Real(1) - tiny || m.eb.area <= tiny)
                 continue;
             const Prim w = toPrim(g.at(i, j));
+            dU[g.idx(i, j)] =
+                dU[g.idx(i, j)] - m.eb.area * ebWallFlux(w, -m.eb.nx, -m.eb.ny);
+        }
+    std::vector<Cons> Dc(g.q.size(), Cons{0, 0, 0, 0});
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i)
+            if (kap(i, j) > double(tiny))
+                Dc[g.idx(i, j)] = Real(1.0 / (kap(i, j) * V)) * dU[g.idx(i, j)];
+    return Dc;
+}
+
+// 2nd-order conservative cut-cell divergence D^c: least-squares primitive
+// gradients reconstructed to the face centres (constant at grid boundaries) and
+// the EB centroid, RECORDING the aperture-weighted extensive fluxes (Fx/Fy) for
+// AMR reflux. `grad` are the gradients from lsqGradients; ghosts filled by the
+// caller. The hybrid divergence + cross-patch FRD is applied afterwards by
+// cutCellHybridD (unchanged) — so this is the 2nd-order analogue of cutCellDc.
+// `physSides` marks the grid edges that are PHYSICAL walls (constant
+// reconstruction there, ox=0, to avoid a wall leak). Default = all four edges
+// (single-grid behaviour). An AMR patch passes only its true domain-boundary
+// sides, so its sibling seams / coarse-fine edges reconstruct at 2nd order
+// (with gradient ghosts filled from siblings).
+inline std::vector<Cons> cutCellDcO2(const Grid& g,
+                                     const cutcell::Geometry& geo,
+                                     const std::vector<PrimGrad>& grad,
+                                     std::vector<Cons>& Fx,
+                                     std::vector<Cons>& Fy,
+                                     unsigned physSides = SideLeft | SideRight |
+                                                          SideBottom | SideTop) {
+    const Real dx = g.dx, dy = g.dy, V = dx * dy, tiny = Real(1e-9);
+    const Real hx = Real(0.5) * dx, hy = Real(0.5) * dy;
+    const auto kap = [&](int i, int j) { return double(geo.at(i, j).vol); };
+    Fx.assign(g.q.size(), Cons{0, 0, 0, 0});
+    Fy.assign(g.q.size(), Cons{0, 0, 0, 0});
+    std::vector<Cons> dU(g.q.size(), Cons{0, 0, 0, 0});
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG - 1; i < NG + g.nx; ++i) {
+            const Real a = geo.at(i, j).apXhi;
+            if (a <= tiny) continue;
+            const bool wall = (i < NG && (physSides & SideLeft)) ||
+                              (i + 1 >= NG + g.nx && (physSides & SideRight));
+            const Real ox = wall ? Real(0) : hx;
+            const Prim wL = reconstruct(toPrim(g.at(i, j)),
+                                        grad[g.idx(i, j)], ox, 0);
+            const Prim wR = reconstruct(toPrim(g.at(i + 1, j)),
+                                        grad[g.idx(i + 1, j)], -ox, 0);
+            const Cons f = (a * dy) * hllcFluxX(wL, wR);
+            Fx[g.idx(i, j)] = f;
+            dU[g.idx(i, j)] = dU[g.idx(i, j)] - f;
+            dU[g.idx(i + 1, j)] = dU[g.idx(i + 1, j)] + f;
+        }
+    for (int i = NG; i < NG + g.nx; ++i)
+        for (int j = NG - 1; j < NG + g.ny; ++j) {
+            const Real a = geo.at(i, j).apYhi;
+            if (a <= tiny) continue;
+            const bool wall = (j < NG && (physSides & SideBottom)) ||
+                              (j + 1 >= NG + g.ny && (physSides & SideTop));
+            const Real oy = wall ? Real(0) : hy;
+            const Prim wB = reconstruct(toPrim(g.at(i, j)),
+                                        grad[g.idx(i, j)], 0, oy);
+            const Prim wT = reconstruct(toPrim(g.at(i, j + 1)),
+                                        grad[g.idx(i, j + 1)], 0, -oy);
+            const Cons f = (a * dx) * hllcFluxY(wB, wT);
+            Fy[g.idx(i, j)] = f;
+            dU[g.idx(i, j)] = dU[g.idx(i, j)] - f;
+            dU[g.idx(i, j + 1)] = dU[g.idx(i, j + 1)] + f;
+        }
+    for (int j = NG; j < NG + g.ny; ++j)
+        for (int i = NG; i < NG + g.nx; ++i) {
+            const CellMoments& m = geo.at(i, j);
+            if (m.vol <= tiny || m.vol >= Real(1) - tiny || m.eb.area <= tiny)
+                continue;
+            const Real ox = m.eb.cx - g.xc(i), oy = m.eb.cy - g.yc(j);
+            const Prim w = reconstruct(toPrim(g.at(i, j)), grad[g.idx(i, j)],
+                                       ox, oy);
             dU[g.idx(i, j)] =
                 dU[g.idx(i, j)] - m.eb.area * ebWallFlux(w, -m.eb.nx, -m.eb.ny);
         }
