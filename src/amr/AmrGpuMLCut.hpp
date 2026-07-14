@@ -242,6 +242,11 @@ private:
         if (cfg_.cutCellO2 && !o2Ready_) {
             coarse_.enableO2();
             for (Level& L : lvls_) L.pool->enableO2Pool();
+            if (cfg_.mu > 0) {
+                const Real kT = heatConductivity(cfg_.mu);
+                coarse_.setViscosity(cfg_.mu, kT);
+                for (Level& L : lvls_) L.pool->setViscosity(cfg_.mu, kT);
+            }
             o2Ready_ = true;
         }
     }

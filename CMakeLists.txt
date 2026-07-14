@@ -147,6 +147,11 @@ add_executable(cutcell_gpu_viscous src/drivers/cutcell_gpu_viscous.cpp)
 target_link_libraries(cutcell_gpu_viscous PRIVATE mm_metal)
 target_include_directories(cutcell_gpu_viscous PRIVATE src)
 
+# Viscous cut cells in the AMR (GPU), lock-step vs Amr2/AmrML O2 viscous.
+add_executable(cutcell_amr_viscous src/drivers/cutcell_amr_viscous.cpp)
+target_link_libraries(cutcell_amr_viscous PRIVATE mm_metal)
+target_include_directories(cutcell_amr_viscous PRIVATE src)
+
 # WENO5 + SSP-RK3 scheme validation (uniform grid, CPU).
 add_executable(weno_suite src/drivers/weno_suite.cpp)
 target_include_directories(weno_suite PRIVATE src)
