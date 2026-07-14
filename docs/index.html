@@ -194,13 +194,14 @@
         CPU handles regridding. Metal, shaders compiled at runtime, zero-copy
         unified memory.</p></div>
     <div class="card"><h3><span class="ic">◆</span>Cut cells</h3>
-      <p>Geometrically exact embedded boundaries (volume fractions, face
-        apertures): 2nd-order LSQ + RK2, viscous no-slip, threaded through the
-        AMR at any depth. No staircase.</p></div>
-    <div class="card"><h3><span class="ic">◆</span>High-order schemes</h3>
-      <p>2nd-order MUSCL-Hancock with HLLC, or WENO5 + SSP-RK3. Positivity
-        preserving. Verified order of accuracy (incl. MMS for the viscous
-        operator).</p></div>
+      <p>The solid surface cuts <em>through</em> the cells (exact volume
+        fractions and face apertures) instead of a blocky staircase, giving
+        clean walls at modest resolution. Slip or viscous no-slip, at any AMR
+        depth.</p></div>
+    <div class="card"><h3><span class="ic">◆</span>Numerical schemes</h3>
+      <p>Finite volume: 2nd-order MUSCL-Hancock with an HLLC Riemann solver, or
+        5th-order WENO5 + SSP-RK3. Positivity-preserving, with a verified order
+        of accuracy (including MMS for the viscous terms).</p></div>
     <div class="card"><h3><span class="ic">◆</span>Multi-physics</h3>
       <p>Compressible Navier–Stokes (Pr = 0.72, adiabatic no-slip walls),
         two-gas mixtures, and single-step Arrhenius reactions for
