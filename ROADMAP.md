@@ -513,9 +513,23 @@ normal velocity, slip). First brick laid:
   **phase-split** step (`dcPhase`/`hybridPhase`/`updatePhase`, single grid and
   pool) so a composite caller can interleave the CPU cross-patch passes (Dc
   ghost fill / redistribution scatter) between GPU phases — validated bit-exact
-  vs the monolithic step. Remaining: the hybrid `AmrGpu` cut-cell class
-  (assemble GPU pool advance + CPU cross-patch FRD / reflux / restriction /
-  tagging — reusing the Amr2 logic), then 2nd order on GPU.
+  vs the monolithic step.
+  **Phase 5j (increment 7, GPU)** (`feature/cutcell-gpu-amr`, gate
+  `cutcell_gpu_amr`): the hybrid **`AmrGpuCut`** class — two-level cut-cell AMR
+  with the coarse level and the patch pool both living in shared Metal buffers
+  (a `CutCell2DGpu` each). Per step the GPU advances the coarse grid (monolithic
+  cut step) and the patches as a **composite** via the phase-split pool
+  (`dcPhasePool` → CPU fills each patch's Dc ghosts from same-level siblings →
+  `hybridPhasePool` → `updatePhasePool`); the CPU orchestrates cut-aware reflux
+  (`cutRefluxBackout_`/`cutRefluxFineApply_`), κ-restriction, EB-band tagging and
+  slot management in place (unified memory, zero copies). Key simplification: the
+  gather-form FRD makes the CPU **D-scatter unnecessary** — exchanging the Dc
+  ghosts alone reproduces the cross-patch coupling (a patch's interior D equals
+  the monolithic single-grid divergence over the tiled region), mathematically
+  identical to the Amr2 scatter path. Gate (body spanning a 4×4 patch block,
+  reflective box): GPU vs CPU (`Amr2` cut) **lock-step over 200 steps → worst
+  relative ρ diff 4.4e-6 single-rate, 3.6e-6 subcycled**, and the GPU composite
+  mass conserves to **1.1e-7** (fp32 floor). Remaining: 2nd order on GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
