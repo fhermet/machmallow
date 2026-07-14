@@ -157,7 +157,9 @@ public:
     void step(Real dt, double t) {
         if (cutCellOn_() && coarseGeo_.cell.empty())
             coarseGeo_ = buildGeo_(coarse);
-        if (cutO2On_())
+        if (cutO2On_() && cfg_.subcycle && !patches.empty())
+            stepCutO2Subcycled_(dt, t); // 2nd-order subcycled (RK2)
+        else if (cutO2On_())
             stepCutO2SingleRate_(dt, t); // 2nd-order CPU cut cells (RK2)
         else if (cutCellOn_() && cfg_.subcycle && !patches.empty())
             stepCutSubcycled_(dt, t); // subcycled CPU cut cells
@@ -567,22 +569,85 @@ private:
 
         // ---- reflux with the time-averaged fluxes 0.5*(F1+F2) ----
         if (cfg_.reflux) {
-            const auto avg = [](std::vector<Cons>& a,
-                                const std::vector<Cons>& b) {
-                for (std::size_t i = 0; i < a.size(); ++i)
-                    a[i] = Real(0.5) * (a[i] + b[i]);
-            };
-            avg(cutFxC_, Fc1x);
-            avg(cutFyC_, Fc1y);
+            avgFlux_(cutFxC_, Fc1x);
+            avgFlux_(cutFyC_, Fc1y);
             for (std::size_t k = 0; k < np; ++k) {
-                avg(pFx_[k], pF1x[k]);
-                avg(pFy_[k], pF1y[k]);
+                avgFlux_(pFx_[k], pF1x[k]);
+                avgFlux_(pFy_[k], pF1y[k]);
             }
             for (std::size_t k = 0; k < np; ++k) {
                 cutRefluxBackout_(patches[k], dt);
                 cutRefluxFineApply_(patches[k], dt, pFx_[k], pFy_[k]);
             }
         }
+    }
+
+    static void avgFlux_(std::vector<Cons>& a, const std::vector<Cons>& b) {
+        for (std::size_t i = 0; i < a.size(); ++i)
+            a[i] = Real(0.5) * (a[i] + b[i]);
+    }
+
+    // Base-grid SSP-RK2 over dtC. Leaves the base at t^{n+1} and the TIME-
+    // AVERAGED extensive base fluxes 0.5*(Fc1+Fc2) in cutFxC_/cutFyC_ (for the
+    // single reflux back-out). Assumes base ghosts filled at t; refills at t+dtC.
+    void cutBaseRK2_(Real dtC, double t) {
+        const std::vector<Cons> DC1 = cutBaseDivergenceO2_(); // records Fc1
+        std::vector<Cons> Fc1x = cutFxC_, Fc1y = cutFyC_;
+        coarseO2Old_ = coarse.q;
+        applyCutUpdate(coarse, coarseGeo_, DC1, dtC); // -> U1
+        fillPhysicalGhosts(coarse, t + dtC);
+        const std::vector<Cons> DC2 = cutBaseDivergenceO2_(); // records Fc2
+        rk2Combine_(coarse, coarseGeo_, coarseO2Old_, DC2, dtC);
+        avgFlux_(cutFxC_, Fc1x);
+        avgFlux_(cutFyC_, Fc1y);
+    }
+
+    // One fine-composite SSP-RK2 substep over dtF, with time-interpolated coarse
+    // ghosts (theta1 at the substep start, theta2 at its end). Leaves the
+    // patches advanced and the TIME-AVERAGED fine fluxes in pFx_/pFy_.
+    void cutFineRK2Substep_(Real dtF, double tS1, Real theta1, double tS2,
+                            Real theta2) {
+        const std::size_t np = patches.size();
+        // stage 1
+        fillAllPatchGhosts_(tS1, theta1);
+        cutFineDivergence_(true);
+        std::vector<std::vector<Cons>> pF1x = pFx_, pF1y = pFy_;
+        pOld_.resize(np);
+        for (std::size_t k = 0; k < np; ++k) pOld_[k] = patches[k].grid.q;
+        for (std::size_t k = 0; k < np; ++k)
+            applyCutUpdate(patches[k].grid, patches[k].geo, pD_[k], dtF);
+        // stage 2
+        fillAllPatchGhosts_(tS2, theta2);
+        cutFineDivergence_(true);
+        for (std::size_t k = 0; k < np; ++k)
+            rk2Combine_(patches[k].grid, patches[k].geo, pOld_[k], pD_[k], dtF);
+        for (std::size_t k = 0; k < np; ++k) {
+            avgFlux_(pFx_[k], pF1x[k]);
+            avgFlux_(pFy_[k], pF1y[k]);
+        }
+    }
+
+    // 2nd-order (SSP-RK2) SUBCYCLED cut-cell step: the base advances one dtC
+    // (RK2), each patch takes two dtF = dtC/2 substeps (RK2 each) with time-
+    // interpolated coarse ghosts. Reflux backs the (single, averaged) coarse
+    // flux out once, applies each substep's averaged fine flux.
+    void stepCutO2Subcycled_(Real dtC, double t) {
+        const Real dtF = dtC / 2;
+        coarseOld_ = coarse.q; // t^n for the theta-blend prolongation
+        fillPhysicalGhosts(coarse, t);
+        cutBaseRK2_(dtC, t);   // base -> t^{n+1}, net flux in cutFxC_/cutFyC_
+        if (cfg_.reflux)
+            for (Patch& p : patches) cutRefluxBackout_(p, dtC);
+
+        cutFineRK2Substep_(dtF, t, Real(0), t + dtF, Real(0.5)); // substep 1
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < patches.size(); ++k)
+                cutRefluxFineApply_(patches[k], dtF, pFx_[k], pFy_[k]);
+
+        cutFineRK2Substep_(dtF, t + dtF, Real(0.5), t + dtC, Real(1)); // sub 2
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < patches.size(); ++k)
+                cutRefluxFineApply_(patches[k], dtF, pFx_[k], pFy_[k]);
     }
 
     // Global fine-cell (gfi,gfj) that a patch cell (i,j) maps to, with periodic

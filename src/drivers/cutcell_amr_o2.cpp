@@ -25,8 +25,8 @@ using namespace mm;
 
 namespace {
 
-// ---- gate 1: conservation with O2 + reflux ------------------------------
-double o2MassDrift() {
+// ---- gate 1/3: conservation with O2 + reflux ----------------------------
+double o2MassDrift(bool subcycle) {
     const int NC = 48, bc = 8;
     const double cx = 0.5, cy = 0.5, r = 0.2;
     const auto circle = [&](double x0, double x1, double y0, double y1) {
@@ -38,6 +38,7 @@ double o2MassDrift() {
     cfg.cutCell = true;
     cfg.cutCellO2 = true;
     cfg.reflux = true;
+    cfg.subcycle = subcycle;
     cfg.regridEvery = 1 << 30;
     cfg.mu = 0;
 
@@ -177,7 +178,7 @@ double order(int N1, int N2, bool o2) {
 int main() {
     bool ok = true;
 
-    const double drift = o2MassDrift();
+    const double drift = o2MassDrift(/*subcycle=*/false);
     std::printf("gate 1 — O2 cut-cell composite mass drift (RK2 + averaged-flux "
                 "reflux): %.3e (gate 1e-6)\n", drift);
     ok = ok && drift < 1e-6;
@@ -187,6 +188,11 @@ int main() {
     std::printf("gate 2 — isentropic vortex order (all-refined 2-level, every "
                 "seam): O2 %.2f vs O1 %.2f (gate O2 > 1.7)\n", ord2, ord1);
     ok = ok && ord2 > 1.7;
+
+    const double driftSub = o2MassDrift(/*subcycle=*/true);
+    std::printf("gate 3 — O2 subcycled (base dtC, fine 2x dtC/2, RK2 each): "
+                "composite drift %.3e (gate 1e-6)\n", driftSub);
+    ok = ok && driftSub < 1e-6;
 
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
