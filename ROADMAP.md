@@ -56,7 +56,11 @@ characteristic non-reflecting BC remains in the backlog.
   anti-staircase), black/white background palettes, auto tracking camera
   (DMR), annotated pedagogical overlay (LaTeX style) and MP4 export via
   ffmpeg. Frame-per-step output on the solver side via `[output] every = K`.
-  Remaining: log plotting. Without depending on ParaView for daily use.
+  **κ-aware body rendering** (`--solid-case CASE.ini`): reads the `[solid]`
+  regions and draws immersed bodies at their EXACT (anti-aliased, sub-pixel)
+  boundary — the render analogue of the cut-cell fluid fraction κ, instead of
+  the cell-quantized mask (circle + half-plane). Remaining: log plotting.
+  Without depending on ParaView for daily use.
   **V&V figure dossier** (`vv/`): `vv/generate.py` runs the V&V drivers and
   turns their output into committed comparison figures (computed vs
   exact/theory) + one illustrated fiche per case (`vv/cases/`) — now covering
@@ -629,6 +633,16 @@ normal velocity, slip). First brick laid:
   to be κ-weighted (it summed plain ρ·area, over-counting cut/covered cells — a
   latent measurement bug, exposed by this gate). **Cut cells are now viscous
   everywhere: single-grid + AMR, CPU + GPU, at 2nd order.**
+  **Phase 5q (V&V: surface pressure)** (`feature/cutcell-vv`, gate `cutcell_cp`):
+  a quantitative V&V of the cut-cell payoff on a Mach-2 cylinder — surface Cp(θ)
+  extracted from the exact slip-wall pressure at the EB centroid (cut) vs the
+  fluid cells adjacent to the mask (staircase). Two gates: the cut stagnation Cp
+  matches the exact **Rayleigh pitot** (normal-shock stagnation pressure) to
+  **0.88 %** (gate 3 %), and the windward Cp(θ) is **7.3× smoother** (RMS residual
+  from the trend) than staircase, which oscillates cell-to-cell (gate 3×). Dumps
+  `out/cutcell_cp_{cut,staircase}.csv`; `out/cutcell_cp.png` overlays both vs the
+  modified-Newtonian reference. This is the quantitative counterpart to the
+  "clean surface" the cut cells were built for.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

@@ -103,6 +103,10 @@ target_include_directories(cutcell_amr_ml PRIVATE src)
 add_executable(cutcell_amr_o2 src/drivers/cutcell_amr_o2.cpp)
 target_include_directories(cutcell_amr_o2 PRIVATE src)
 
+# V&V: cylinder surface Cp (cut cells vs staircase vs Rayleigh pitot).
+add_executable(cutcell_cp src/drivers/cutcell_cp.cpp)
+target_include_directories(cutcell_cp PRIVATE src)
+
 add_executable(cutcell_viscous src/drivers/cutcell_viscous.cpp)
 target_include_directories(cutcell_viscous PRIVATE src)
 
