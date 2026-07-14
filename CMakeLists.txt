@@ -125,6 +125,10 @@ add_executable(immersed_gpu src/drivers/immersed_gpu.cpp)
 target_link_libraries(immersed_gpu PRIVATE mm_metal)
 target_include_directories(convergence PRIVATE src)
 
+add_executable(cutcell_gpu src/drivers/cutcell_gpu.cpp)
+target_link_libraries(cutcell_gpu PRIVATE mm_metal)
+target_include_directories(cutcell_gpu PRIVATE src)
+
 # WENO5 + SSP-RK3 scheme validation (uniform grid, CPU).
 add_executable(weno_suite src/drivers/weno_suite.cpp)
 target_include_directories(weno_suite PRIVATE src)
