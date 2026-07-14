@@ -21,6 +21,7 @@ constant int NG = 3;
 struct CCP {
     int tx, ty, nx, ny;
     float dx, dy, dt;
+    int stride; // cells per pool slot (0 for plain kernels)
 };
 
 // Per-cell embedded-boundary moments (matches C++ mm::gpu CCMom).
@@ -127,54 +128,7 @@ inline float4 floorState(float4 q) {
     return q;
 }
 
-// ---- kernels ------------------------------------------------------------
-
-// aperture-weighted extensive x-face flux at cell (i,j)'s hi (right) face.
-kernel void cc_flux_x(device const float4* q [[buffer(0)]],
-                      device const CCMom* geo [[buffer(1)]],
-                      device float4* Fx [[buffer(2)]],
-                      constant CCP& P [[buffer(3)]],
-                      uint2 g [[thread_position_in_grid]]) {
-    const int i = int(g.x) + NG - 1, j = int(g.y) + NG;
-    const int id = j * P.tx + i;
-    const float a = geo[id].apXhi;
-    if (a <= TINY) { Fx[id] = float4(0.0f); return; }
-    Fx[id] = (a * P.dy) * hllcFluxX(toPrim(q[id]), toPrim(q[id + 1]));
-}
-
-kernel void cc_flux_y(device const float4* q [[buffer(0)]],
-                      device const CCMom* geo [[buffer(1)]],
-                      device float4* Fy [[buffer(2)]],
-                      constant CCP& P [[buffer(3)]],
-                      uint2 g [[thread_position_in_grid]]) {
-    const int i = int(g.x) + NG, j = int(g.y) + NG - 1;
-    const int id = j * P.tx + i;
-    const float a = geo[id].apYhi;
-    if (a <= TINY) { Fy[id] = float4(0.0f); return; }
-    Fy[id] = (a * P.dx) * hllcFluxY(toPrim(q[id]), toPrim(q[id + P.tx]));
-}
-
-// conservative divergence D^c = dU/(kappa V), dU = sum of aperture-weighted
-// face fluxes + EB wall flux.
-kernel void cc_dc(device const float4* q [[buffer(0)]],
-                  device const CCMom* geo [[buffer(1)]],
-                  device const float4* Fx [[buffer(2)]],
-                  device const float4* Fy [[buffer(3)]],
-                  device float4* Dc [[buffer(4)]],
-                  constant CCP& P [[buffer(5)]],
-                  uint2 g [[thread_position_in_grid]]) {
-    const int i = int(g.x) + NG, j = int(g.y) + NG;
-    const int id = j * P.tx + i;
-    const float kc = geo[id].vol;
-    if (kc <= TINY) { Dc[id] = float4(0.0f); return; }
-    float4 dU = (Fx[id - 1] - Fx[id]) + (Fy[id - P.tx] - Fy[id]);
-    const CCMom m = geo[id];
-    if (kc < 1.0f - TINY && m.ebArea > TINY) {
-        const float4 w = toPrim(q[id]);
-        dU -= m.ebArea * ebWallFlux(w, -m.ebnx, -m.ebny);
-    }
-    Dc[id] = (1.0f / (kc * P.dx * P.dy)) * dU;
-}
+// ---- kernel bodies (base = slot offset; 0 for a single grid) -------------
 
 // (S, D^nc) for a cell from its 3x3 fluid neighbourhood.
 inline void neighAvg(device const CCMom* geo, device const float4* Dc,
@@ -190,20 +144,46 @@ inline void neighAvg(device const CCMom* geo, device const float4* Dc,
     Dnc = w / S;
 }
 
-// hybrid divergence D = kappa D^c + (1-kappa) D^nc + gathered redistribution.
-kernel void cc_hybrid(device const CCMom* geo [[buffer(0)]],
-                      device const float4* Dc [[buffer(1)]],
-                      device float4* D [[buffer(2)]],
-                      constant CCP& P [[buffer(3)]],
-                      uint2 g [[thread_position_in_grid]]) {
-    const int i = int(g.x) + NG, j = int(g.y) + NG;
-    const int id = j * P.tx + i;
+inline void ccFluxXBody(device const float4* q, device const CCMom* geo,
+                        device float4* Fx, constant CCP& P, int base,
+                        int i, int j) {
+    const int id = base + j * P.tx + i;
+    const float a = geo[id].apXhi;
+    if (a <= TINY) { Fx[id] = float4(0.0f); return; }
+    Fx[id] = (a * P.dy) * hllcFluxX(toPrim(q[id]), toPrim(q[id + 1]));
+}
+inline void ccFluxYBody(device const float4* q, device const CCMom* geo,
+                        device float4* Fy, constant CCP& P, int base,
+                        int i, int j) {
+    const int id = base + j * P.tx + i;
+    const float a = geo[id].apYhi;
+    if (a <= TINY) { Fy[id] = float4(0.0f); return; }
+    Fy[id] = (a * P.dx) * hllcFluxY(toPrim(q[id]), toPrim(q[id + P.tx]));
+}
+inline void ccDcBody(device const float4* q, device const CCMom* geo,
+                     device const float4* Fx, device const float4* Fy,
+                     device float4* Dc, constant CCP& P, int base,
+                     int i, int j) {
+    const int id = base + j * P.tx + i;
+    const float kc = geo[id].vol;
+    if (kc <= TINY) { Dc[id] = float4(0.0f); return; }
+    float4 dU = (Fx[id - 1] - Fx[id]) + (Fy[id - P.tx] - Fy[id]);
+    const CCMom m = geo[id];
+    if (kc < 1.0f - TINY && m.ebArea > TINY) {
+        const float4 w = toPrim(q[id]);
+        dU -= m.ebArea * ebWallFlux(w, -m.ebnx, -m.ebny);
+    }
+    Dc[id] = (1.0f / (kc * P.dx * P.dy)) * dU;
+}
+inline void ccHybridBody(device const CCMom* geo, device const float4* Dc,
+                         device float4* D, constant CCP& P, int base,
+                         int i, int j) {
+    const int id = base + j * P.tx + i;
     const float kc = geo[id].vol;
     if (kc <= TINY) { D[id] = float4(0.0f); return; }
     float Sc; float4 Dncc;
     neighAvg(geo, Dc, id, P.tx, Sc, Dncc);
     float4 Dv = kc * Dc[id] + (1.0f - kc) * Dncc;
-    // gather: every cut neighbour nb (incl self) sheds dD to this cell.
     for (int dj = -1; dj <= 1; ++dj)
         for (int di = -1; di <= 1; ++di) {
             const int nb = id + dj * P.tx + di;
@@ -215,14 +195,98 @@ kernel void cc_hybrid(device const CCMom* geo [[buffer(0)]],
         }
     D[id] = Dv;
 }
+inline void ccUpdateBody(device float4* q, device const CCMom* geo,
+                         device const float4* D, constant CCP& P, int base,
+                         int i, int j) {
+    const int id = base + j * P.tx + i;
+    if (geo[id].vol <= TINY) return; // covered: frozen
+    q[id] = floorState(q[id] + P.dt * D[id]);
+}
 
+// ---- plain kernels (one grid) -------------------------------------------
+kernel void cc_flux_x(device const float4* q [[buffer(0)]],
+                      device const CCMom* geo [[buffer(1)]],
+                      device float4* Fx [[buffer(2)]],
+                      constant CCP& P [[buffer(3)]],
+                      uint2 g [[thread_position_in_grid]]) {
+    ccFluxXBody(q, geo, Fx, P, 0, int(g.x) + NG - 1, int(g.y) + NG);
+}
+kernel void cc_flux_y(device const float4* q [[buffer(0)]],
+                      device const CCMom* geo [[buffer(1)]],
+                      device float4* Fy [[buffer(2)]],
+                      constant CCP& P [[buffer(3)]],
+                      uint2 g [[thread_position_in_grid]]) {
+    ccFluxYBody(q, geo, Fy, P, 0, int(g.x) + NG, int(g.y) + NG - 1);
+}
+kernel void cc_dc(device const float4* q [[buffer(0)]],
+                  device const CCMom* geo [[buffer(1)]],
+                  device const float4* Fx [[buffer(2)]],
+                  device const float4* Fy [[buffer(3)]],
+                  device float4* Dc [[buffer(4)]],
+                  constant CCP& P [[buffer(5)]],
+                  uint2 g [[thread_position_in_grid]]) {
+    ccDcBody(q, geo, Fx, Fy, Dc, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+kernel void cc_hybrid(device const CCMom* geo [[buffer(0)]],
+                      device const float4* Dc [[buffer(1)]],
+                      device float4* D [[buffer(2)]],
+                      constant CCP& P [[buffer(3)]],
+                      uint2 g [[thread_position_in_grid]]) {
+    ccHybridBody(geo, Dc, D, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
 kernel void cc_update(device float4* q [[buffer(0)]],
                       device const CCMom* geo [[buffer(1)]],
                       device const float4* D [[buffer(2)]],
                       constant CCP& P [[buffer(3)]],
                       uint2 g [[thread_position_in_grid]]) {
-    const int i = int(g.x) + NG, j = int(g.y) + NG;
-    const int id = j * P.tx + i;
-    if (geo[id].vol <= TINY) return; // covered: frozen
-    q[id] = floorState(q[id] + P.dt * D[id]);
+    ccUpdateBody(q, geo, D, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+
+// ---- pool kernels (all AMR patches in one dispatch; gid.z = slot) -------
+kernel void cc_flux_x_pool(device const float4* q [[buffer(0)]],
+                           device const CCMom* geo [[buffer(1)]],
+                           device float4* Fx [[buffer(2)]],
+                           constant CCP& P [[buffer(3)]],
+                           device const uint* slots [[buffer(4)]],
+                           uint3 g [[thread_position_in_grid]]) {
+    ccFluxXBody(q, geo, Fx, P, int(slots[g.z]) * P.stride,
+                int(g.x) + NG - 1, int(g.y) + NG);
+}
+kernel void cc_flux_y_pool(device const float4* q [[buffer(0)]],
+                           device const CCMom* geo [[buffer(1)]],
+                           device float4* Fy [[buffer(2)]],
+                           constant CCP& P [[buffer(3)]],
+                           device const uint* slots [[buffer(4)]],
+                           uint3 g [[thread_position_in_grid]]) {
+    ccFluxYBody(q, geo, Fy, P, int(slots[g.z]) * P.stride,
+                int(g.x) + NG, int(g.y) + NG - 1);
+}
+kernel void cc_dc_pool(device const float4* q [[buffer(0)]],
+                       device const CCMom* geo [[buffer(1)]],
+                       device const float4* Fx [[buffer(2)]],
+                       device const float4* Fy [[buffer(3)]],
+                       device float4* Dc [[buffer(4)]],
+                       constant CCP& P [[buffer(5)]],
+                       device const uint* slots [[buffer(6)]],
+                       uint3 g [[thread_position_in_grid]]) {
+    ccDcBody(q, geo, Fx, Fy, Dc, P, int(slots[g.z]) * P.stride,
+             int(g.x) + NG, int(g.y) + NG);
+}
+kernel void cc_hybrid_pool(device const CCMom* geo [[buffer(0)]],
+                           device const float4* Dc [[buffer(1)]],
+                           device float4* D [[buffer(2)]],
+                           constant CCP& P [[buffer(3)]],
+                           device const uint* slots [[buffer(4)]],
+                           uint3 g [[thread_position_in_grid]]) {
+    ccHybridBody(geo, Dc, D, P, int(slots[g.z]) * P.stride,
+                 int(g.x) + NG, int(g.y) + NG);
+}
+kernel void cc_update_pool(device float4* q [[buffer(0)]],
+                           device const CCMom* geo [[buffer(1)]],
+                           device const float4* D [[buffer(2)]],
+                           constant CCP& P [[buffer(3)]],
+                           device const uint* slots [[buffer(4)]],
+                           uint3 g [[thread_position_in_grid]]) {
+    ccUpdateBody(q, geo, D, P, int(slots[g.z]) * P.stride,
+                 int(g.x) + NG, int(g.y) + NG);
 }

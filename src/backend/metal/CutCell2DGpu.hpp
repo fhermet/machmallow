@@ -29,6 +29,7 @@ public:
     struct Params {
         std::int32_t tx, ty, nx, ny;
         float dx, dy, dt;
+        std::int32_t stride; // cells per pool slot (0 = plain)
     };
 
     CutCell2DGpu(MetalContext& ctx, int nx, int ny, Real dx, Real dy)
@@ -53,9 +54,14 @@ public:
     }
     ~CutCell2DGpu() {
         for (MTL::Buffer* b : {q_, Fx_, Fy_, Dc_, D_, geo_}) b->release();
+        for (MTL::Buffer* b : {qP_, FxP_, FyP_, DcP_, DP_, geoP_, slots_})
+            if (b) b->release();
         for (MTL::ComputePipelineState* p :
              {fluxX_, fluxY_, dc_, hybrid_, update_})
             p->release();
+        for (MTL::ComputePipelineState* p :
+             {fluxXP_, fluxYP_, dcP_, hybridP_, updateP_})
+            if (p) p->release();
         lib_->release();
     }
     CutCell2DGpu(const CutCell2DGpu&) = delete;
@@ -85,13 +91,73 @@ public:
 
     // One 1st-order forward-Euler cut-cell step. Ghosts filled by the caller.
     void step(Real dt) {
-        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_), float(dt)};
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_),
+                       float(dt), 0};
         MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
         encode(cmd, fluxX_, {q_, geo_, Fx_}, p, nx_ + 1, ny_);
         encode(cmd, fluxY_, {q_, geo_, Fy_}, p, nx_, ny_ + 1);
         encode(cmd, dc_, {q_, geo_, Fx_, Fy_, Dc_}, p, nx_, ny_);
         encode(cmd, hybrid_, {geo_, Dc_, D_}, p, nx_, ny_);
         encode(cmd, update_, {q_, geo_, D_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+
+    // ---- pooled multi-patch layout (all slots advanced in one dispatch) ---
+    // Every slot holds a full tx*ty grid; the pool kernels select a slot via
+    // gid.z -> slots[gid.z]. This is the layout AmrGpu batches its patches in.
+    void enablePool(int nSlots) {
+        nSlots_ = nSlots;
+        fluxXP_ = ctx_.makePipeline(lib_, "cc_flux_x_pool");
+        fluxYP_ = ctx_.makePipeline(lib_, "cc_flux_y_pool");
+        dcP_ = ctx_.makePipeline(lib_, "cc_dc_pool");
+        hybridP_ = ctx_.makePipeline(lib_, "cc_hybrid_pool");
+        updateP_ = ctx_.makePipeline(lib_, "cc_update_pool");
+        const std::size_t n = std::size_t(tx_) * ty_;
+        const auto mk4 = [&](std::size_t m) {
+            return ctx_.device()->newBuffer(m * sizeof(Cons),
+                                            MTL::ResourceStorageModeShared);
+        };
+        qP_ = mk4(n * nSlots); FxP_ = mk4(n * nSlots); FyP_ = mk4(n * nSlots);
+        DcP_ = mk4(n * nSlots); DP_ = mk4(n * nSlots);
+        geoP_ = ctx_.device()->newBuffer(n * nSlots * sizeof(CCMom),
+                                         MTL::ResourceStorageModeShared);
+        auto* g = static_cast<CCMom*>(geoP_->contents());
+        for (std::size_t k = 0; k < n * nSlots; ++k) g[k] = CCMom{};
+        slots_ = ctx_.device()->newBuffer(nSlots * sizeof(std::uint32_t),
+                                          MTL::ResourceStorageModeShared);
+    }
+    Cons* poolData(int slot) {
+        return static_cast<Cons*>(qP_->contents()) +
+               std::size_t(slot) * tx_ * ty_;
+    }
+    void setPoolGeometry(int slot, const cutcell::Geometry& G) {
+        auto* g = static_cast<CCMom*>(geoP_->contents()) +
+                  std::size_t(slot) * tx_ * ty_;
+        for (int j = 0; j < ty_; ++j)
+            for (int i = 0; i < tx_; ++i) {
+                const CellMoments& m = G.at(i, j);
+                g[std::size_t(j) * tx_ + i] =
+                    CCMom{float(m.vol), float(m.apXhi), float(m.apYhi),
+                          float(m.eb.area), float(m.eb.nx), float(m.eb.ny),
+                          0, 0};
+            }
+    }
+    // Advance the given slots in one pooled dispatch.
+    void stepPool(Real dt, const std::vector<int>& active) {
+        auto* sl = static_cast<std::uint32_t*>(slots_->contents());
+        for (std::size_t k = 0; k < active.size(); ++k)
+            sl[k] = std::uint32_t(active[k]);
+        const std::int32_t stride = tx_ * ty_;
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_),
+                       float(dt), stride};
+        const int z = int(active.size());
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeP(cmd, fluxXP_, {qP_, geoP_, FxP_}, p, nx_ + 1, ny_, z);
+        encodeP(cmd, fluxYP_, {qP_, geoP_, FyP_}, p, nx_, ny_ + 1, z);
+        encodeP(cmd, dcP_, {qP_, geoP_, FxP_, FyP_, DcP_}, p, nx_, ny_, z);
+        encodeP(cmd, hybridP_, {geoP_, DcP_, DP_}, p, nx_, ny_, z);
+        encodeP(cmd, updateP_, {qP_, geoP_, DP_}, p, nx_, ny_, z);
         cmd->commit();
         cmd->waitUntilCompleted();
     }
@@ -108,6 +174,18 @@ private:
         enc->dispatchThreads(MTL::Size(w, h, 1), MTL::Size(16, 16, 1));
         enc->endEncoding();
     }
+    void encodeP(MTL::CommandBuffer* cmd, MTL::ComputePipelineState* pso,
+                 std::initializer_list<MTL::Buffer*> bufs, const Params& p,
+                 int w, int h, int z) const {
+        MTL::ComputeCommandEncoder* enc = cmd->computeCommandEncoder();
+        enc->setComputePipelineState(pso);
+        int slot = 0;
+        for (MTL::Buffer* b : bufs) enc->setBuffer(b, 0, slot++);
+        enc->setBytes(&p, sizeof(p), slot++);
+        enc->setBuffer(slots_, 0, slot);
+        enc->dispatchThreads(MTL::Size(w, h, z), MTL::Size(16, 16, 1));
+        enc->endEncoding();
+    }
 
     MetalContext& ctx_;
     int nx_, ny_, tx_, ty_;
@@ -118,6 +196,14 @@ private:
                               *update_ = nullptr;
     MTL::Buffer *q_ = nullptr, *Fx_ = nullptr, *Fy_ = nullptr, *Dc_ = nullptr,
                 *D_ = nullptr, *geo_ = nullptr;
+    // pooled multi-patch layout (allocated by enablePool)
+    int nSlots_ = 0;
+    MTL::ComputePipelineState *fluxXP_ = nullptr, *fluxYP_ = nullptr,
+                              *dcP_ = nullptr, *hybridP_ = nullptr,
+                              *updateP_ = nullptr;
+    MTL::Buffer *qP_ = nullptr, *FxP_ = nullptr, *FyP_ = nullptr,
+                *DcP_ = nullptr, *DP_ = nullptr, *geoP_ = nullptr,
+                *slots_ = nullptr;
 };
 
 static_assert(sizeof(Cons) == 4 * sizeof(float), "Cons must be float4");

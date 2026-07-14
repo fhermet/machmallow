@@ -49,26 +49,49 @@ int main() {
         for (int i = 0; i < gc.totx(); ++i)
             gg.at(i, j) = gc.at(i, j);
 
+    // Pooled layout: the SAME problem in 3 slots, advanced in one dispatch.
+    // Each slot must match the plain single-grid run (proves pool indexing +
+    // no cross-slot bleed) — the layout AmrGpu will batch patches in.
+    const int NS = 3;
+    gpu.enablePool(NS);
+    auto slotRef = [&](int sl) {
+        return GridRef{NC, NC, 0, 0, gc.dx, gc.dy, gpu.poolData(sl)};
+    };
+    for (int sl = 0; sl < NS; ++sl) {
+        gpu.setPoolGeometry(sl, geo);
+        GridRef gp = slotRef(sl);
+        for (int j = 0; j < gc.toty(); ++j)
+            for (int i = 0; i < gc.totx(); ++i) gp.at(i, j) = gc.at(i, j);
+    }
+
     std::vector<Cons> Fx, Fy;
-    double worst = 0;
+    double worst = 0, worstPool = 0;
     const int steps = 100;
     for (int s = 0; s < steps; ++s) {
-        const Real dt = maxStableDt(gc, Real(0.4)); // same dt for both
+        const Real dt = maxStableDt(gc, Real(0.4)); // same dt everywhere
         cutCellStepFluxed(gc, geo, dt, fill, Fx, Fy);
         fill(gg);
         gpu.step(dt);
-        // compare interior fluid cells
+        for (int sl = 0; sl < NS; ++sl) { GridRef gp = slotRef(sl); fill(gp); }
+        gpu.stepPool(dt, {0, 1, 2});
         for (int j = NG; j < NG + NC; ++j)
             for (int i = NG; i < NG + NC; ++i) {
                 if (geo.at(i, j).vol <= Real(1e-9)) continue;
                 const Cons a = gc.at(i, j), b = gg.at(i, j);
                 const double sc = std::max(std::fabs(double(a.rho)), 1e-3);
                 worst = std::max(worst, std::fabs(double(a.rho - b.rho)) / sc);
+                for (int sl = 0; sl < NS; ++sl) {
+                    const Cons c = slotRef(sl).at(i, j);
+                    worstPool = std::max(
+                        worstPool, std::fabs(double(b.rho - c.rho)) / sc);
+                }
             }
     }
-    std::printf("gate — GPU vs CPU cut-cell lock-step over %d steps: worst "
+    std::printf("gate 1 — GPU vs CPU cut-cell lock-step over %d steps: worst "
                 "relative rho diff %.3e (gate 1e-2)\n", steps, worst);
-    const bool ok = worst < 1e-2;
+    std::printf("gate 2 — pooled (3 slots) vs plain GPU: worst relative rho "
+                "diff %.3e (gate 1e-6, bit-exact expected)\n", worstPool);
+    const bool ok = worst < 1e-2 && worstPool < 1e-6;
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
 }
