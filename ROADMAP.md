@@ -600,6 +600,19 @@ normal velocity, slip). First brick laid:
   Barth-Jespersen limiter against the CPU double path (matches the single-grid
   O2 gate). **The cut × AMR × GPU × order matrix is complete** (1st + 2nd order,
   CPU + GPU, 2-level + arbitrary depth, single-rate + subcycled).
+  **Phase 5o (viscous cut cells, GPU)** (`feature/cutcell-gpu-viscous`, gate
+  `cutcell_gpu_viscous`): the Navier–Stokes viscous flux on the GPU cut path —
+  aperture-weighted Stokes/Fourier face fluxes (normal derivative central,
+  tangential from the LSQ gradients) + the no-slip **embedded-boundary traction**
+  (tangential shear over the wall-normal distance to the EB centroid, adiabatic),
+  the GPU port of the CPU `cutCellDiv` viscous branch. Rides on the 2nd-order
+  (gradient) path: `mu`/`kT` threaded through `CCP`/`Params`, viscous terms in
+  the `cc_*_o2` bodies, `CutCell2DGpu::setViscosity`. Gate (planar Couette, a
+  no-slip wall carried by the immersed boundary, wall moving at U on top): GPU
+  vs CPU `stepCutCell(mu)` in lock-step **1.2e-3**, and the GPU steady profile
+  within **0.88%** of the exact linear Couette solution. Single-grid; wiring it
+  through the AMR composite (viscous reflux, `AmrGpuCut`/`AmrGpuMLCut` viscosity)
+  is the remaining step.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
