@@ -103,6 +103,40 @@ public:
         cmd->waitUntilCompleted();
     }
 
+    // ---- phase-split single-grid step -----------------------------------
+    // For composite AMR use: the caller interleaves CPU cross-patch passes
+    // (Dc ghost fill / redistribution scatter) between the GPU phases.
+    // dcPhase computes the extensive fluxes (Fx/Fy) and D^c; hybridPhase the
+    // hybrid divergence + gathered FRD; updatePhase the floored update.
+    void dcPhase() {
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_), 0, 0};
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encode(cmd, fluxX_, {q_, geo_, Fx_}, p, nx_ + 1, ny_);
+        encode(cmd, fluxY_, {q_, geo_, Fy_}, p, nx_, ny_ + 1);
+        encode(cmd, dc_, {q_, geo_, Fx_, Fy_, Dc_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    void hybridPhase() {
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_), 0, 0};
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encode(cmd, hybrid_, {geo_, Dc_, D_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    void updatePhase(Real dt) {
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_),
+                       float(dt), 0};
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encode(cmd, update_, {q_, geo_, D_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    Cons* dcData() { return static_cast<Cons*>(Dc_->contents()); }
+    Cons* dData() { return static_cast<Cons*>(D_->contents()); }
+    const Cons* fxData() const { return static_cast<Cons*>(Fx_->contents()); }
+    const Cons* fyData() const { return static_cast<Cons*>(Fy_->contents()); }
+
     // ---- pooled multi-patch layout (all slots advanced in one dispatch) ---
     // Every slot holds a full tx*ty grid; the pool kernels select a slot via
     // gid.z -> slots[gid.z]. This is the layout AmrGpu batches its patches in.
@@ -145,12 +179,8 @@ public:
     }
     // Advance the given slots in one pooled dispatch.
     void stepPool(Real dt, const std::vector<int>& active) {
-        auto* sl = static_cast<std::uint32_t*>(slots_->contents());
-        for (std::size_t k = 0; k < active.size(); ++k)
-            sl[k] = std::uint32_t(active[k]);
-        const std::int32_t stride = tx_ * ty_;
-        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_),
-                       float(dt), stride};
+        setSlots_(active);
+        const Params p = poolParams_(dt);
         const int z = int(active.size());
         MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
         encodeP(cmd, fluxXP_, {qP_, geoP_, FxP_}, p, nx_ + 1, ny_, z);
@@ -160,6 +190,53 @@ public:
         encodeP(cmd, updateP_, {qP_, geoP_, DP_}, p, nx_, ny_, z);
         cmd->commit();
         cmd->waitUntilCompleted();
+    }
+
+    // ---- phase-split pool step (composite cross-patch FRD on the CPU) ----
+    void dcPhasePool(const std::vector<int>& active) {
+        setSlots_(active);
+        const Params p = poolParams_(0);
+        const int z = int(active.size());
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeP(cmd, fluxXP_, {qP_, geoP_, FxP_}, p, nx_ + 1, ny_, z);
+        encodeP(cmd, fluxYP_, {qP_, geoP_, FyP_}, p, nx_, ny_ + 1, z);
+        encodeP(cmd, dcP_, {qP_, geoP_, FxP_, FyP_, DcP_}, p, nx_, ny_, z);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    void hybridPhasePool(const std::vector<int>& active) {
+        setSlots_(active);
+        const Params p = poolParams_(0);
+        const int z = int(active.size());
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeP(cmd, hybridP_, {geoP_, DcP_, DP_}, p, nx_, ny_, z);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    void updatePhasePool(Real dt, const std::vector<int>& active) {
+        setSlots_(active);
+        const Params p = poolParams_(dt);
+        const int z = int(active.size());
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeP(cmd, updateP_, {qP_, geoP_, DP_}, p, nx_, ny_, z);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    Cons* poolDc(int slot) {
+        return static_cast<Cons*>(DcP_->contents()) +
+               std::size_t(slot) * tx_ * ty_;
+    }
+    Cons* poolD(int slot) {
+        return static_cast<Cons*>(DP_->contents()) +
+               std::size_t(slot) * tx_ * ty_;
+    }
+    const Cons* poolFx(int slot) const {
+        return static_cast<Cons*>(FxP_->contents()) +
+               std::size_t(slot) * tx_ * ty_;
+    }
+    const Cons* poolFy(int slot) const {
+        return static_cast<Cons*>(FyP_->contents()) +
+               std::size_t(slot) * tx_ * ty_;
     }
 
 private:
@@ -173,6 +250,15 @@ private:
         enc->setBytes(&p, sizeof(p), slot);
         enc->dispatchThreads(MTL::Size(w, h, 1), MTL::Size(16, 16, 1));
         enc->endEncoding();
+    }
+    void setSlots_(const std::vector<int>& active) {
+        auto* sl = static_cast<std::uint32_t*>(slots_->contents());
+        for (std::size_t k = 0; k < active.size(); ++k)
+            sl[k] = std::uint32_t(active[k]);
+    }
+    Params poolParams_(Real dt) const {
+        return Params{tx_, ty_, nx_, ny_, float(dx_), float(dy_),
+                      float(dt), tx_ * ty_};
     }
     void encodeP(MTL::CommandBuffer* cmd, MTL::ComputePipelineState* pso,
                  std::initializer_list<MTL::Buffer*> bufs, const Params& p,

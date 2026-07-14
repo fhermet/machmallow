@@ -509,10 +509,13 @@ normal velocity, slip). First brick laid:
   2.98e-6** (fp32 reassociation of the gather-vs-scatter FRD sum). Also the
   **`_pool` kernels** (all patches batched in one dispatch, `gid.z → slot`, the
   layout AmrGpu uses) with a pooled `CutCell2DGpu` path: a pooled patch matches
-  the plain single-grid run **bit-exact (0.0e+00)**, no cross-slot bleed.
-  Remaining: the hybrid `AmrGpu` cut-cell class (GPU pool advance + CPU
-  cross-patch FRD / reflux / restriction / tagging — reusing the Amr2 logic),
-  then 2nd order on GPU.
+  the plain single-grid run **bit-exact (0.0e+00)**, no cross-slot bleed. Plus a
+  **phase-split** step (`dcPhase`/`hybridPhase`/`updatePhase`, single grid and
+  pool) so a composite caller can interleave the CPU cross-patch passes (Dc
+  ghost fill / redistribution scatter) between GPU phases — validated bit-exact
+  vs the monolithic step. Remaining: the hybrid `AmrGpu` cut-cell class
+  (assemble GPU pool advance + CPU cross-patch FRD / reflux / restriction /
+  tagging — reusing the Amr2 logic), then 2nd order on GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
