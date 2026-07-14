@@ -3,12 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>machmallow · a compressible CFD solver on Apple Silicon</title>
-<meta name="description" content="machmallow is a 2D compressible CFD solver (Euler & Navier–Stokes) with block-structured hybrid CPU/GPU AMR and cut cells, written from scratch in C++/Metal for Apple Silicon.">
+<title>machmallow · a compressible CFD solver on Apple Silicon (Metal GPU)</title>
+<meta name="description" content="machmallow is a 2D compressible CFD solver (Euler & Navier–Stokes) with block-structured hybrid CPU/GPU AMR and cut-cell embedded boundaries, written from scratch in C++/Metal for Apple Silicon. Open source (MIT).">
+<meta name="author" content="machmallow">
+<link rel="canonical" href="https://fhermet.github.io/machmallow/">
+<meta name="theme-color" content="#06090f">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='88'%3E%F0%9F%94%A5%3C/text%3E%3C/svg%3E">
+<!-- Open Graph -->
 <meta property="og:title" content="machmallow · compressible CFD on Apple Silicon">
-<meta property="og:description" content="Euler & Navier–Stokes, block-structured AMR, cut cells, GPU (Metal). From scratch on a Mac.">
-<meta property="og:image" content="hero.gif">
+<meta property="og:description" content="Euler & Navier–Stokes, block-structured AMR, cut cells, GPU (Metal). Open-source, from scratch on a Mac.">
+<meta property="og:image" content="https://fhermet.github.io/machmallow/hero.gif">
+<meta property="og:url" content="https://fhermet.github.io/machmallow/">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="machmallow">
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="machmallow · compressible CFD on Apple Silicon">
+<meta name="twitter:description" content="Euler & Navier–Stokes, block-structured AMR, cut cells, GPU (Metal). Open-source, from scratch on a Mac.">
+<meta name="twitter:image" content="https://fhermet.github.io/machmallow/hero.gif">
+<!-- Structured data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "machmallow",
+  "description": "A 2D compressible CFD solver (Euler & Navier–Stokes) with block-structured hybrid CPU/GPU AMR and cut-cell embedded boundaries, written from scratch in C++/Metal for Apple Silicon.",
+  "url": "https://fhermet.github.io/machmallow/",
+  "codeRepository": "https://github.com/fhermet/machmallow",
+  "programmingLanguage": ["C++", "Metal"],
+  "runtimePlatform": "macOS (Apple Silicon)",
+  "license": "https://opensource.org/licenses/MIT",
+  "keywords": "CFD, computational fluid dynamics, compressible flow, Euler equations, Navier-Stokes, AMR, adaptive mesh refinement, cut cells, GPU, Metal, Apple Silicon, shock capturing, WENO, MUSCL"
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
