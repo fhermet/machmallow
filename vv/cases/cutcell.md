@@ -6,8 +6,9 @@ geometrically exact alternative to the staircase mask (aperture-weighted fluxes
 fronts: (1) the **geometry** is exact (fluid area, EB normal); (2) the scheme is
 **2nd order** on a smooth flow; (3) the **surface pressure** on a Mach-2 cylinder
 matches the exact stagnation value and is *smooth* where the staircase
-oscillates; (4) a **no-slip** boundary layer (Couette) matches the exact
-profile; (5) the operator is **conservative through the AMR** and matches the
+oscillates; (4) the **no-slip** viscous flow is right — Couette matches the
+exact profile and a **Re=40 cylinder** matches the literature bubble length &
+drag; (5) the operator is **conservative through the AMR** and matches the
 GPU in lock-step, at any depth.
 
 ## Numerical setup
@@ -20,7 +21,26 @@ GPU in lock-step, at any depth.
 > `cutcell_gpu_ml`. float32.
 
 ## Results
+
+**Geometry — exact vs staircase.** The fluid fraction κ the solver actually
+uses (sub-cell) hugs the true circle, where the staircase mask steps in and out
+of it by up to a full cell:
+
+![Cut-cell fluid fraction κ vs the binary staircase mask](../figures/cutcell_geom.png)
+
+**2nd-order convergence** on a smooth flow (entropy blob grazing a 45° wall):
+
+![Cut-cell 2nd-order convergence](../figures/cutcell_order.png)
+
+**Surface pressure** on the Mach-2 cylinder — cut-cell smooth (tracks the
+modified-Newtonian trend to the pitot value), staircase oscillates cell-to-cell:
+
 ![Mach-2 cylinder surface pressure — cut-cell vs staircase](../figures/cutcell.png)
+
+**Subsonic viscous wake** (Re=40, M=0.3) — the steady recirculation bubble
+behind the cylinder; its reattachment length is a classic validation target:
+
+![Re=40 viscous cylinder recirculation bubble](../figures/cutcell_cylinder.png)
 
 | Gate | Test | Result |
 |---|---|---|
@@ -29,6 +49,7 @@ GPU in lock-step, at any depth.
 | surface p | stagnation Cp vs **Rayleigh pitot** (normal shock) | err 0.88 % (gate 3 %) |
 | surface p | windward Cp(θ) smoothness vs staircase | **7.3× smoother** (gate 3×) |
 | no-slip | Couette profile vs exact linear; order | err ≤ 2.7856e-03/U at 96², order 1.44 |
+| viscous wake | Re=40 cylinder recirculation bubble & drag vs literature | Lw/D 2.219 (ref ~2.2), Cd 1.528 (ref ~1.55) |
 | conservation | composite mass, 3-level subcycled AMR | drift 4.130e-09 (fp32 floor) |
 | GPU | AmrGpuMLCut vs AmrML, 3-level lock-step | ρ 3.397e-06 |
 
@@ -43,8 +64,11 @@ Rayleigh-pitot value to 0.88 %, and the windward surface
 Cp(θ) is **7.3× smoother** than the staircase, which
 oscillates cell-to-cell (see figure — cut tracks the modified-Newtonian trend,
 staircase rattles around it). The **no-slip** embedded boundary reproduces the
-exact linear Couette profile, and the whole operator stays **conservative
-through the AMR** (mass at the fp32 floor across a 3-level subcycled hierarchy
+exact linear Couette profile — and, on the harder **Re=40 viscous cylinder**,
+the steady recirculation bubble reattaches at Lw/D = 2.219
+and the drag is Cd = 1.528, both within ~1 % of the classic
+literature values (Lw/D ≈ 2.2, Cd ≈ 1.55; Coutanceau & Bouard, Tritton). The
+whole operator stays **conservative through the AMR** (mass at the fp32 floor across a 3-level subcycled hierarchy
 with the body straddling the coarse-fine seams) while the **Metal** port matches
 the CPU oracle in lock-step. Together: exact geometry, 2nd order, clean surface
 loads, viscous-capable, conservative, and GPU-accelerated at any depth — the

@@ -36,7 +36,7 @@ python3 vv/generate.py
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS 1.3618e-02 vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
 | [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
 | [Immersed boundaries](cases/immersed.md) | validation · theory | reflected-shock wall p exact; no-slip Blasius (RMS 6.835e-03); GPU lock-step | ✅ PASS |
-| [Cut cells (embedded boundary)](cases/cutcell.md) | verification · validation | exact geometry; order 2.10; cylinder Cp 0.88 % vs pitot, 7.3× smoother than staircase | ✅ PASS |
+| [Cut cells (embedded boundary)](cases/cutcell.md) | verification · validation | exact geometry; order 2.10; Mach-2 Cp 0.88 % vs pitot (7.3× smoother); Re=40 wake Lw/D 2.22 (~1 %) | ✅ PASS |
 | [Double Mach reflection](cases/dmr.md) | verification | strong-shock triple point; CPU↔GPU lock-step (4.2×) through 3-level AMR | ✅ PASS |
 | [Shock–bubble (Haas & Sturtevant)](cases/shock_bubble.md) | validation · experiment | interface velocities within ±10 % of experiment (two-gas + AMR + GPU) | ✅ PASS |
 
