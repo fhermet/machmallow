@@ -11,6 +11,7 @@
 //            converges at ~order 2 with cutCellO2, ~order 1 without.
 
 #include "amr/Amr2.hpp"
+#include "amr/AmrML.hpp"
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
 #include "geometry/CutCell.hpp"
@@ -173,6 +174,74 @@ double order(int N1, int N2, bool o2) {
     return std::log(e1 / e2) / std::log(double(N2) / double(N1));
 }
 
+// ---- gate 4/5: AmrML O2 conservation at arbitrary depth -----------------
+double mlO2Drift(int maxLevels, bool subcycle) {
+    const int NC = 48, bc = 8;
+    const double cx = 0.5, cy = 0.5, r = 0.20;
+    const auto circle = [&](double x0, double x1, double y0, double y1) {
+        return cutcell::circleMoments(cx, cy, r, x0, x1, y0, y1);
+    };
+    AmrConfig cfg;
+    cfg.blockC = bc;
+    cfg.maxLevels = maxLevels;
+    cfg.cutCell = true;
+    cfg.cutCellO2 = true;
+    cfg.reflux = true;
+    cfg.subcycle = subcycle;
+    cfg.regridEvery = 1 << 30;
+    cfg.tagThreshold = Real(1e30); // EB-band only -> static topology
+    cfg.mu = 0;
+
+    AmrML amr(NC, NC, 0, 0, 1, 1, cfg);
+    amr.momentFn = circle;
+    amr.fillPhysicalGhosts = [](Grid& g, double) {
+        fillReflectiveLeft(g);  fillReflectiveRight(g);
+        fillReflectiveBottom(g); fillReflectiveTop(g);
+    };
+    const auto ic = [&](Real x, Real y) {
+        const double rr = (double(x) - 0.3) * (double(x) - 0.3) +
+                          (double(y) - 0.5) * (double(y) - 0.5);
+        return toCons({1, 0, 0, Real(1.0 + 0.4 * std::exp(-rr / 0.01))});
+    };
+    amr.init(ic);
+
+    const int nf = amr.fineCells();
+    const auto Gb = cutcell::build(amr.base, circle);
+    const double Vb = double(amr.base.dx) * double(amr.base.dy);
+    const auto mass = [&]() {
+        double m = 0;
+        for (int j = 0; j < NC; ++j)
+            for (int i = 0; i < NC; ++i) {
+                if (maxLevels >= 2 && amr.covered(1, i / bc, j / bc)) continue;
+                m += double(Gb.at(NG + i, NG + j).vol) * Vb *
+                     double(amr.base.at(NG + i, NG + j).rho);
+            }
+        for (int l = 1; l < maxLevels; ++l) {
+            const double Vl = Vb / double(1 << (2 * l));
+            for (const AmrML::Patch& p : amr.level(l).patches)
+                for (int j = 0; j < nf; ++j)
+                    for (int i = 0; i < nf; ++i) {
+                        const int gi = 2 * p.ci0 + i, gj = 2 * p.cj0 + j;
+                        if (l < maxLevels - 1 &&
+                            amr.covered(l + 1, gi / bc, gj / bc))
+                            continue;
+                        m += double(p.geo.at(NG + i, NG + j).vol) * Vl *
+                             double(p.grid.at(NG + i, NG + j).rho);
+                    }
+        }
+        return m;
+    };
+    const double m0 = mass();
+    double drift = 0, t = 0;
+    for (int s = 0; s < 120; ++s) {
+        const Real dt = amr.maxStableDtAll(Real(0.4));
+        amr.step(dt, t);
+        t += double(dt);
+        drift = std::max(drift, std::fabs(mass() - m0) / m0);
+    }
+    return drift;
+}
+
 } // namespace
 
 int main() {
@@ -193,6 +262,16 @@ int main() {
     std::printf("gate 3 — O2 subcycled (base dtC, fine 2x dtC/2, RK2 each): "
                 "composite drift %.3e (gate 1e-6)\n", driftSub);
     ok = ok && driftSub < 1e-6;
+
+    const double dMl = mlO2Drift(3, false);
+    std::printf("gate 4 — AmrML O2, 3 levels single-rate: composite drift %.3e "
+                "(gate 1e-6)\n", dMl);
+    ok = ok && dMl < 1e-6;
+
+    const double dMlSub = mlO2Drift(3, true);
+    std::printf("gate 5 — AmrML O2, 3 levels subcycled: composite drift %.3e "
+                "(gate 1e-6)\n", dMlSub);
+    ok = ok && dMlSub < 1e-6;
 
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;

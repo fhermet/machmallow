@@ -573,8 +573,15 @@ normal velocity, slip). First brick laid:
   (2) isentropic vortex on an all-refined 2-level hierarchy (composite exercised
   at **every** sibling seam) → order **1.93** with O2 vs **0.80** without. The
   1st-order path is untouched (`cutcell_amr_prod`/`cutcell_amr_ml` intact).
-  Remaining: subcycled O2, `AmrML` O2 (arbitrary depth), then the GPU composite
-  O2 (`AmrGpuCut`/`AmrGpuMLCut`, reusing the `cc_grad`/`cc_*_o2`/`cc_rk2` kernels).
+  Extended to **subcycling** (base RK2 over dtC, each patch two dtF=dtC/2 RK2
+  substeps with time-interpolated coarse ghosts; back the averaged coarse flux
+  out once, apply each substep's averaged fine flux) — drift **1.9e-8** — and to
+  **`AmrML` (arbitrary depth)**: the RK2 threads through the recursive
+  `advanceTree_`, refilling stage-2 ghosts at the parent-interpolation fraction
+  of the substep's end (`advanceCutLevelO2_`), with the same seam gradient
+  exchange and averaged-flux reflux. Gates 4/5: `AmrML` O2 **3 levels
+  single-rate 3.2e-8, subcycled 2.0e-8**. Remaining: the GPU composite O2
+  (`AmrGpuCut`/`AmrGpuMLCut`, reusing the `cc_grad`/`cc_*_o2`/`cc_rk2` kernels).
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

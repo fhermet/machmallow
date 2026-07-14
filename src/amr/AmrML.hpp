@@ -49,6 +49,7 @@ public:
         std::vector<std::uint8_t> solid; // immersed mask (empty = none)
         cutcell::Geometry geo; // cut-cell moments (empty unless cfg.cutCell)
         std::vector<Cons> cutDc, cutD; // cut-cell divergences (scratch)
+        std::vector<PrimGrad> cutGrad; // LSQ gradients (2nd-order cut, scratch)
         // two-gas fields (allocated only when cfg.species)
         std::vector<Real> phi, Gmf, oldPhi, oldGm, Fpx, Fpy;
         std::vector<Real> rkPhi0, rkGm0; // RK start (WENO two-gas)
@@ -385,6 +386,96 @@ private:
         for (Patch& p : ps) p.cutD = cutCellHybridD(p.grid, p.geo, p.cutDc);
         for (Patch& p : ps) scatterPatchDGhosts_(l, p);
         for (Patch& p : ps) applyCutUpdate(p.grid, p.geo, p.cutD, dt);
+    }
+
+    // ---- 2nd-order (SSP-RK2) cut path -----------------------------------
+    bool cutO2On_() const { return cutCellOn_() && cfg_.cutCellO2; }
+
+    static void avgFlux_(std::vector<Cons>& a, const std::vector<Cons>& b) {
+        for (std::size_t i = 0; i < a.size(); ++i)
+            a[i] = Real(0.5) * (a[i] + b[i]);
+    }
+    void rk2Combine_(Grid& g, const cutcell::Geometry& geo,
+                     const std::vector<Cons>& old, const std::vector<Cons>& D,
+                     Real dt) const {
+        const Real tiny = Real(1e-9);
+        for (int j = NG; j < NG + g.ny; ++j)
+            for (int i = NG; i < NG + g.nx; ++i)
+                if (double(geo.at(i, j).vol) > double(tiny)) {
+                    const std::size_t id = g.idx(i, j);
+                    g.at(i, j) = floorState(Real(0.5) * old[id] +
+                                            Real(0.5) * (g.at(i, j) +
+                                                         dt * D[id]));
+                }
+    }
+    // Fill patch p's gradient ghosts from same-level siblings (2nd-order
+    // reconstruction at sibling seams); no sibling -> stays 0 (constant there).
+    void fillPatchGradGhosts_(int l, Patch& p) {
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i) {
+                if (i >= NG && i < NG + nf_ && j >= NG && j < NG + nf_)
+                    continue;
+                int si, sj;
+                if (Patch* s = siblingCell_(l, p, i, j, si, sj))
+                    p.cutGrad[p.grid.idx(i, j)] =
+                        s->cutGrad[s->grid.idx(si, sj)];
+            }
+    }
+    // Per-patch 2nd-order composite divergence (records extensive fluxes in
+    // p.Fx/p.Fy): LSQ gradients + seam exchange, reconstruct (constant only at
+    // true domain walls), Dc ghosts from siblings, hybrid + FRD scatter.
+    void cutFineDivergenceO2_(int l) {
+        std::vector<Patch>& ps = lvls_[l - 1].patches;
+        for (Patch& p : ps) p.cutGrad = lsqGradients(p.grid, p.geo);
+        for (Patch& p : ps) fillPatchGradGhosts_(l, p);
+        for (Patch& p : ps)
+            p.cutDc = cutCellDcO2(p.grid, p.geo, p.cutGrad, p.Fx, p.Fy,
+                                  domainSides_(l, p));
+        for (Patch& p : ps) fillPatchDcGhosts_(l, p);
+        for (Patch& p : ps) p.cutD = cutCellHybridD(p.grid, p.geo, p.cutDc);
+        for (Patch& p : ps) scatterPatchDGhosts_(l, p);
+    }
+
+    // One SSP-RK2 advance of level l over dt. Stage-1 ghosts are already filled
+    // by the caller; stage-2 ghosts are refilled here at (tS2, thetaS2) — the
+    // parent-interpolation fraction at the end of this level's step. Leaves the
+    // TIME-AVERAGED extensive fluxes (0.5*(F1+F2)) in the flux registers, so the
+    // existing refluxBackOut_/refluxFineApply_ stay conservative.
+    void advanceCutLevelO2_(int l, Real dt, double tS2, Real thetaS2) {
+        if (l == 0) {
+            auto grad = lsqGradients(base, baseGeo_);
+            const std::vector<Cons> D1 = cutCellHybridD(
+                base, baseGeo_,
+                cutCellDcO2(base, baseGeo_, grad, baseFx_, baseFy_));
+            std::vector<Cons> F1x = baseFx_, F1y = baseFy_;
+            rkB0_ = base.q;
+            applyCutUpdate(base, baseGeo_, D1, dt);
+            fillPhysicalGhosts(base, tS2);
+            grad = lsqGradients(base, baseGeo_);
+            const std::vector<Cons> D2 = cutCellHybridD(
+                base, baseGeo_,
+                cutCellDcO2(base, baseGeo_, grad, baseFx_, baseFy_));
+            rk2Combine_(base, baseGeo_, rkB0_, D2, dt);
+            avgFlux_(baseFx_, F1x);
+            avgFlux_(baseFy_, F1y);
+            return;
+        }
+        std::vector<Patch>& ps = lvls_[l - 1].patches;
+        cutFineDivergenceO2_(l); // stage 1 -> p.cutD, p.Fx/p.Fy = F1
+        std::vector<std::vector<Cons>> F1x(ps.size()), F1y(ps.size());
+        for (std::size_t k = 0; k < ps.size(); ++k) {
+            F1x[k] = ps[k].Fx;
+            F1y[k] = ps[k].Fy;
+            ps[k].rk0 = ps[k].grid.q;
+            applyCutUpdate(ps[k].grid, ps[k].geo, ps[k].cutD, dt); // -> U1
+        }
+        fillLevelGhosts_(l, tS2, thetaS2);
+        cutFineDivergenceO2_(l); // stage 2 -> p.cutD, p.Fx/p.Fy = F2
+        for (std::size_t k = 0; k < ps.size(); ++k) {
+            rk2Combine_(ps[k].grid, ps[k].geo, ps[k].rk0, ps[k].cutD, dt);
+            avgFlux_(ps[k].Fx, F1x[k]);
+            avgFlux_(ps[k].Fy, F1y[k]);
+        }
     }
 
     // Global (own-level) fine cell that patch cell (i,j) maps to, and the
@@ -991,6 +1082,8 @@ private:
         if (cfg_.react) reactLevel_(l, dt / 2);
         if (cfg_.weno && !cutCellOn_())
             stepLevelWeno_(l, dt, t, thBase, thSpan);
+        else if (cutO2On_())
+            advanceCutLevelO2_(l, dt, t + dt, thBase + thSpan);
         else
             stepLevel_(l, dt);
         if (cfg_.react) reactLevel_(l, dt / 2);
