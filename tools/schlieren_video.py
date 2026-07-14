@@ -324,16 +324,80 @@ def colorize(rho, scale, style, gamma, k, floor, sigma, cmap):
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
+def _blend_white(rgb, alpha):
+    """Mélange l'image vers le BLANC selon alpha (0..1) — anti-crénelé : le
+    bord du corps suit la fraction fluide sous-pixel (kappa), pas la grille."""
+    a = np.flipud(alpha)[..., None]                    # row0 = haut
+    out = rgb.astype(np.float32) * (1 - a) + 255.0 * a
+    rgb[:] = np.clip(out, 0, 255).astype(np.uint8)
+    return rgb
+
+
+def _px_size(bounds, shape):
+    x0, x1, y0, y1 = bounds
+    H, W = shape[:2]
+    return 0.5 * ((x1 - x0) / W + (y1 - y0) / H)
+
+
 def mask_circle(rgb, bounds, cx, cy, r):
-    """Peint un disque (corps immergé) en BLANC sur l'image (le solveur y
-    fige le free-stream, donc le champ ne marque pas le corps)."""
+    """Corps immergé circulaire, dessiné à sa frontière EXACTE (anti-crénelé
+    sur ~1 pixel) — l'analogue rendu de la fraction fluide kappa des cut-cells,
+    et non le masque en marches de la grille."""
     x0, x1, y0, y1 = bounds
     H, W = rgb.shape[:2]
     xs = x0 + (np.arange(W) + 0.5) / W * (x1 - x0)
     ys = y0 + (np.arange(H) + 0.5) / H * (y1 - y0)
     X, Y = np.meshgrid(xs, ys)
-    inside = np.flipud((X - cx) ** 2 + (Y - cy) ** 2 <= r * r)  # row0 = haut
-    rgb[inside] = 255
+    d = r - np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)      # >0 = solide
+    s = _px_size(bounds, rgb.shape)
+    return _blend_white(rgb, np.clip(d / s + 0.5, 0, 1))
+
+
+def mask_halfplane(rgb, bounds, a, b, c):
+    """Corps immergé demi-plan (solide où a*x + b*y < c), frontière exacte
+    anti-crénelée (mur droit porté par l'EB)."""
+    x0, x1, y0, y1 = bounds
+    H, W = rgb.shape[:2]
+    xs = x0 + (np.arange(W) + 0.5) / W * (x1 - x0)
+    ys = y0 + (np.arange(H) + 0.5) / H * (y1 - y0)
+    X, Y = np.meshgrid(xs, ys)
+    nrm = (a * a + b * b) ** 0.5 or 1.0
+    d = (c - (a * X + b * Y)) / nrm                     # >0 = solide
+    s = _px_size(bounds, rgb.shape)
+    return _blend_white(rgb, np.clip(d / s + 0.5, 0, 1))
+
+
+def parse_solids(path):
+    """Lit les regions [solid] d'un .ini de cas -> liste de masques
+    (circle cx cy r | halfplane a b c) pour un rendu a la frontiere exacte."""
+    solids, in_solid = [], False
+    with open(path) as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("["):
+                in_solid = line.lower().startswith("[solid")
+                continue
+            if not in_solid or "=" not in line:
+                continue
+            rhs = line.split("=", 1)[1].split()
+            if not rhs:
+                continue
+            kind, nums = rhs[0].lower(), [float(v) for v in rhs[1:]]
+            if kind == "circle" and len(nums) >= 3:
+                solids.append(("circle", nums[0], nums[1], nums[2]))
+            elif kind == "halfplane" and len(nums) >= 3:
+                solids.append(("halfplane", nums[0], nums[1], nums[2]))
+    return solids
+
+
+def apply_solids(rgb, bounds, solids):
+    for s in solids:
+        if s[0] == "circle":
+            mask_circle(rgb, bounds, s[1], s[2], s[3])
+        elif s[0] == "halfplane":
+            mask_halfplane(rgb, bounds, s[1], s[2], s[3])
     return rgb
 
 
@@ -454,6 +518,10 @@ def main():
                     help="x0,x1,y0,y1 fixe (sinon : suivi auto)")
     ap.add_argument("--mask-circle", default=None,
                     help="cx,cy,r : disque blanc (corps immergé)")
+    ap.add_argument("--solid-case", default=None,
+                    help="lit les [solid] d'un .ini de cas et dessine les "
+                         "corps a leur frontiere EXACTE (anti-crenelee, "
+                         "kappa-aware) — auto pour circle/halfplane")
     ap.add_argument("--mask-tri", default=None,
                     help="x1,y1,x2,y2,x3,y3 : triangle blanc (corps immergé)")
     ap.add_argument("--rho-range", default=None,
@@ -550,6 +618,10 @@ def main():
              if args.mask_circle else None)
     maskt = ([float(v) for v in args.mask_tri.split(",")]
              if args.mask_tri else None)
+    solids = parse_solids(args.solid_case) if args.solid_case else []
+    if args.solid_case:
+        print(f"corps [solid] depuis {args.solid_case} : {len(solids)} "
+              f"({', '.join(s[0] for s in solids)})")
     rhorange = (tuple(float(v) for v in args.rho_range.split(","))
                 if args.rho_range else None)
 
@@ -619,6 +691,8 @@ def main():
             mask_circle(rgb, bounds_of(idx), *maskc)
         if maskt:
             mask_triangle(rgb, bounds_of(idx), maskt)
+        if solids:
+            apply_solids(rgb, bounds_of(idx), solids)
         out = args.out or f"{args.prefix}_{args.style}_{idx:04d}.png"
         if args.annotate:
             annotate_dmr(rgb, rho, bounds_of(idx), args.title, out)
@@ -693,6 +767,8 @@ def main():
             mask_circle(top, bounds_of(i), *maskc)
         if maskt:
             mask_triangle(top, bounds_of(i), maskt)
+        if solids:
+            apply_solids(top, bounds_of(i), solids)
         if args.amr_panel:                          # densite + blocs AMR dessous
             bot = density_panel(rho, dlo, dhi, args.amr_cmap,
                                 amr_boxes(amr, bounds_of(i)), bounds_of(i), light_bg)
