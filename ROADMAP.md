@@ -482,8 +482,20 @@ normal velocity, slip). First brick laid:
   ghosts (the θ = ½ blend of tⁿ/tⁿ⁺¹). The reflux is split — `cutRefluxBackout_`
   removes the single coarse flux (×dtC), `cutRefluxFineApply_` applies each
   substep's fine flux (×dtF, twice = dtC) — and the composite cross-patch FRD
-  runs per substep. Gate: composite mass drift **2.1e-8** subcycled. Remaining:
-  `AmrML` (arbitrary depth), then GPU.
+  runs per substep. Gate: composite mass drift **2.1e-8** subcycled.
+  **Phase 5h (increment 5)** (`feature/cutcell-amr-ml`, gate `cutcell_amr_ml`):
+  cut cells ported to **`AmrML` — arbitrary depth + recursive subcycling**. Per-
+  patch geometry at every level, composite cross-patch FRD per level (Dc ghosts
+  from siblings + scatter), cut-aware `refluxBackOut_`/`refluxFineApply_` (the
+  reflux into a cut cell passes the increment through the same hybrid
+  redistribution as the advance), κ-restriction and EB-band tagging — all behind
+  `cfg.cutCell` + `AmrML::momentFn` (staircase/WENO/species paths untouched).
+  Gates: composite mass drift **4.6e-8 (2-level), 1.2e-8 (2-level subcycled),
+  8.1e-8 (3-level), 1.5e-8 (3-level subcycled)** for a body nested in the finest
+  level. **Known limitation** (reported, not gated): a body whose cut cells abut
+  a coarse-fine seam loses the redistribution that crosses that seam to the
+  covering-level restriction (~2e-5) — the fp32 floor there needs AMReX-style
+  cross-level re-redistribution. Remaining: GPU port.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

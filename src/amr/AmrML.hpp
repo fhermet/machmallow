@@ -47,6 +47,8 @@ public:
         std::vector<Cons> old;    // own state at parent-substep start
         std::vector<Cons> rk0;    // RK step start state (WENO mode)
         std::vector<std::uint8_t> solid; // immersed mask (empty = none)
+        cutcell::Geometry geo; // cut-cell moments (empty unless cfg.cutCell)
+        std::vector<Cons> cutDc, cutD; // cut-cell divergences (scratch)
         // two-gas fields (allocated only when cfg.species)
         std::vector<Real> phi, Gmf, oldPhi, oldGm, Fpx, Fpy;
         std::vector<Real> rkPhi0, rkGm0; // RK start (WENO two-gas)
@@ -67,6 +69,12 @@ public:
     // through every level — base + patch steps, restriction, refluxing,
     // prolongation and boundary tagging (the N-level mirror of Amr2).
     std::function<std::uint8_t(Real, Real)> solidAt;
+
+    // Cut-cell embedded boundary: analytic moments for the cell box
+    // [x0,x1] x [y0,y1]. With cfg.cutCell, every level uses aperture-weighted
+    // cut-cell fluxes + cross-patch flux redistribution instead of the
+    // staircase mask (the N-level mirror of Amr2's cut-cell path).
+    std::function<CellMoments(double, double, double, double)> momentFn;
 
     AmrML(int nx, int ny, Real x0, Real y0, Real lx, Real ly,
           AmrConfig cfg)
@@ -161,6 +169,7 @@ public:
     }
 
     void step(Real dt, double t) {
+        if (cutCellOn_() && baseGeo_.cell.empty()) baseGeo_ = buildGeo_(base);
         fillPhysicalGhosts(base, t);
         if (cfg_.species) baseScalarGhosts_();
         advanceTree_(0, dt, t, 0, 1);
@@ -343,6 +352,93 @@ private:
         return s;
     }
 
+    // ---- cut-cell embedded boundary ------------------------------------
+    bool cutCellOn_() const { return cfg_.cutCell && bool(momentFn); }
+
+    cutcell::Geometry buildGeo_(const Grid& g) const {
+        return cutcell::build(g, [&](double x0, double x1, double y0,
+                                     double y1) {
+            return momentFn(x0, x1, y0, y1);
+        });
+    }
+
+    // Geometry of the (l-1)-level parent grid that owns cell (cg,cgj); pairs
+    // with parentCell_. Base -> baseGeo_, patch -> that patch's geo.
+    const cutcell::Geometry* parentGeo_(int lp, int cg, int cgj) {
+        if (lp == 0) return &baseGeo_;
+        return &ownerAt_(lp, cg, cgj)->geo;
+    }
+
+    // Composite cut-cell advance of one level (no reflux): Dc per patch, Dc
+    // ghosts filled from same-level siblings, hybrid divergence + FRD, the
+    // redistribution that lands in a patch's ghosts scattered into the sibling
+    // that owns them, then the update. Records extensive fluxes in p.Fx/p.Fy.
+    void advanceCutLevel_(int l, Real dt) {
+        if (l == 0) {
+            cutCellStepFluxed(base, baseGeo_, dt, [](Grid&) {}, baseFx_,
+                              baseFy_);
+            return;
+        }
+        std::vector<Patch>& ps = lvls_[l - 1].patches;
+        for (Patch& p : ps) p.cutDc = cutCellDc(p.grid, p.geo, p.Fx, p.Fy);
+        for (Patch& p : ps) fillPatchDcGhosts_(l, p);
+        for (Patch& p : ps) p.cutD = cutCellHybridD(p.grid, p.geo, p.cutDc);
+        for (Patch& p : ps) scatterPatchDGhosts_(l, p);
+        for (Patch& p : ps) applyCutUpdate(p.grid, p.geo, p.cutD, dt);
+    }
+
+    // Global (own-level) fine cell that patch cell (i,j) maps to, and the
+    // sibling patch owning it (nullptr if none / coarse-fine / domain).
+    Patch* siblingCell_(int l, const Patch& p, int i, int j, int& si,
+                        int& sj) {
+        const int nxl = nxAt_(l), nyl = nyAt_(l);
+        int gfi = 2 * p.ci0 + (i - NG), gfj = 2 * p.cj0 + (j - NG);
+        if (cfg_.periodicX) gfi = (gfi % nxl + nxl) % nxl;
+        if (cfg_.periodicY) gfj = (gfj % nyl + nyl) % nyl;
+        if (gfi < 0 || gfi >= nxl || gfj < 0 || gfj >= nyl) return nullptr;
+        Patch* s = ownerAt_(l, gfi, gfj);
+        if (!s) return nullptr;
+        si = NG + gfi - 2 * s->ci0;
+        sj = NG + gfj - 2 * s->cj0;
+        return s;
+    }
+
+    // Fill patch p's Dc ghosts from the sibling that owns each ghost cell.
+    void fillPatchDcGhosts_(int l, Patch& p) {
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i) {
+                if (i >= NG && i < NG + nf_ && j >= NG && j < NG + nf_)
+                    continue;
+                int si, sj;
+                if (Patch* s = siblingCell_(l, p, i, j, si, sj))
+                    p.cutDc[p.grid.idx(i, j)] = s->cutDc[s->grid.idx(si, sj)];
+            }
+    }
+
+    // Scatter the redistribution that landed in p's ghosts into the sibling
+    // interior that owns them (reads ghosts, writes interiors -> order-free).
+    void scatterPatchDGhosts_(int l, Patch& p) {
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i) {
+                if (i >= NG && i < NG + nf_ && j >= NG && j < NG + nf_)
+                    continue;
+                int si, sj;
+                if (Patch* s = siblingCell_(l, p, i, j, si, sj)) {
+                    const std::size_t d = s->grid.idx(si, sj);
+                    s->cutD[d] = s->cutD[d] + p.cutD[p.grid.idx(i, j)];
+                }
+            }
+    }
+
+    // EB band: an interior cell the boundary cuts (0 < kappa < 1). The ±2
+    // dilation extends it into the surrounding fluid, so refinement follows
+    // the body without over-refining the solid interior.
+    bool cutBand_(const cutcell::Geometry& geo, int i, int j) const {
+        if (!cutCellOn_() || geo.cell.empty()) return false;
+        const Real k = geo.at(NG + i, NG + j).vol;
+        return k > Real(1e-6) && k < Real(1) - Real(1e-6);
+    }
+
     // ---- tagging --------------------------------------------------------
     template <class At>
     bool tagCell_(At&& at, int i, int j, int ip, int im, int jp,
@@ -394,7 +490,8 @@ private:
                 const int jp = std::min(j + 1, base.ny - 1),
                           jm = std::max(j - 1, 0);
                 if (tagCell_(at, i, j, ip, im, jp, jm) ||
-                    solBound_(base, i, j, ip, im, jp, jm))
+                    solBound_(base, i, j, ip, im, jp, jm) ||
+                    cutBand_(baseGeo_, i, j))
                     markDilated_(want, lv, base.nx, base.ny, i, j);
             }
     }
@@ -413,7 +510,8 @@ private:
                     // edges — clamping there would blind the tagging to
                     // gradients straddling a patch seam
                     if (tagCell_(at, i, j, i + 1, i - 1, j + 1, j - 1) ||
-                        solBound_(p.grid, i, j, i + 1, i - 1, j + 1, j - 1))
+                        solBound_(p.grid, i, j, i + 1, i - 1, j + 1, j - 1) ||
+                        cutBand_(p.geo, i, j))
                         markDilated_(want, kid, nx, ny, 2 * p.ci0 + i,
                                      2 * p.cj0 + j);
                 }
@@ -517,6 +615,7 @@ private:
                 }
             }
         buildPatchSolid_(p);
+        if (cutCellOn_()) p.geo = buildGeo_(p.grid);
         return p;
     }
 
@@ -723,6 +822,7 @@ private:
     }
 
     void stepLevel_(int l, Real dt) {
+        if (cutCellOn_()) { advanceCutLevel_(l, dt); return; }
         if (l == 0) {
             if (cfg_.species)
                 step2DY(base, basePhi_, baseGm_, dt, scratchYB_, gas_,
@@ -889,7 +989,7 @@ private:
         // level's own hyperbolic advance at this level's dt; children
         // react in their own recursion.
         if (cfg_.react) reactLevel_(l, dt / 2);
-        if (cfg_.weno)
+        if (cfg_.weno && !cutCellOn_())
             stepLevelWeno_(l, dt, t, thBase, thSpan);
         else
             stepLevel_(l, dt);
@@ -930,10 +1030,12 @@ private:
     ParentCell parentCell_(int lp, int cg, int cgj) {
         if (lp == 0) {
             ParentCell pc{&base,
-                          cfg_.weno ? &wFxB_
+                          cutCellOn_()  ? &baseFx_
+                          : cfg_.weno   ? &wFxB_
                           : cfg_.species ? &scratchYB_.Fx
                                          : &scratchB_.Fx,
-                          cfg_.weno ? &wFyB_
+                          cutCellOn_()  ? &baseFy_
+                          : cfg_.weno   ? &wFyB_
                           : cfg_.species ? &scratchYB_.Fy
                                          : &scratchB_.Fy,
                           NG + cg,
@@ -959,6 +1061,42 @@ private:
             pc.Fpy = &Q->Fpy;
         }
         return pc;
+    }
+
+    // Cut-aware reflux correction of the uncovered coarse cell (li,lj) by the
+    // extensive flux increment `dflux`. A full cell just gets dt/V*dflux; a cut
+    // cell must pass the increment through the SAME hybrid flux redistribution
+    // as its advance (kappa D^c + (1-kappa) D^nc, shedding the rest over its
+    // 3x3 fluid neighbourhood) — otherwise reflux would treat it as full and
+    // leak at the coarse-fine seam. The redistribution is conservative by
+    // construction (sum over the neighbourhood = dflux).
+    void cutRefluxCorr_(ParentCell& pc, const cutcell::Geometry& geo,
+                        const Cons& dflux, Real dt) {
+        Grid& g = *pc.g;
+        const int i = pc.li, j = pc.lj;
+        const double V = double(g.dx) * double(g.dy);
+        const double kc = double(geo.at(i, j).vol);
+        if (kc <= 1e-9) return;
+        const Cons Dc = Real(1.0 / (kc * V)) * dflux; // conservative rate
+        if (kc >= 1.0 - 1e-9) {                        // full cell: direct
+            g.at(i, j) = floorState(g.at(i, j) + dt * Dc);
+            return;
+        }
+        double S = 0;
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int di = -1; di <= 1; ++di) {
+                const double kk = double(geo.at(i + di, j + dj).vol);
+                if (kk > 1e-9) S += kk;
+            }
+        const Cons Dnc = Real(kc / S) * Dc;
+        const Cons dD = Real(kc * (1 - kc) / S) * (Dc - Dnc);
+        g.at(i, j) = floorState(g.at(i, j) +
+                                dt * (Real(kc) * Dc + Real(1 - kc) * Dnc));
+        for (int dj = -1; dj <= 1; ++dj)
+            for (int di = -1; di <= 1; ++di)
+                if (double(geo.at(i + di, j + dj).vol) > 1e-9)
+                    g.at(i + di, j + dj) =
+                        floorState(g.at(i + di, j + dj) + dt * dD);
     }
 
     struct SideNb {
@@ -1017,6 +1155,23 @@ private:
                     const int cg = (dir < 2) ? n.cg : n.cg + r;
                     const int cgj = (dir < 2) ? n.cgj + r : n.cgj;
                     ParentCell pc = parentCell_(lc - 1, cg, cgj);
+                    if (cutCellOn_()) { // back the coarse EXTENSIVE flux out
+                        const cutcell::Geometry& geo =
+                            *parentGeo_(lc - 1, cg, cgj);
+                        Cons d;
+                        if (dir == 0)
+                            d = (*pc.Fx)[pc.g->idx(pc.li, pc.lj)];
+                        else if (dir == 1)
+                            d = Real(-1) *
+                                (*pc.Fx)[pc.g->idx(pc.li - 1, pc.lj)];
+                        else if (dir == 2)
+                            d = (*pc.Fy)[pc.g->idx(pc.li, pc.lj)];
+                        else
+                            d = Real(-1) *
+                                (*pc.Fy)[pc.g->idx(pc.li, pc.lj - 1)];
+                        cutRefluxCorr_(pc, geo, d, dtParent);
+                        continue;
+                    }
                     if (solCell_(*pc.g, pc.li, pc.lj)) continue; // solid
                     const Real lam =
                         dtParent / (dir < 2 ? pc.g->dx : pc.g->dy);
@@ -1066,6 +1221,31 @@ private:
                     const int cg = (dir < 2) ? n.cg : n.cg + r;
                     const int cgj = (dir < 2) ? n.cgj + r : n.cgj;
                     ParentCell pc = parentCell_(lc - 1, cg, cgj);
+                    if (cutCellOn_()) { // apply the SUM of fine EXTENSIVE fluxes
+                        const cutcell::Geometry& geo =
+                            *parentGeo_(lc - 1, cg, cgj);
+                        std::size_t a, b;
+                        if (dir == 0) {
+                            a = p.grid.idx(NG - 1, NG + 2 * r);
+                            b = p.grid.idx(NG - 1, NG + 2 * r + 1);
+                        } else if (dir == 1) {
+                            a = p.grid.idx(NG + nf_ - 1, NG + 2 * r);
+                            b = p.grid.idx(NG + nf_ - 1, NG + 2 * r + 1);
+                        } else if (dir == 2) {
+                            a = p.grid.idx(NG + 2 * r, NG - 1);
+                            b = p.grid.idx(NG + 2 * r + 1, NG - 1);
+                        } else {
+                            a = p.grid.idx(NG + 2 * r, NG + nf_ - 1);
+                            b = p.grid.idx(NG + 2 * r + 1, NG + nf_ - 1);
+                        }
+                        const Cons sf = (dir < 2) ? p.Fx[a] + p.Fx[b]
+                                                  : p.Fy[a] + p.Fy[b];
+                        cutRefluxCorr_(pc, geo,
+                                       (dir == 0 || dir == 2) ? Real(-1) * sf
+                                                              : sf,
+                                       dtChild);
+                        continue;
+                    }
                     if (solCell_(*pc.g, pc.li, pc.lj)) continue; // solid
                     const Real lam =
                         dtChild / (dir < 2 ? pc.g->dx : pc.g->dy);
@@ -1115,6 +1295,29 @@ private:
                     const int fi = NG + 2 * a, fj = NG + 2 * b;
                     ParentCell pc =
                         parentCell_(l - 1, p.ci0 + a, p.cj0 + b);
+                    if (cutCellOn_()) { // volume (kappa) weighted restriction
+                        const cutcell::Geometry& geo =
+                            *parentGeo_(l - 1, p.ci0 + a, p.cj0 + b);
+                        if (double(geo.at(pc.li, pc.lj).vol) <= 1e-9) continue;
+                        double nr = 0, nmx = 0, nmy = 0, nE = 0, den = 0;
+                        for (int dj = 0; dj < 2; ++dj)
+                            for (int di = 0; di < 2; ++di) {
+                                const double kk =
+                                    double(p.geo.at(fi + di, fj + dj).vol);
+                                if (kk <= 1e-9) continue;
+                                const Cons& q = p.grid.at(fi + di, fj + dj);
+                                nr += kk * double(q.rho);
+                                nmx += kk * double(q.mx);
+                                nmy += kk * double(q.my);
+                                nE += kk * double(q.E);
+                                den += kk;
+                            }
+                        if (den > 1e-12)
+                            pc.g->at(pc.li, pc.lj) =
+                                Cons{Real(nr / den), Real(nmx / den),
+                                     Real(nmy / den), Real(nE / den)};
+                        continue;
+                    }
                     // Solid parent stays frozen; otherwise average only the
                     // FLUID fine children (mirrors Amr2).
                     if (solCell_(*pc.g, pc.li, pc.lj)) continue;
@@ -1160,6 +1363,7 @@ private:
         const int L = cfg_.maxLevels;
         if (lstart >= L) return;
         const int bC = cfg_.blockC;
+        if (cutCellOn_() && baseGeo_.cell.empty()) baseGeo_ = buildGeo_(base);
 
         std::vector<std::vector<std::uint8_t>> want(L - 1);
         for (int l = lstart; l < L; ++l) {
@@ -1289,6 +1493,8 @@ private:
     std::vector<Real> rkPhiB0_, rkGmB0_;   // base RK start (two-gas)
     std::vector<Real> wFpxB_, wFpyB_;      // base species flux sums
     std::vector<Cons> baseOld_;
+    cutcell::Geometry baseGeo_;              // base cut-cell moments
+    std::vector<Cons> baseFx_, baseFy_;      // base extensive cut fluxes
     std::vector<std::uint8_t> coarseSolidMask_; // base mask (empty = none)
     std::vector<Real> basePhi_, baseGm_, baseOldPhi_, baseOldGm_;
     GasPair gas_;

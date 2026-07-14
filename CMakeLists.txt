@@ -97,6 +97,9 @@ target_include_directories(cutcell_amr PRIVATE src)
 add_executable(cutcell_amr_prod src/drivers/cutcell_amr_prod.cpp)
 target_include_directories(cutcell_amr_prod PRIVATE src)
 
+add_executable(cutcell_amr_ml src/drivers/cutcell_amr_ml.cpp)
+target_include_directories(cutcell_amr_ml PRIVATE src)
+
 add_executable(cutcell_viscous src/drivers/cutcell_viscous.cpp)
 target_include_directories(cutcell_viscous PRIVATE src)
 
