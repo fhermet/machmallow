@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -66,23 +66,64 @@ def find_font(size, regular=False):
 ACCENT = (159, 211, 255)
 
 
+def fit_font(text, target, max_w, regular=False):
+    """Largest font (starting at `target` px) whose `text` fits within max_w."""
+    size = target
+    while size > 10:
+        f = find_font(size, regular=regular)
+        if f.getlength(text) <= max_w:
+            return f
+        size -= 2
+    return find_font(size, regular=regular)
+
+
+def _tracked_positions(draw, text, font, tracking, cx, y):
+    """Per-glyph x positions for a centred, letter-spaced line. Returns
+    (positions, total_width, text_height)."""
+    widths = [draw.textlength(ch, font=font) for ch in text]
+    total = sum(widths) + tracking * max(0, len(text) - 1)
+    ascent, descent = font.getmetrics()
+    x = cx - total / 2
+    pos = []
+    for ch, w in zip(text, widths):
+        pos.append((x, ch))
+        x += w + tracking
+    return pos, total, ascent + descent
+
+
 def add_label(img, title, subtitle=None):
-    """Professional two-line title at the top: bold keyword line + a smaller
-    keyword-rich subtitle (SEO). Clean text with a soft halo, no box."""
-    W, H = img.size
+    """Branded title at the top: letter-spaced wordmark with a soft glow (not a
+    hard stroke) and a short icefire accent rule beneath — reads 'designed',
+    not raw. Optional smaller subtitle kept for reuse."""
+    base = img.convert("RGBA")
+    W, H = base.size
+    y = int(H * 0.045)
+    tfont = fit_font(title, int(H * 0.038), int(W * 0.80))
+    track = max(2, int(H * 0.005))                 # letter spacing
+    meas = ImageDraw.Draw(base)
+    pos, total, th = _tracked_positions(meas, title, tfont, track, W / 2, y)
+
+    # soft dark glow (blurred) for legibility over the field, no hard outline
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    for x, ch in pos:
+        gd.text((x, y), ch, font=tfont, fill=(0, 0, 0, 210))
+    glow = glow.filter(ImageFilter.GaussianBlur(max(4, H // 220)))
+    base = Image.alpha_composite(base, glow)
+
     over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(over)
-    y = int(H * 0.040)
-    tfont = find_font(int(H * 0.050))
-    d.text((W // 2, y), title, font=tfont, anchor="ma",
-           fill=(255, 255, 255, 245), stroke_width=max(3, H // 380),
-           stroke_fill=(0, 0, 0, 235))
+    od = ImageDraw.Draw(over)
+    for x, ch in pos:                              # crisp white wordmark
+        od.text((x, y), ch, font=tfont, fill=(255, 255, 255, 252))
+    base = Image.alpha_composite(base, over)
+
     if subtitle:
-        sfont = find_font(int(H * 0.0225), regular=True)
-        d.text((W // 2, y + int(H * 0.062)), subtitle, font=sfont,
-               anchor="ma", fill=ACCENT + (235,), stroke_width=2,
-               stroke_fill=(0, 0, 0, 210))
-    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+        sfont = fit_font(subtitle, int(H * 0.021), int(W * 0.94), regular=True)
+        sd = ImageDraw.Draw(base)
+        sd.text((W // 2, y + th + int(H * 0.012)), subtitle, font=sfont,
+                anchor="ma", fill=ACCENT + (230,), stroke_width=2,
+                stroke_fill=(0, 0, 0, 205))
+    return base.convert("RGB")
 
 
 def add_flow_arrow(img, direction="down", opacity=0.92):
@@ -143,7 +184,47 @@ def add_watermark(img, text="machmallow", opacity=0.62):
     return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
 
 
+def add_reveal_caption(img, title, subtitle=None):
+    """Explanatory caption for the AMR end-card: a bold line + a smaller line,
+    centred in the lower third so it never hides the refined shock/body at the
+    top. Slight scrim behind for legibility over the busy AMR overlay."""
+    W, H = img.size
+    over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(over)
+    y = int(H * 0.80)
+    # soft scrim band behind the text
+    band = Image.new("RGBA", (W, int(H * 0.16)), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(band)
+    bd.rectangle([0, 0, W, band.height], fill=(0, 0, 0, 120))
+    over.alpha_composite(band, (0, y - int(H * 0.03)))
+    tfont = fit_font(title, int(H * 0.050), int(W * 0.92))
+    d.text((W // 2, y), title, font=tfont, anchor="ma",
+           fill=(255, 255, 255, 250), stroke_width=max(3, H // 380),
+           stroke_fill=(0, 0, 0, 235))
+    if subtitle:
+        sfont = fit_font(subtitle, int(H * 0.024), int(W * 0.94), regular=True)
+        d.text((W // 2, y + int(H * 0.064)), subtitle, font=sfont,
+               anchor="ma", fill=ACCENT + (240,), stroke_width=2,
+               stroke_fill=(0, 0, 0, 220))
+    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+
+
 # ---- geometry ------------------------------------------------------------
+def to_vertical_contain(img, W=1080, H=1920):
+    """Rotate a horizontal wake 90° CW (flow -> top-to-bottom), then scale to
+    FIT entirely inside WxH and centre on black. For a very long wake (wide
+    domain) this shows the FULL length developing; the black side bars are
+    invisible against the black field background."""
+    r = img.transpose(Image.ROTATE_270)
+    rw, rh = r.size
+    s = min(W / rw, H / rh)                       # contain
+    r = r.resize((max(1, round(rw * s)), max(1, round(rh * s))), Image.LANCZOS)
+    rw, rh = r.size
+    canvas = Image.new("RGB", (W, H), (0, 0, 0))
+    canvas.paste(r, ((W - rw) // 2, (H - rh) // 2))
+    return canvas
+
+
 def to_vertical(img, W=1080, H=1920, top=0.5):
     """Rotate a horizontal wake 90° CW (flow -> top-to-bottom), then scale to
     COVER WxH and crop (no black bars): centre horizontally, anchor the
@@ -257,6 +338,9 @@ def main():
     ap.add_argument("--out", required=True, help="output .mp4")
     ap.add_argument("--format", choices=["vertical", "wide"],
                     default="vertical", help="9:16 Short (default) or 16:9")
+    ap.add_argument("--fit", choices=["cover", "contain"], default="cover",
+                    help="vertical: cover (crop to fill) or contain (fit whole "
+                         "wake, black side bars) — contain for very long wakes")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--no-loop", action="store_true",
                     help="keep the full sequence (no seamless-loop cut)")
@@ -279,6 +363,16 @@ def main():
     ap.add_argument("--end", type=int, default=None)
     ap.add_argument("--mask-circle", default=None)
     ap.add_argument("--render-height", type=int, default=1280)
+    # AMR reveal end-card (a still frame rendered with --amr-boxes)
+    ap.add_argument("--reveal-frame", default=None,
+                    help="PNG (field + AMR boxes) held at the end as a card")
+    ap.add_argument("--reveal-seconds", type=float, default=2.5,
+                    help="hold duration of the AMR reveal card")
+    ap.add_argument("--reveal-fade", type=int, default=10,
+                    help="crossfade N frames from the loop into the reveal card")
+    ap.add_argument("--reveal-title", default="Adaptive Mesh Refinement")
+    ap.add_argument("--reveal-sub",
+                    default="the grid refines itself around the shock & body")
     args = ap.parse_args()
 
     if args.prefix:
@@ -290,8 +384,12 @@ def main():
     frames = load_frames(frames_dir)
     print(f"loaded {len(frames)} frames")
 
-    fit = to_wide if args.format == "wide" else \
-        (lambda im: to_vertical(im, top=args.top))
+    if args.format == "wide":
+        fit = to_wide
+    elif args.fit == "contain":
+        fit = to_vertical_contain
+    else:
+        fit = lambda im: to_vertical(im, top=args.top)
     frames = [fit(f) for f in frames]
 
     if not args.no_loop:
@@ -319,6 +417,27 @@ def main():
         frames = [add_flow_arrow(f, args.flow_arrow) for f in frames]
     if not args.no_watermark:
         frames = [add_watermark(f) for f in frames]
+
+    # AMR reveal end-card: fade from the loop into a held still that shows the
+    # mesh blocks tracking the shock and body (mirrors the DMR reveal).
+    if args.reveal_frame:
+        card = fit(Image.open(args.reveal_frame).convert("RGB"))
+        card = add_reveal_caption(card, args.reveal_title, args.reveal_sub)
+        if not args.no_watermark:
+            card = add_watermark(card)
+        k = max(0, args.reveal_fade)
+        if k > 0 and frames:
+            last = np.asarray(frames[-1], np.float32)
+            c = np.asarray(card, np.float32)
+            fade = [Image.fromarray(
+                (((1 - (i + 1) / (k + 1)) * last +
+                  ((i + 1) / (k + 1)) * c)).astype(np.uint8))
+                for i in range(k)]
+            frames += fade
+        hold = max(1, int(round(args.reveal_seconds * args.fps)))
+        frames += [card] * hold
+        print(f"AMR reveal: {k}-frame fade + {hold}-frame hold "
+              f"({args.reveal_seconds:.1f}s card)")
 
     encode(frames, args.out, args.fps)
 
