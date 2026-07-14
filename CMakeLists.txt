@@ -107,6 +107,11 @@ target_include_directories(cutcell_amr_o2 PRIVATE src)
 add_executable(cutcell_cp src/drivers/cutcell_cp.cpp)
 target_include_directories(cutcell_cp PRIVATE src)
 
+# V&V: subsonic viscous cylinder Re=40 (recirculation bubble Lw/D, Cd), GPU.
+add_executable(cutcell_cylinder src/drivers/cutcell_cylinder.cpp)
+target_link_libraries(cutcell_cylinder PRIVATE mm_metal)
+target_include_directories(cutcell_cylinder PRIVATE src)
+
 add_executable(cutcell_viscous src/drivers/cutcell_viscous.cpp)
 target_include_directories(cutcell_viscous PRIVATE src)
 
