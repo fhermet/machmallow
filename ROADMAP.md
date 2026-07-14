@@ -443,11 +443,16 @@ normal velocity, slip). First brick laid:
   advance (base + a patch containing the body) with flux-register **refluxing**
   keeps the composite mass at the float32 floor — **9e-8 with reflux vs 1.1e-3
   without (12000× better)**.
-  **Phase 5c (partial)** (`feature/cutcell-run`): cut cells are now reachable
-  from the declarative case system — `solid_method = cutcell` in an INI runs
-  the 2nd-order (viscous-capable) cut-cell solver on the base grid through
-  `./build/run` (`cases/cylinder_cutcell.ini`: exact-boundary Mach-2 bow shock,
-  one circle/half-plane [solid], cpu single-level).
+  **Phase 5c** (`feature/cutcell-run`, then `feature/cutcell-run-amr`): cut cells
+  are reachable from the declarative case system — `solid_method = cutcell` in an
+  INI runs the 2nd-order (viscous-capable) cut-cell solver through `./build/run`
+  (`cases/cylinder_cutcell.ini`: exact-boundary Mach-2 bow shock, one
+  circle/half-plane [solid]). **Now threaded through the full AMR on both
+  backends** (not just the base grid): the `run` dispatch routes `cutcell` to
+  `Amr2`/`AmrML` (cpu) and `AmrGpuCut`/`AmrGpuMLCut` (hybrid/Metal) by
+  `amr.levels`, sets `momentFn` + `cfg.cutCell`/`cutCellO2`, and honours `mu`
+  (viscous). The EB band auto-refines; `.vthb` hierarchy output. Verified end to
+  end: cpu 2-level, GPU 2-level (open-domain drift 4e-6), GPU 3-level + viscous.
   **Phase 5d (increment 1)** (`feature/cutcell-amr-prod`, gate
   `cutcell_amr_prod`): cut cells wired into the **production `Amr2`** (2 levels,
   single-rate, CPU) — per-patch analytic geometry built at `makePatch_`,

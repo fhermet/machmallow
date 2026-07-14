@@ -84,6 +84,12 @@ public:
 
     int numLevels() const { return cfg_.maxLevels; }
     int fineCells() const { return nf_; }
+    std::size_t cellCount() const {
+        std::size_t n = std::size_t(nx_) * ny_;
+        for (const Level& L : lvls_)
+            n += L.patches.size() * std::size_t(nf_) * nf_;
+        return n;
+    }
     const Level& level(int l) const { return lvls_[l - 1]; }
     std::size_t patchCount(int l) const {
         return l >= 1 ? lvls_[l - 1].patches.size() : 1;
