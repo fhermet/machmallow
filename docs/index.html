@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>machmallow — a compressible CFD solver on Apple Silicon</title>
+<title>machmallow · a compressible CFD solver on Apple Silicon</title>
 <meta name="description" content="machmallow is a 2D compressible CFD solver (Euler & Navier–Stokes) with block-structured hybrid CPU/GPU AMR and cut cells, written from scratch in C++/Metal for Apple Silicon.">
-<meta property="og:title" content="machmallow — compressible CFD on Apple Silicon">
+<meta property="og:title" content="machmallow · compressible CFD on Apple Silicon">
 <meta property="og:description" content="Euler & Navier–Stokes, block-structured AMR, cut cells, GPU (Metal). From scratch on a Mac.">
 <meta property="og:image" content="hero.gif">
 <meta property="og:type" content="website">
@@ -123,14 +123,14 @@
     <a href="#gallery">Validation</a>
     <a href="#quickstart">Quickstart</a>
     <a href="https://github.com/fhermet/machmallow">GitHub</a>
-    <a href="https://www.youtube.com/@machmallow">YouTube</a>
+    <a href="https://www.youtube.com/@MachMallow-q1m">YouTube</a>
   </div>
 </div></nav>
 
 <header class="hero"><div class="wrap">
   <h1>mach<span class="fire">mallow</span> 🔥🧁</h1>
   <p class="tag">Soft on the outside, supersonic on the inside.</p>
-  <p class="pitch">A 2D compressible CFD solver — <b>Euler &amp; Navier–Stokes</b> —
+  <p class="pitch">A 2D compressible CFD solver (<b>Euler &amp; Navier–Stokes</b>)
     with block-structured <b>hybrid CPU/GPU AMR</b> and <b>cut-cell</b> embedded
     boundaries, written from scratch in <b>C++/Metal</b> for Apple Silicon.
     No ParaView, no commercial code.</p>
@@ -145,18 +145,18 @@
   <div class="cta">
     <a class="btn primary" href="https://github.com/fhermet/machmallow">★ View on GitHub</a>
     <a class="btn" href="#quickstart">Quickstart</a>
-    <a class="btn" href="https://www.youtube.com/@machmallow">▶ Watch on YouTube</a>
+    <a class="btn" href="https://www.youtube.com/@MachMallow-q1m">▶ Watch on YouTube</a>
   </div>
   <div class="shot">
     <img src="hero.gif" alt="Mach 2 bow shock and vortical wake over an immersed cylinder, vorticity in the icefire colormap">
-    <div class="cap">Mach 2 flow over a cylinder — vorticity (icefire) + schlieren, adaptive mesh, on an Apple M4.</div>
+    <div class="cap">Mach 2 flow over a cylinder · vorticity (icefire) + schlieren, adaptive mesh, on an Apple M4.</div>
   </div>
 </div></header>
 
 <section id="features"><div class="wrap">
   <h2>What's <span class="k">inside</span></h2>
   <p class="lead">Every numerical method implemented from scratch, readable end
-    to end — a mini-AMReX that runs on your Mac's GPU.</p>
+    to end, a mini-AMReX that runs on your Mac's GPU.</p>
   <div class="grid">
     <div class="card"><h3><span class="ic">◆</span>Block-structured AMR</h3>
       <p>AMReX-style patch hierarchy of arbitrary depth. Recursive Berger–Colella
@@ -167,7 +167,7 @@
         unified memory.</p></div>
     <div class="card"><h3><span class="ic">◆</span>Cut cells</h3>
       <p>Geometrically exact embedded boundaries (volume fractions, face
-        apertures) — 2nd-order LSQ + RK2, viscous no-slip, threaded through the
+        apertures): 2nd-order LSQ + RK2, viscous no-slip, threaded through the
         AMR at any depth. No staircase.</p></div>
     <div class="card"><h3><span class="ic">◆</span>High-order schemes</h3>
       <p>2nd-order MUSCL-Hancock with HLLC, or WENO5 + SSP-RK3. Positivity
@@ -186,45 +186,45 @@
 
 <section id="gallery"><div class="wrap">
   <h2>Proven against <span class="k">references</span></h2>
-  <p class="lead">A slice of the validation &amp; verification suite — computed vs
+  <p class="lead">A slice of the validation &amp; verification suite: computed vs
     exact solutions, theory and experiment. Full dossier in
     <a href="https://github.com/fhermet/machmallow/tree/main/vv">vv/</a>.</p>
   <div class="gal">
     <figure><img src="gallery/dmr.png" alt="Double Mach reflection">
-      <figcaption><b>Double Mach reflection</b> — hybrid subcycled AMR.</figcaption></figure>
+      <figcaption><b>Double Mach reflection</b> · hybrid subcycled AMR.</figcaption></figure>
     <figure><img src="gallery/hs.png" alt="Shock–bubble interaction">
-      <figcaption><b>Shock–bubble (Haas &amp; Sturtevant)</b> — two-gas, vs experiment.</figcaption></figure>
+      <figcaption><b>Shock–bubble (Haas &amp; Sturtevant)</b> · two-gas, vs experiment.</figcaption></figure>
     <figure><img src="gallery/cutcell_cylinder.png" alt="Viscous cylinder Re=40">
-      <figcaption><b>Viscous cylinder, Re = 40</b> — recirculation bubble &amp; drag (cut cells).</figcaption></figure>
+      <figcaption><b>Viscous cylinder, Re = 40</b> · recirculation bubble &amp; drag (cut cells).</figcaption></figure>
     <figure><img src="gallery/cutcell.png" alt="Cut-cell surface pressure">
-      <figcaption><b>Mach 2 cylinder</b> — cut-cell surface Cp vs staircase &amp; pitot.</figcaption></figure>
+      <figcaption><b>Mach 2 cylinder</b> · cut-cell surface Cp vs staircase &amp; pitot.</figcaption></figure>
     <figure><img src="gallery/detonation.png" alt="Chapman–Jouguet detonation">
-      <figcaption><b>Chapman–Jouguet detonation</b> — 1D, Strang-coupled reaction.</figcaption></figure>
+      <figcaption><b>Chapman–Jouguet detonation</b> · 1D, Strang-coupled reaction.</figcaption></figure>
     <figure><img src="gallery/blasius.png" alt="Blasius boundary layer">
-      <figcaption><b>Blasius boundary layer</b> — no-slip flat plate.</figcaption></figure>
+      <figcaption><b>Blasius boundary layer</b> · no-slip flat plate.</figcaption></figure>
     <figure><img src="gallery/sod.png" alt="Sod shock tube">
-      <figcaption><b>Sod shock tube</b> — vs exact Riemann solution.</figcaption></figure>
+      <figcaption><b>Sod shock tube</b> · vs exact Riemann solution.</figcaption></figure>
     <figure><img src="gallery/order_of_accuracy.png" alt="Order of accuracy">
-      <figcaption><b>Order of accuracy</b> — measured L1 convergence.</figcaption></figure>
+      <figcaption><b>Order of accuracy</b> · measured L1 convergence.</figcaption></figure>
   </div>
 </div></section>
 
 <section id="quickstart"><div class="wrap">
   <h2>Get <span class="k">running</span></h2>
   <p class="lead">macOS 15+, Command Line Tools, CMake ≥ 3.24. metal-cpp is
-    vendored — nothing else to install.</p>
+    vendored, nothing else to install.</p>
   <div class="steps">
-<pre><span class="c"># 1 — clone</span>
+<pre><span class="c"># 1. clone</span>
 git clone https://github.com/fhermet/machmallow.git
 cd machmallow</pre>
-<pre><span class="c"># 2 — build (Release)</span>
+<pre><span class="c"># 2. build (Release)</span>
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build</pre>
-<pre><span class="c"># 3 — run a case</span>
+<pre><span class="c"># 3. run a case</span>
 ./build/run cases/dmr.ini               <span class="c"># double Mach reflection (hybrid AMR)</span>
 ./build/run cases/cylinder_bowshock.ini <span class="c"># Mach 2 bow shock over a cylinder</span>
 ./build/run cases/shear.ini             <span class="c"># viscous shear layer (Navier–Stokes)</span></pre>
-<pre><span class="c"># 4 — render a video (no ParaView)</span>
+<pre><span class="c"># 4. render a video (no ParaView)</span>
 python3 tools/schlieren_video.py --prefix out/dmr --style schlieren</pre>
   </div>
   <p style="margin-top:1.6em; color:var(--mut)">Read the
@@ -239,7 +239,7 @@ python3 tools/schlieren_video.py --prefix out/dmr --style schlieren</pre>
   <div>© 2026 Florian Hermet · MIT license · built from scratch on an Apple M4.</div>
   <div class="flinks">
     <a href="https://github.com/fhermet/machmallow">GitHub</a>
-    <a href="https://www.youtube.com/@machmallow">YouTube</a>
+    <a href="https://www.youtube.com/@MachMallow-q1m">YouTube</a>
     <a href="https://github.com/fhermet/machmallow/blob/main/ROADMAP.md">Roadmap</a>
   </div>
 </div></footer>
