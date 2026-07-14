@@ -8,7 +8,9 @@
 
 #include "amr/Amr2.hpp"
 #include "amr/AmrGpu.hpp"
+#include "amr/AmrGpuCut.hpp"
 #include "amr/AmrGpuML.hpp"
+#include "amr/AmrGpuMLCut.hpp"
 #include "amr/AmrML.hpp"
 #include "backend/metal/MetalContext.hpp"
 #include "cases/CaseDef.hpp"
@@ -345,7 +347,8 @@ int list() {
         "              single-gas ; base grid only)\n"
         "  top level  solid_method = staircase (default) | cutcell\n"
         "             (cutcell: exact embedded boundary, 2nd order + no-slip,\n"
-        "              cpu single-level, one circle/half-plane [solid])\n"
+        "              viscous-capable, AMR at any depth on cpu + hybrid,\n"
+        "              one circle/half-plane [solid])\n"
         "  [bc]       x|y = periodic\n"
         "             left|right|bottom|top = transmissive | reflective\n"
         "                 | analytic | inflow X\n"
@@ -371,61 +374,6 @@ int list() {
         "  [diagnostics]  every (base steps, 0 = off) file (csv:\n"
         "             step t dt cells patches extrema mass energies\n"
         "             enstrophy perf)\n");
-    return EXIT_SUCCESS;
-}
-
-// Single-level cut-cell run driven by the case file (solid_method = cutcell).
-// Supports one analytic circle / half-plane [solid]; MUSCL-class 2nd-order
-// cut-cell scheme (SSP-RK2), optional viscosity. No AMR yet.
-int cutCellRun(const CaseDef& cd, const Config& cfg, const AmrConfig& acfg) {
-    int shape;
-    Real sp[3];
-    if (!cd.cutCellSolid(shape, sp)) {
-        std::fprintf(stderr, "cutcell: needs exactly one circle or half-plane "
-                             "[solid] region\n");
-        return EXIT_FAILURE;
-    }
-    Grid g(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly);
-    const auto momentFn = [&](double x0, double x1, double y0, double y1) {
-        return shape == 0
-                   ? cutcell::circleMoments(sp[0], sp[1], sp[2], x0, x1, y0, y1)
-                   : cutcell::halfplaneMoments(sp[0], sp[1], sp[2], x0, x1, y0,
-                                               y1);
-    };
-    const auto geo = cutcell::build(g, momentFn);
-    for (int j = 0; j < g.toty(); ++j)
-        for (int i = 0; i < g.totx(); ++i)
-            g.at(i, j) = cd.state(g.xc(i), g.yc(j), 0);
-
-    const double tEnd = cfg.getReal("t_end", 0.2), cfl = cfg.getReal("cfl", 0.4);
-    const Real mu = acfg.mu;
-    const int frames = cfg.getInt("output.frames", 4);
-    const std::string prefix = cfg.getString("output.prefix", "out/run");
-    std::filesystem::create_directories(
-        std::filesystem::path(prefix).parent_path());
-    std::printf("cut-cell (single level) | %dx%d | %s solid | mu %g | cut "
-                "cells %zu\n",
-                cd.nx, cd.ny, shape == 0 ? "circle" : "half-plane", double(mu),
-                geo.nCut);
-
-    double tNow = 0;
-    const auto fill = [&](Grid& gg) { cd.fillGhosts(gg, tNow); };
-    double t = 0;
-    int steps = 0, nextFrame = 0;
-    while (t < tEnd * (1 - 1e-9)) {
-        if (frames > 0 && t >= tEnd * nextFrame / frames) {
-            writeVti(prefix + "_" + std::to_string(nextFrame) + ".vti", g);
-            ++nextFrame;
-        }
-        tNow = t;
-        const Real dt = std::min(maxStableDt(g, Real(cfl), mu), Real(tEnd - t));
-        stepCutCell(g, geo, dt, fill, /*limited=*/true, mu);
-        t += double(dt);
-        ++steps;
-    }
-    writeVti(prefix + "_" + std::to_string(nextFrame) + ".vti", g);
-    std::printf("done: %d steps, t = %.4f, output %s_*.vti\n", steps, t,
-                prefix.c_str());
     return EXIT_SUCCESS;
 }
 
@@ -484,6 +432,32 @@ int main(int argc, char** argv) {
                     "(two-gas / WENO coming)");
         }
 
+        // Cut-cell embedded boundary (solid_method = cutcell): exact geometry
+        // (aperture-weighted fluxes + FRD) instead of the staircase mask, 2nd
+        // order (LSQ + RK2), viscous-capable, threaded through the AMR at any
+        // depth on CPU (Amr2/AmrML) and GPU (AmrGpuCut/AmrGpuMLCut). Needs
+        // exactly one analytic circle / half-plane [solid].
+        const bool cutCell =
+            cfg.getString("solid_method", "staircase") == "cutcell";
+        int cutShape = 0;
+        Real cutP[3] = {0, 0, 0};
+        if (cutCell) {
+            if (!cd.cutCellSolid(cutShape, cutP))
+                throw std::runtime_error(
+                    "cutcell: needs exactly one circle or half-plane [solid]");
+            acfg.cutCell = true;
+            acfg.cutCellO2 = true;
+        }
+        const auto momentFn = [cutShape, cutP](double x0, double x1, double y0,
+                                               double y1) {
+            return cutShape == 0 ? cutcell::circleMoments(cutP[0], cutP[1],
+                                                          cutP[2], x0, x1, y0,
+                                                          y1)
+                                 : cutcell::halfplaneMoments(cutP[0], cutP[1],
+                                                             cutP[2], x0, x1,
+                                                             y0, y1);
+        };
+
         std::printf("case %s | backend %s | scheme %s | grid %dx%d | domain "
                     "[%g,%g]x[%g,%g]%s%s | levels %d | mu %g\n",
                     path.c_str(), backend.c_str(), scheme.c_str(),
@@ -519,74 +493,70 @@ int main(int argc, char** argv) {
             return EXIT_SUCCESS;
         }
 
-        // Cut-cell path (single level for now) — opt-in per case.
-        if (cfg.getString("solid_method", "staircase") == "cutcell")
-            return cutCellRun(cd, cfg, acfg);
+        // Common ghost-fill wiring, applied to any AMR instance.
+        const auto wireCpu = [&cd](auto& amr) {
+            amr.fillPhysicalGhosts = [&cd](Grid& g, double t) {
+                cd.fillGhosts(g, t);
+            };
+            amr.fillPatchPhysical = [&cd](Grid& g, double t, unsigned s) {
+                cd.fillGhostSides(g, t, s);
+            };
+        };
+        const auto wireGpu = [&cd](auto& amr) {
+            amr.fillPhysicalGhosts = [&cd](GridRef& g, double t) {
+                cd.fillGhosts(g, t);
+            };
+            amr.fillPatchPhysical = [&cd](GridRef& g, double t, unsigned s) {
+                cd.fillGhostSides(g, t, s);
+            };
+        };
 
         int rc;
+        const bool twoLevel = acfg.maxLevels == 2 && !acfg.species && !acfg.weno;
         if (backend == "cpu") {
-            // the 2-level classes have no species fields: two-gas
-            // cases run on the multi-level classes at any depth
-            if (acfg.maxLevels == 2 && !acfg.species && !acfg.weno) {
+            // the 2-level classes have no species fields: two-gas / deep
+            // hierarchies run on the multi-level classes.
+            if (twoLevel) {
                 Amr2 amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);
-                amr.fillPhysicalGhosts = [&cd](Grid& g, double t) {
-                    cd.fillGhosts(g, t);
-                };
-                amr.fillPatchPhysical = [&cd](Grid& g, double t,
-                                              unsigned s) {
-                    cd.fillGhostSides(g, t, s);
-                };
-                if (cd.hasSolids())
-                    amr.solidAt = [&cd](Real x, Real y) {
-                        return cd.solidAt(x, y);
-                    };
+                wireCpu(amr);
+                if (cutCell) amr.momentFn = momentFn;
+                else if (cd.hasSolids())
+                    amr.solidAt = [&cd](Real x, Real y) { return cd.solidAt(x, y); };
                 rc = runCase(amr, cd, cfg);
             } else {
                 AmrML amr(cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);
-                amr.fillPhysicalGhosts = [&cd](Grid& g, double t) {
-                    cd.fillGhosts(g, t);
-                };
-                amr.fillPatchPhysical = [&cd](Grid& g, double t,
-                                              unsigned s) {
-                    cd.fillGhostSides(g, t, s);
-                };
-                if (cd.hasSolids())
-                    amr.solidAt = [&cd](Real x, Real y) {
-                        return cd.solidAt(x, y);
-                    };
+                wireCpu(amr);
+                if (cutCell) amr.momentFn = momentFn;
+                else if (cd.hasSolids())
+                    amr.solidAt = [&cd](Real x, Real y) { return cd.solidAt(x, y); };
                 rc = runCase(amr, cd, cfg);
             }
         } else if (backend == "hybrid") {
             MetalContext ctx;
-            if (acfg.maxLevels == 2 && !acfg.species && !acfg.weno) {
-                AmrGpu amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly,
-                           acfg);
-                amr.fillPhysicalGhosts = [&cd](GridRef& g, double t) {
-                    cd.fillGhosts(g, t);
-                };
-                amr.fillPatchPhysical = [&cd](GridRef& g, double t,
-                                              unsigned s) {
-                    cd.fillGhostSides(g, t, s);
-                };
+            if (cutCell && twoLevel) {
+                AmrGpuCut amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly,
+                              acfg);
+                wireGpu(amr);
+                amr.momentFn = momentFn;
+                rc = runCase(amr, cd, cfg);
+            } else if (cutCell) {
+                AmrGpuMLCut amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly,
+                                acfg);
+                wireGpu(amr);
+                amr.momentFn = momentFn;
+                rc = runCase(amr, cd, cfg);
+            } else if (twoLevel) {
+                AmrGpu amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly, acfg);
+                wireGpu(amr);
                 if (cd.hasSolids())
-                    amr.solidAt = [&cd](Real x, Real y) {
-                        return cd.solidAt(x, y);
-                    };
+                    amr.solidAt = [&cd](Real x, Real y) { return cd.solidAt(x, y); };
                 rc = runCase(amr, cd, cfg);
             } else {
-                AmrGpuML amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx,
-                             cd.ly, acfg);
-                amr.fillPhysicalGhosts = [&cd](GridRef& g, double t) {
-                    cd.fillGhosts(g, t);
-                };
-                amr.fillPatchPhysical = [&cd](GridRef& g, double t,
-                                              unsigned s) {
-                    cd.fillGhostSides(g, t, s);
-                };
+                AmrGpuML amr(ctx, cd.nx, cd.ny, cd.x0, cd.y0, cd.lx, cd.ly,
+                             acfg);
+                wireGpu(amr);
                 if (cd.hasSolids())
-                    amr.solidAt = [&cd](Real x, Real y) {
-                        return cd.solidAt(x, y);
-                    };
+                    amr.solidAt = [&cd](Real x, Real y) { return cd.solidAt(x, y); };
                 rc = runCase(amr, cd, cfg);
             }
         } else {
