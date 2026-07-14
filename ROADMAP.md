@@ -539,9 +539,27 @@ normal velocity, slip). First brick laid:
   tⁿ buffer); `CutCell2DGpu::enableO2`/`divO2`/`rk2Stage1`/`rk2Stage2`. Gate: GPU
   vs the CPU `stepCutCell` oracle (which already showed design order 2.1) in
   lock-step over 100 steps → worst relative ρ diff **1.0e-3** (the LSQ + limiter
-  in fp32 vs the CPU double path). Remaining: 2nd order in the *AMR* composite —
-  needs a 2nd-order CPU AMR-cut oracle first (the current `Amr2`/`AmrML` cut
-  paths are 1st order); a further facet.
+  in fp32 vs the CPU double path).
+  **Phase 5l (increment 9, GPU)** (`feature/cutcell-gpu-amr`, gate
+  `cutcell_gpu_ml`): the hybrid **`AmrGpuMLCut`** class — **arbitrary-depth**
+  cut-cell AMR on GPU (the GPU analogue of `AmrML` cut, as `AmrGpuCut` is to
+  `Amr2`). The base and every level live in shared Metal buffers (a
+  `CutCell2DGpu` for the base, one pooled `CutCell2DGpu` per level); the CPU
+  drives the recursive Berger-Colella subcycling (`advanceTree_`), the
+  per-level composite (`dcPhasePool` → CPU D^c-ghost exchange from siblings →
+  `hybridPhasePool` → `updatePhasePool`), cut-aware reflux (the hybrid-
+  redistribution `cutRefluxCorr_`, `refluxBackOut_`/`refluxFineApply_`),
+  κ-restriction, EB-band tagging + nesting-correct regrid and per-level slot
+  pools — all ported from `AmrML`, dropping WENO/species/react/solid (cut is
+  inviscid single-gas). As in `AmrGpuCut`, the gather-form FRD makes the CPU
+  D-scatter unnecessary. Gates (body straddling the coarse-fine seams at every
+  level, reflective box): GPU vs CPU (`AmrML` cut) lock-step over 120 steps →
+  worst relative ρ diff **3.6e-6 / 3.2e-6 / 3.4e-6 / 4.3e-6** (2-level, 2-level
+  subcycled, 3-level, 3-level subcycled), GPU composite mass conserved to
+  **1.0e-7 / 1.3e-8 / 1.2e-7 / 5.7e-9** — the fp32 floor across the hierarchy.
+  This completes the cut × AMR × GPU matrix at 1st order. Remaining: 2nd order
+  in the *AMR* composite — needs a 2nd-order CPU AMR-cut oracle first (the
+  current `Amr2`/`AmrML` cut paths are 1st order); a further facet.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
