@@ -580,8 +580,26 @@ normal velocity, slip). First brick laid:
   `advanceTree_`, refilling stage-2 ghosts at the parent-interpolation fraction
   of the substep's end (`advanceCutLevelO2_`), with the same seam gradient
   exchange and averaged-flux reflux. Gates 4/5: `AmrML` O2 **3 levels
-  single-rate 3.2e-8, subcycled 2.0e-8**. Remaining: the GPU composite O2
-  (`AmrGpuCut`/`AmrGpuMLCut`, reusing the `cc_grad`/`cc_*_o2`/`cc_rk2` kernels).
+  single-rate 3.2e-8, subcycled 2.0e-8**.
+  **Phase 5n (2nd-order AMR cut, GPU)** (`feature/cutcell-gpu-o2`, gates
+  `cutcell_gpu_amr`/`cutcell_gpu_ml`): the 2nd-order composite on GPU, closing
+  the matrix. Pooled O2 kernels (`cc_grad_pool`, `cc_flux_x/y_o2_pool`,
+  `cc_dc_o2_pool`, `cc_rk2_pool`) + phase-split pool methods in `CutCell2DGpu`
+  (`enableO2Pool`/`gradPhasePool`/`dcO2PhasePool`/`rk2Stage1Pool`/`rk2Stage2Pool`
+  + `poolGdx/poolGdy` for the CPU seam gradient exchange). `AmrGpuCut` and
+  `AmrGpuMLCut` orchestrate the RK2: coarse in single-grid O2, patches as a
+  composite (`gradPhasePool` → CPU gradient-ghost exchange → `dcO2PhasePool` →
+  CPU D^c-ghost exchange → `hybridPhasePool`), reflux with the time-averaged
+  fluxes. The pool flux kernels use `ox=hx` at edges (`edgeConst=false`) so
+  seams are 2nd order via the exchanged gradients; the plain kernels keep
+  `ox=0` at physical walls for the coarse grid. `setPoolGeometry` gained the
+  patch origin to fill the EB-centroid offset. Gates: `AmrGpuCut` vs `Amr2` O2
+  → **3.5e-4 single-rate, 1.1e-3 subcycled**; `AmrGpuMLCut` vs `AmrML` O2 (3
+  levels) → **4.8e-4 single-rate, 6.1e-4 subcycled**; GPU mass at the fp32 floor
+  (1e-7…1e-8). The larger lock-step (vs 1st order's ~4e-6) is the fp32 LSQ +
+  Barth-Jespersen limiter against the CPU double path (matches the single-grid
+  O2 gate). **The cut × AMR × GPU × order matrix is complete** (1st + 2nd order,
+  CPU + GPU, 2-level + arbitrary depth, single-rate + subcycled).
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

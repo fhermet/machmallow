@@ -238,7 +238,12 @@ private:
     }
     void buildBaseGeo_() {
         baseGeo_ = buildGeo_(nx_, ny_, x0_, y0_, nx_ * dxc_, ny_ * dyc_);
-        coarse_.setGeometry(baseGeo_);
+        coarse_.setGeometry(baseGeo_, x0_, y0_);
+        if (cfg_.cutCellO2 && !o2Ready_) {
+            coarse_.enableO2();
+            for (Level& L : lvls_) L.pool->enableO2Pool();
+            o2Ready_ = true;
+        }
     }
     const cutcell::Geometry* parentGeo_(int lp, int cg, int cgj) const {
         if (lp == 0) return &baseGeo_;
@@ -293,6 +298,97 @@ private:
                     s ? L.pool->poolDc(s->slot)[pidx_(si, sj)]
                       : Cons{0, 0, 0, 0};
             }
+    }
+
+    // ---- 2nd-order composite (SSP-RK2) -----------------------------------
+    bool cutO2On_() const { return cfg_.cutCellO2; }
+    std::size_t coarseN_() const {
+        return std::size_t(ctxs_) * (ny_ + 2 * NG);
+    }
+    std::size_t poolN_() const { return std::size_t(ptx_) * ptx_; }
+    static void avgInPlace_(Cons* a, const Cons* b, std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i) a[i] = Real(0.5) * (a[i] + b[i]);
+    }
+
+    // Fill patch p's gradient ghosts from same-level siblings (2nd-order at
+    // seams); no sibling -> zeroed (constant reconstruction there).
+    void fillPatchGradGhosts_(int l, const Patch& p) {
+        Level& L = lvls_[l - 1];
+        Cons* gx = L.pool->poolGdx(p.slot);
+        Cons* gy = L.pool->poolGdy(p.slot);
+        for (int j = 0; j < ptx_; ++j)
+            for (int i = 0; i < ptx_; ++i) {
+                if (i >= NG && i < NG + nf_ && j >= NG && j < NG + nf_)
+                    continue;
+                int si, sj;
+                const Patch* s = siblingCell_(l, p, i, j, si, sj);
+                if (s) {
+                    gx[pidx_(i, j)] = L.pool->poolGdx(s->slot)[pidx_(si, sj)];
+                    gy[pidx_(i, j)] = L.pool->poolGdy(s->slot)[pidx_(si, sj)];
+                } else {
+                    gx[pidx_(i, j)] = Cons{0, 0, 0, 0};
+                    gy[pidx_(i, j)] = Cons{0, 0, 0, 0};
+                }
+            }
+    }
+
+    // One composite 2nd-order divergence of level l's patches (no update).
+    void fineDivergenceO2_(int l, const std::vector<int>& active) {
+        Level& L = lvls_[l - 1];
+        L.pool->gradPhasePool(active);
+        for (const Patch& p : L.patches) fillPatchGradGhosts_(l, p);
+        L.pool->dcO2PhasePool(active);
+        for (const Patch& p : L.patches) fillPatchDcGhosts_(l, p);
+        L.pool->hybridPhasePool(active);
+    }
+
+    // One SSP-RK2 advance of level l over dt; stage-2 ghosts refilled at
+    // (tS2, thetaS2). Leaves the time-averaged extensive fluxes in the flux
+    // registers so the existing reflux stays conservative.
+    void advanceCutLevelO2_(int l, Real dt, double tS2, Real thetaS2) {
+        if (l == 0) {
+            coarse_.divO2();
+            std::vector<Cons> F1x(coarse_.fxData(),
+                                  coarse_.fxData() + coarseN_());
+            std::vector<Cons> F1y(coarse_.fyData(),
+                                  coarse_.fyData() + coarseN_());
+            coarse_.rk2Stage1(dt);
+            GridRef b = coarseRef();
+            fillPhysicalGhosts(b, tS2);
+            coarse_.divO2();
+            coarse_.rk2Stage2(dt);
+            avgInPlace_(const_cast<Cons*>(coarse_.fxData()), F1x.data(),
+                        coarseN_());
+            avgInPlace_(const_cast<Cons*>(coarse_.fyData()), F1y.data(),
+                        coarseN_());
+            return;
+        }
+        Level& L = lvls_[l - 1];
+        if (L.patches.empty()) return;
+        std::vector<int> active;
+        active.reserve(L.patches.size());
+        for (const Patch& p : L.patches) active.push_back(p.slot);
+        const std::size_t np = L.patches.size();
+
+        fineDivergenceO2_(l, active); // stage 1
+        std::vector<std::vector<Cons>> F1x(np), F1y(np);
+        for (std::size_t k = 0; k < np; ++k) {
+            const int s = L.patches[k].slot;
+            F1x[k].assign(L.pool->poolFx(s), L.pool->poolFx(s) + poolN_());
+            F1y[k].assign(L.pool->poolFy(s), L.pool->poolFy(s) + poolN_());
+        }
+        L.pool->rk2Stage1Pool(dt, active);
+
+        fillLevelGhosts_(l, tS2, thetaS2);
+        fineDivergenceO2_(l, active); // stage 2
+        L.pool->rk2Stage2Pool(dt, active);
+        for (std::size_t k = 0; k < np; ++k) {
+            const int s = L.patches[k].slot;
+            avgInPlace_(const_cast<Cons*>(L.pool->poolFx(s)), F1x[k].data(),
+                        poolN_());
+            avgInPlace_(const_cast<Cons*>(L.pool->poolFy(s)), F1y[k].data(),
+                        poolN_());
+        }
     }
 
     // ---- ghost fill / prolongation ---------------------------------------
@@ -392,11 +488,14 @@ private:
         }
     }
 
-    void advanceTree_(int l, Real dt, double t, Real, Real) {
+    void advanceTree_(int l, Real dt, double t, Real thBase, Real thSpan) {
         const bool hasKids =
             (l + 1 < cfg_.maxLevels) && !lvls_[l].patches.empty();
         if (hasKids) saveOld_(l);
-        advanceCutLevel_(l, dt);
+        if (cutO2On_())
+            advanceCutLevelO2_(l, dt, t + dt, thBase + thSpan);
+        else
+            advanceCutLevel_(l, dt);
         if (hasKids) {
             const int lc = l + 1;
             if (cfg_.reflux) refluxBackOut_(lc, dt);
@@ -779,7 +878,8 @@ private:
         p.geo = buildGeo_(nf_, nf_, x0_ + ci0 * dxAt_(l - 1),
                           y0_ + cj0 * dyAt_(l - 1), nf_ * dxAt_(l),
                           nf_ * dyAt_(l));
-        L.pool->setPoolGeometry(slot, p.geo);
+        L.pool->setPoolGeometry(slot, p.geo, x0_ + ci0 * dxAt_(l - 1),
+                                y0_ + cj0 * dyAt_(l - 1));
         return p;
     }
 
@@ -847,6 +947,7 @@ private:
     cutcell::Geometry baseGeo_;
     std::vector<Cons> baseOld_;
     std::vector<int> stepCounts_ = std::vector<int>(16, 0);
+    bool o2Ready_ = false; // O2 pipelines/buffers enabled
 };
 
 } // namespace mm

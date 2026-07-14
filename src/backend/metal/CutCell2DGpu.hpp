@@ -56,7 +56,7 @@ public:
         for (MTL::Buffer* b : {q_, Fx_, Fy_, Dc_, D_, geo_}) b->release();
         for (MTL::Buffer* b : {qP_, FxP_, FyP_, DcP_, DP_, geoP_, slots_})
             if (b) b->release();
-        for (MTL::Buffer* b : {Gdx_, Gdy_, qn_})
+        for (MTL::Buffer* b : {Gdx_, Gdy_, qn_, GdxP_, GdyP_, qnP_})
             if (b) b->release();
         for (MTL::ComputePipelineState* p :
              {fluxX_, fluxY_, dc_, hybrid_, update_})
@@ -66,6 +66,9 @@ public:
             if (p) p->release();
         for (MTL::ComputePipelineState* p :
              {grad_, fluxXo2_, fluxYo2_, dcO2_, rk2_})
+            if (p) p->release();
+        for (MTL::ComputePipelineState* p :
+             {gradP_, fluxXo2P_, fluxYo2P_, dcO2P_, rk2P_})
             if (p) p->release();
         lib_->release();
     }
@@ -228,16 +231,22 @@ public:
         return static_cast<Cons*>(qP_->contents()) +
                std::size_t(slot) * tx_ * ty_;
     }
-    void setPoolGeometry(int slot, const cutcell::Geometry& G) {
+    // (x0,y0) is the patch origin used to build G — needed for the EB-centroid
+    // offset (pad0/pad1) that 2nd-order reconstruction uses. Origin-independent,
+    // so the default 0 is fine at 1st order.
+    void setPoolGeometry(int slot, const cutcell::Geometry& G, Real x0 = 0,
+                         Real y0 = 0) {
         auto* g = static_cast<CCMom*>(geoP_->contents()) +
                   std::size_t(slot) * tx_ * ty_;
         for (int j = 0; j < ty_; ++j)
             for (int i = 0; i < tx_; ++i) {
                 const CellMoments& m = G.at(i, j);
+                const Real xc = x0 + (Real(i - NG) + Real(0.5)) * dx_;
+                const Real yc = y0 + (Real(j - NG) + Real(0.5)) * dy_;
                 g[std::size_t(j) * tx_ + i] =
                     CCMom{float(m.vol), float(m.apXhi), float(m.apYhi),
                           float(m.eb.area), float(m.eb.nx), float(m.eb.ny),
-                          0, 0};
+                          float(m.eb.cx - xc), float(m.eb.cy - yc)};
             }
     }
     // Advance the given slots in one pooled dispatch.
@@ -302,6 +311,77 @@ public:
                std::size_t(slot) * tx_ * ty_;
     }
 
+    // ---- 2nd-order pooled composite (SSP-RK2) ----------------------------
+    // Enable the pooled O2 path: gradient + t^n buffers and pool O2 pipelines.
+    // enablePool(nSlots) must have been called first.
+    void enableO2Pool() {
+        gradP_ = ctx_.makePipeline(lib_, "cc_grad_pool");
+        fluxXo2P_ = ctx_.makePipeline(lib_, "cc_flux_x_o2_pool");
+        fluxYo2P_ = ctx_.makePipeline(lib_, "cc_flux_y_o2_pool");
+        dcO2P_ = ctx_.makePipeline(lib_, "cc_dc_o2_pool");
+        rk2P_ = ctx_.makePipeline(lib_, "cc_rk2_pool");
+        const std::size_t n = std::size_t(tx_) * ty_ * nSlots_;
+        const auto mk4 = [&] {
+            return ctx_.device()->newBuffer(n * sizeof(Cons),
+                                            MTL::ResourceStorageModeShared);
+        };
+        GdxP_ = mk4(); GdyP_ = mk4(); qnP_ = mk4();
+    }
+    // GPU: least-squares gradients for the active slots (interior).
+    void gradPhasePool(const std::vector<int>& active) {
+        setSlots_(active);
+        const Params p = poolParams_(0);
+        const int z = int(active.size());
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeP(cmd, gradP_, {qP_, geoP_, GdxP_, GdyP_}, p, nx_, ny_, z);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    // GPU: 2nd-order reconstructed fluxes + D^c for the active slots. Call
+    // after gradPhasePool and the CPU gradient-ghost exchange.
+    void dcO2PhasePool(const std::vector<int>& active) {
+        setSlots_(active);
+        const Params p = poolParams_(0);
+        const int z = int(active.size());
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeP(cmd, fluxXo2P_, {qP_, geoP_, GdxP_, GdyP_, FxP_}, p, nx_ + 1,
+                ny_, z);
+        encodeP(cmd, fluxYo2P_, {qP_, geoP_, GdxP_, GdyP_, FyP_}, p, nx_,
+                ny_ + 1, z);
+        encodeP(cmd, dcO2P_, {qP_, geoP_, GdxP_, GdyP_, FxP_, FyP_, DcP_}, p,
+                nx_, ny_, z);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    // RK2 stage 1: save q^n for the active slots, then q <- floor(q + dt D).
+    void rk2Stage1Pool(Real dt, const std::vector<int>& active) {
+        for (int s : active) {
+            const std::size_t off = std::size_t(s) * tx_ * ty_;
+            std::memcpy(static_cast<Cons*>(qnP_->contents()) + off,
+                        static_cast<Cons*>(qP_->contents()) + off,
+                        std::size_t(tx_) * ty_ * sizeof(Cons));
+        }
+        updatePhasePool(dt, active);
+    }
+    // RK2 stage 2: q <- floor(0.5 q^n + 0.5 (q + dt D)) for the active slots.
+    void rk2Stage2Pool(Real dt, const std::vector<int>& active) {
+        setSlots_(active);
+        const Params p = poolParams_(dt);
+        const int z = int(active.size());
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encodeP(cmd, rk2P_, {qP_, qnP_, geoP_, DP_}, p, nx_, ny_, z);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    Cons* poolGdx(int slot) {
+        return static_cast<Cons*>(GdxP_->contents()) +
+               std::size_t(slot) * tx_ * ty_;
+    }
+    Cons* poolGdy(int slot) {
+        return static_cast<Cons*>(GdyP_->contents()) +
+               std::size_t(slot) * tx_ * ty_;
+    }
+
 private:
     void encode(MTL::CommandBuffer* cmd, MTL::ComputePipelineState* pso,
                 std::initializer_list<MTL::Buffer*> bufs, const Params& p,
@@ -358,6 +438,11 @@ private:
     MTL::Buffer *qP_ = nullptr, *FxP_ = nullptr, *FyP_ = nullptr,
                 *DcP_ = nullptr, *DP_ = nullptr, *geoP_ = nullptr,
                 *slots_ = nullptr;
+    // 2nd-order pooled path (allocated by enableO2Pool)
+    MTL::ComputePipelineState *gradP_ = nullptr, *fluxXo2P_ = nullptr,
+                              *fluxYo2P_ = nullptr, *dcO2P_ = nullptr,
+                              *rk2P_ = nullptr;
+    MTL::Buffer *GdxP_ = nullptr, *GdyP_ = nullptr, *qnP_ = nullptr;
 };
 
 static_assert(sizeof(Cons) == 4 * sizeof(float), "Cons must be float4");
