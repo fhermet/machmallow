@@ -21,7 +21,8 @@ constant int NG = 3;
 struct CCP {
     int tx, ty, nx, ny;
     float dx, dy, dt;
-    int stride; // cells per pool slot (0 for plain kernels)
+    int stride;    // cells per pool slot (0 for plain kernels)
+    float mu, kT;  // dynamic viscosity + heat conductivity (0 = inviscid)
 };
 
 // Per-cell embedded-boundary moments (matches C++ mm::gpu CCMom).
@@ -278,7 +279,21 @@ inline void ccFluxXo2Body(device const float4* q, device const CCMom* geo,
     const float4 wL = recon(toPrim(q[id]), Gdx[id], Gdy[id], ox, 0.0f);
     const float4 wR = recon(toPrim(q[id + 1]), Gdx[id + 1], Gdy[id + 1], -ox,
                             0.0f);
-    Fx[id] = (a * P.dy) * hllcFluxX(wL, wR);
+    float4 f = (a * P.dy) * hllcFluxX(wL, wR);
+    if (P.mu > 0.0f) { // Stokes + Fourier x-face flux
+        const float4 a0 = toPrim(q[id]), a1 = toPrim(q[id + 1]);
+        const float ux = (a1.y - a0.y) / P.dx;              // normal (central)
+        const float vx = (a1.z - a0.z) / P.dx;
+        const float uy = 0.5f * (Gdy[id].y + Gdy[id + 1].y); // tangential
+        const float vy = 0.5f * (Gdy[id].z + Gdy[id + 1].z);
+        const float txx = P.mu * (4.0f / 3.0f * ux - 2.0f / 3.0f * vy);
+        const float txy = P.mu * (uy + vx);
+        const float ub = 0.5f * (a0.y + a1.y), vb = 0.5f * (a0.z + a1.z);
+        const float Tx = (a1.w / a1.x - a0.w / a0.x) / P.dx;
+        f -= (a * P.dy) *
+             float4(0.0f, txx, txy, ub * txx + vb * txy + P.kT * Tx);
+    }
+    Fx[id] = f;
 }
 inline void ccFluxYo2Body(device const float4* q, device const CCMom* geo,
                           device const float4* Gdx, device const float4* Gdy,
@@ -292,7 +307,21 @@ inline void ccFluxYo2Body(device const float4* q, device const CCMom* geo,
     const float4 wB = recon(toPrim(q[id]), Gdx[id], Gdy[id], 0.0f, oy);
     const float4 wT = recon(toPrim(q[id + P.tx]), Gdx[id + P.tx],
                             Gdy[id + P.tx], 0.0f, -oy);
-    Fy[id] = (a * P.dx) * hllcFluxY(wB, wT);
+    float4 f = (a * P.dx) * hllcFluxY(wB, wT);
+    if (P.mu > 0.0f) { // Stokes + Fourier y-face flux
+        const float4 a0 = toPrim(q[id]), a1 = toPrim(q[id + P.tx]);
+        const float uy = (a1.y - a0.y) / P.dy;              // normal (central)
+        const float vy = (a1.z - a0.z) / P.dy;
+        const float ux = 0.5f * (Gdx[id].y + Gdx[id + P.tx].y); // tangential
+        const float vx = 0.5f * (Gdx[id].z + Gdx[id + P.tx].z);
+        const float txy = P.mu * (uy + vx);
+        const float tyy = P.mu * (4.0f / 3.0f * vy - 2.0f / 3.0f * ux);
+        const float ub = 0.5f * (a0.y + a1.y), vb = 0.5f * (a0.z + a1.z);
+        const float Ty = (a1.w / a1.x - a0.w / a0.x) / P.dy;
+        f -= (a * P.dx) *
+             float4(0.0f, txy, tyy, ub * txy + vb * tyy + P.kT * Ty);
+    }
+    Fy[id] = f;
 }
 
 // 2nd-order conservative divergence: same face-flux balance as ccDcBody, but
@@ -310,7 +339,15 @@ inline void ccDcO2Body(device const float4* q, device const CCMom* geo,
     const CCMom m = geo[id];
     if (kc < 1.0f - TINY && m.ebArea > TINY) {
         const float4 w = recon(toPrim(q[id]), Gdx[id], Gdy[id], m.pad0, m.pad1);
-        dU -= m.ebArea * ebWallFlux(w, -m.ebnx, -m.ebny);
+        float4 feb = ebWallFlux(w, -m.ebnx, -m.ebny);
+        if (P.mu > 0.0f) { // no-slip EB traction (tangential shear / wall dist)
+            const float dn =
+                max(fabs(m.pad0 * m.ebnx + m.pad1 * m.ebny), 0.25f * P.dx);
+            const float un = w.y * m.ebnx + w.z * m.ebny;
+            feb.y += P.mu * (w.y - un * m.ebnx) / dn;
+            feb.z += P.mu * (w.z - un * m.ebny) / dn;
+        }
+        dU -= m.ebArea * feb;
     }
     Dc[id] = (1.0f / (kc * P.dx * P.dy)) * dU;
 }

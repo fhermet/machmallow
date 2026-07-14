@@ -30,7 +30,12 @@ public:
         std::int32_t tx, ty, nx, ny;
         float dx, dy, dt;
         std::int32_t stride; // cells per pool slot (0 = plain)
+        float mu = 0, kT = 0; // viscosity + heat conductivity (0 = inviscid)
     };
+
+    // Enable the viscous (Stokes/Fourier + no-slip EB) terms in the 2nd-order
+    // path. kT = mu*GAMMA/((GAMMA-1)*Pr) (pass heatConductivity(mu)).
+    void setViscosity(Real mu, Real kT) { mu_ = mu; kT_ = kT; }
 
     CutCell2DGpu(MetalContext& ctx, int nx, int ny, Real dx, Real dy)
         : ctx_(ctx), nx_(nx), ny_(ny), tx_(nx + 2 * NG), ty_(ny + 2 * NG),
@@ -171,7 +176,8 @@ public:
     // 2nd-order FRD'd divergence D from the current state (grad -> flux ->
     // D^c -> hybrid). Ghosts filled by the caller.
     void divO2() {
-        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_), 0, 0};
+        const Params p{tx_,  ty_,        nx_,        ny_, float(dx_),
+                       float(dy_), 0, 0, float(mu_), float(kT_)};
         MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
         encode(cmd, grad_, {q_, geo_, Gdx_, Gdy_}, p, nx_, ny_);
         encode(cmd, fluxXo2_, {q_, geo_, Gdx_, Gdy_, Fx_}, p, nx_ + 1, ny_);
@@ -341,7 +347,9 @@ public:
     // after gradPhasePool and the CPU gradient-ghost exchange.
     void dcO2PhasePool(const std::vector<int>& active) {
         setSlots_(active);
-        const Params p = poolParams_(0);
+        Params p = poolParams_(0);
+        p.mu = float(mu_);
+        p.kT = float(kT_);
         const int z = int(active.size());
         MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
         encodeP(cmd, fluxXo2P_, {qP_, geoP_, GdxP_, GdyP_, FxP_}, p, nx_ + 1,
@@ -419,6 +427,7 @@ private:
     MetalContext& ctx_;
     int nx_, ny_, tx_, ty_;
     Real dx_, dy_;
+    Real mu_ = 0, kT_ = 0; // viscous terms (0 = inviscid)
     MTL::Library* lib_ = nullptr;
     MTL::ComputePipelineState *fluxX_ = nullptr, *fluxY_ = nullptr,
                               *dc_ = nullptr, *hybrid_ = nullptr,
