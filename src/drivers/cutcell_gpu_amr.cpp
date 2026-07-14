@@ -50,11 +50,12 @@ std::vector<std::pair<int, int>> bodyBlocks() {
     return blocks;
 }
 
-AmrConfig cutConfig(bool subcycle) {
+AmrConfig cutConfig(bool subcycle, bool o2 = false) {
     AmrConfig cfg;
     cfg.blockC = BC;
     cfg.maxLevels = 2;
     cfg.cutCell = true;
+    cfg.cutCellO2 = o2;
     cfg.reflux = true;
     cfg.subcycle = subcycle;
     cfg.regridEvery = 1 << 30; // pinned patches: never retag
@@ -64,9 +65,9 @@ AmrConfig cutConfig(bool subcycle) {
 
 // Worst relative rho difference between the GPU composite (AmrGpuCut) and the
 // CPU oracle (Amr2 cut) over a fixed-patch run, driven with a shared dt.
-double lockStepDrift(bool subcycle) {
+double lockStepDrift(bool subcycle, bool o2 = false) {
     const auto ic = initCond();
-    const AmrConfig cfg = cutConfig(subcycle);
+    const AmrConfig cfg = cutConfig(subcycle, o2);
 
     // CPU oracle.
     Amr2 amr(NC, NC, 0, 0, 1, 1, cfg);
@@ -220,6 +221,16 @@ int main() {
     std::printf("gate 3 — subcycled GPU vs CPU cut-cell AMR lock-step: worst "
                 "relative rho diff %.3e (gate 1e-2)\n", d3);
     ok = ok && d3 < 1e-2;
+
+    const double d4 = lockStepDrift(/*subcycle=*/false, /*o2=*/true);
+    std::printf("gate 4 — 2nd-order single-rate GPU vs CPU (Amr2 O2) lock-step: "
+                "worst relative rho diff %.3e (gate 1e-2)\n", d4);
+    ok = ok && d4 < 1e-2;
+
+    const double d5 = lockStepDrift(/*subcycle=*/true, /*o2=*/true);
+    std::printf("gate 5 — 2nd-order subcycled GPU vs CPU (Amr2 O2) lock-step: "
+                "worst relative rho diff %.3e (gate 1e-2)\n", d5);
+    ok = ok && d5 < 1e-2;
 
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;

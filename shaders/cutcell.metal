@@ -263,14 +263,17 @@ inline void ccGradBody(device const float4* q, device const CCMom* geo,
 // 2nd-order aperture-weighted x/y face fluxes: reconstruct L/R to the face
 // centre. Boundary faces use constant reconstruction (ox=0), matching the CPU
 // (else an interior gradient against a zero-gradient ghost leaks at the wall).
+// edgeConst: reconstruct constant (ox=0) at the grid edges — true for a walled
+// single grid (avoids a wall leak), false for AMR patches whose edges are
+// sibling seams / coarse-fine (2nd order via exchanged gradient ghosts).
 inline void ccFluxXo2Body(device const float4* q, device const CCMom* geo,
                           device const float4* Gdx, device const float4* Gdy,
                           device float4* Fx, constant CCP& P, int base,
-                          int i, int j) {
+                          int i, int j, bool edgeConst) {
     const int id = base + j * P.tx + i;
     const float a = geo[id].apXhi;
     if (a <= TINY) { Fx[id] = float4(0.0f); return; }
-    const bool bnd = (i < NG) || (i + 1 >= NG + P.nx);
+    const bool bnd = edgeConst && ((i < NG) || (i + 1 >= NG + P.nx));
     const float ox = bnd ? 0.0f : 0.5f * P.dx;
     const float4 wL = recon(toPrim(q[id]), Gdx[id], Gdy[id], ox, 0.0f);
     const float4 wR = recon(toPrim(q[id + 1]), Gdx[id + 1], Gdy[id + 1], -ox,
@@ -280,11 +283,11 @@ inline void ccFluxXo2Body(device const float4* q, device const CCMom* geo,
 inline void ccFluxYo2Body(device const float4* q, device const CCMom* geo,
                           device const float4* Gdx, device const float4* Gdy,
                           device float4* Fy, constant CCP& P, int base,
-                          int i, int j) {
+                          int i, int j, bool edgeConst) {
     const int id = base + j * P.tx + i;
     const float a = geo[id].apYhi;
     if (a <= TINY) { Fy[id] = float4(0.0f); return; }
-    const bool bnd = (j < NG) || (j + 1 >= NG + P.ny);
+    const bool bnd = edgeConst && ((j < NG) || (j + 1 >= NG + P.ny));
     const float oy = bnd ? 0.0f : 0.5f * P.dy;
     const float4 wB = recon(toPrim(q[id]), Gdx[id], Gdy[id], 0.0f, oy);
     const float4 wT = recon(toPrim(q[id + P.tx]), Gdx[id + P.tx],
@@ -426,7 +429,7 @@ kernel void cc_flux_x_o2(device const float4* q [[buffer(0)]],
                          constant CCP& P [[buffer(5)]],
                          uint2 g [[thread_position_in_grid]]) {
     ccFluxXo2Body(q, geo, Gdx, Gdy, Fx, P, 0, int(g.x) + NG - 1,
-                  int(g.y) + NG);
+                  int(g.y) + NG, true);
 }
 kernel void cc_flux_y_o2(device const float4* q [[buffer(0)]],
                          device const CCMom* geo [[buffer(1)]],
@@ -436,7 +439,7 @@ kernel void cc_flux_y_o2(device const float4* q [[buffer(0)]],
                          constant CCP& P [[buffer(5)]],
                          uint2 g [[thread_position_in_grid]]) {
     ccFluxYo2Body(q, geo, Gdx, Gdy, Fy, P, 0, int(g.x) + NG,
-                  int(g.y) + NG - 1);
+                  int(g.y) + NG - 1, true);
 }
 kernel void cc_dc_o2(device const float4* q [[buffer(0)]],
                      device const CCMom* geo [[buffer(1)]],
@@ -457,4 +460,61 @@ kernel void cc_rk2(device float4* q [[buffer(0)]],
                    constant CCP& P [[buffer(4)]],
                    uint2 g [[thread_position_in_grid]]) {
     ccRk2Body(q, qn, geo, D, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+
+// ---- 2nd-order pool kernels (composite AMR; gid.z = slot) ---------------
+kernel void cc_grad_pool(device const float4* q [[buffer(0)]],
+                         device const CCMom* geo [[buffer(1)]],
+                         device float4* Gdx [[buffer(2)]],
+                         device float4* Gdy [[buffer(3)]],
+                         constant CCP& P [[buffer(4)]],
+                         device const uint* slots [[buffer(5)]],
+                         uint3 g [[thread_position_in_grid]]) {
+    ccGradBody(q, geo, Gdx, Gdy, P, int(slots[g.z]) * P.stride,
+               int(g.x) + NG, int(g.y) + NG);
+}
+kernel void cc_flux_x_o2_pool(device const float4* q [[buffer(0)]],
+                              device const CCMom* geo [[buffer(1)]],
+                              device const float4* Gdx [[buffer(2)]],
+                              device const float4* Gdy [[buffer(3)]],
+                              device float4* Fx [[buffer(4)]],
+                              constant CCP& P [[buffer(5)]],
+                              device const uint* slots [[buffer(6)]],
+                              uint3 g [[thread_position_in_grid]]) {
+    ccFluxXo2Body(q, geo, Gdx, Gdy, Fx, P, int(slots[g.z]) * P.stride,
+                  int(g.x) + NG - 1, int(g.y) + NG, false);
+}
+kernel void cc_flux_y_o2_pool(device const float4* q [[buffer(0)]],
+                              device const CCMom* geo [[buffer(1)]],
+                              device const float4* Gdx [[buffer(2)]],
+                              device const float4* Gdy [[buffer(3)]],
+                              device float4* Fy [[buffer(4)]],
+                              constant CCP& P [[buffer(5)]],
+                              device const uint* slots [[buffer(6)]],
+                              uint3 g [[thread_position_in_grid]]) {
+    ccFluxYo2Body(q, geo, Gdx, Gdy, Fy, P, int(slots[g.z]) * P.stride,
+                  int(g.x) + NG, int(g.y) + NG - 1, false);
+}
+kernel void cc_dc_o2_pool(device const float4* q [[buffer(0)]],
+                          device const CCMom* geo [[buffer(1)]],
+                          device const float4* Gdx [[buffer(2)]],
+                          device const float4* Gdy [[buffer(3)]],
+                          device const float4* Fx [[buffer(4)]],
+                          device const float4* Fy [[buffer(5)]],
+                          device float4* Dc [[buffer(6)]],
+                          constant CCP& P [[buffer(7)]],
+                          device const uint* slots [[buffer(8)]],
+                          uint3 g [[thread_position_in_grid]]) {
+    ccDcO2Body(q, geo, Gdx, Gdy, Fx, Fy, Dc, P, int(slots[g.z]) * P.stride,
+               int(g.x) + NG, int(g.y) + NG);
+}
+kernel void cc_rk2_pool(device float4* q [[buffer(0)]],
+                        device const float4* qn [[buffer(1)]],
+                        device const CCMom* geo [[buffer(2)]],
+                        device const float4* D [[buffer(3)]],
+                        constant CCP& P [[buffer(4)]],
+                        device const uint* slots [[buffer(5)]],
+                        uint3 g [[thread_position_in_grid]]) {
+    ccRk2Body(q, qn, geo, D, P, int(slots[g.z]) * P.stride,
+              int(g.x) + NG, int(g.y) + NG);
 }

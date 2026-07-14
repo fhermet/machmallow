@@ -148,7 +148,11 @@ public:
     }
 
     void step(Real dt, double t) {
-        if (cfg_.subcycle && !patches.empty())
+        if (cutO2On_() && cfg_.subcycle && !patches.empty())
+            stepCutO2Subcycled_(dt, t);
+        else if (cutO2On_())
+            stepCutO2SingleRate_(dt, t);
+        else if (cfg_.subcycle && !patches.empty())
             stepCutSubcycled_(dt, t);
         else
             stepCutSingleRate_(dt, t);
@@ -303,8 +307,14 @@ private:
 
     void buildCoarseGeo_() {
         coarseGeo_ = buildGeo_(nx_, ny_, x0_, y0_, nx_ * dxc_, ny_ * dyc_);
-        coarse_.setGeometry(coarseGeo_);
+        coarse_.setGeometry(coarseGeo_, x0_, y0_);
+        if (cfg_.cutCellO2 && !o2Ready_) {
+            coarse_.enableO2();
+            pool_.enableO2Pool();
+            o2Ready_ = true;
+        }
     }
+    bool cutO2On_() const { return cfg_.cutCellO2; }
 
     // ---- single-rate cut-cell step ---------------------------------------
     void stepCutSingleRate_(Real dt, double t) {
@@ -368,6 +378,187 @@ private:
             fillPatchDcGhosts_(k);
         pool_.hybridPhasePool(active);
         pool_.updatePhasePool(dt, active);
+    }
+
+    // ---- 2nd-order composite (SSP-RK2) -----------------------------------
+    std::size_t coarseN_() const {
+        return std::size_t(ctx_stride_) * (ny_ + 2 * NG);
+    }
+    std::size_t poolN_() const { return std::size_t(ptx_) * ptx_; }
+
+    // Fill patch k's gradient ghosts from same-level siblings (2nd-order
+    // reconstruction at seams); no sibling -> zeroed (constant there).
+    void fillPatchGradGhosts_(std::size_t k) {
+        const Patch& p = patches[k];
+        Cons* gx = pool_.poolGdx(p.slot);
+        Cons* gy = pool_.poolGdy(p.slot);
+        for (int j = 0; j < ptx_; ++j)
+            for (int i = 0; i < ptx_; ++i) {
+                if (i >= NG && i < NG + nf_ && j >= NG && j < NG + nf_)
+                    continue;
+                int si, sj;
+                const int pi = siblingCell_(p, i, j, si, sj);
+                if (pi >= 0) {
+                    gx[pidx_(i, j)] = pool_.poolGdx(patches[pi].slot)[pidx_(si, sj)];
+                    gy[pidx_(i, j)] = pool_.poolGdy(patches[pi].slot)[pidx_(si, sj)];
+                } else {
+                    gx[pidx_(i, j)] = Cons{0, 0, 0, 0};
+                    gy[pidx_(i, j)] = Cons{0, 0, 0, 0};
+                }
+            }
+    }
+
+    // One composite 2nd-order divergence of every patch (no update): GPU
+    // gradients -> CPU seam gradient exchange -> GPU reconstructed flux/D^c ->
+    // CPU seam D^c exchange -> GPU hybrid + FRD. Leaves D in poolD, fluxes in
+    // poolFx/poolFy.
+    void fineDivergenceO2_(const std::vector<int>& active) {
+        pool_.gradPhasePool(active);
+        for (std::size_t k = 0; k < patches.size(); ++k)
+            fillPatchGradGhosts_(k);
+        pool_.dcO2PhasePool(active);
+        for (std::size_t k = 0; k < patches.size(); ++k)
+            fillPatchDcGhosts_(k);
+        pool_.hybridPhasePool(active);
+    }
+
+    static void avgFlux_(Cons* a, const Cons* b, std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i) a[i] = Real(0.5) * (a[i] + b[i]);
+    }
+
+    void activeSlots_(std::vector<int>& active) const {
+        active.clear();
+        active.reserve(patches.size());
+        for (const Patch& p : patches) active.push_back(p.slot);
+    }
+
+    // 2nd-order single-rate RK2. Base + fine composite both advance with two
+    // stages; reflux uses the time-averaged extensive fluxes 0.5*(F1+F2).
+    void stepCutO2SingleRate_(Real dt, double t) {
+        GridRef c = coarseRef();
+        std::vector<int> active;
+        activeSlots_(active);
+        const std::size_t np = patches.size();
+
+        // ---- stage 1 ----
+        fillPhysicalGhosts(c, t);
+        fillAllPatchGhosts_(t, Real(-1));
+        coarse_.divO2();
+        std::vector<Cons> Fc1x(coarse_.fxData(), coarse_.fxData() + coarseN_());
+        std::vector<Cons> Fc1y(coarse_.fyData(), coarse_.fyData() + coarseN_());
+        std::vector<std::vector<Cons>> pF1x(np), pF1y(np);
+        if (np) {
+            fineDivergenceO2_(active);
+            for (std::size_t k = 0; k < np; ++k) {
+                const int s = patches[k].slot;
+                pF1x[k].assign(pool_.poolFx(s), pool_.poolFx(s) + poolN_());
+                pF1y[k].assign(pool_.poolFy(s), pool_.poolFy(s) + poolN_());
+            }
+        }
+        coarse_.rk2Stage1(dt);
+        if (np) pool_.rk2Stage1Pool(dt, active);
+
+        // ---- stage 2 ----
+        fillPhysicalGhosts(c, t + dt);
+        fillAllPatchGhosts_(t + dt, Real(-1));
+        coarse_.divO2();
+        if (np) fineDivergenceO2_(active);
+        coarse_.rk2Stage2(dt);
+        if (np) pool_.rk2Stage2Pool(dt, active);
+
+        // ---- reflux with the time-averaged fluxes ----
+        if (cfg_.reflux && np) {
+            std::vector<Cons> Fcx(coarse_.fxData(),
+                                  coarse_.fxData() + coarseN_());
+            std::vector<Cons> Fcy(coarse_.fyData(),
+                                  coarse_.fyData() + coarseN_());
+            avgFlux_(Fcx.data(), Fc1x.data(), coarseN_());
+            avgFlux_(Fcy.data(), Fc1y.data(), coarseN_());
+            std::vector<std::vector<Cons>> pFx(np), pFy(np);
+            for (std::size_t k = 0; k < np; ++k) {
+                const int s = patches[k].slot;
+                pFx[k].assign(pool_.poolFx(s), pool_.poolFx(s) + poolN_());
+                pFy[k].assign(pool_.poolFy(s), pool_.poolFy(s) + poolN_());
+                avgFlux_(pFx[k].data(), pF1x[k].data(), poolN_());
+                avgFlux_(pFy[k].data(), pF1y[k].data(), poolN_());
+            }
+            for (std::size_t k = 0; k < np; ++k) {
+                cutRefluxBackout_(patches[k], dt, Fcx.data(), Fcy.data());
+                cutRefluxFineApply_(patches[k], dt, pFx[k].data(),
+                                    pFy[k].data());
+            }
+        }
+    }
+
+    // One fine-composite RK2 substep over dtF (time-interpolated coarse ghosts),
+    // leaving the time-averaged fine fluxes in netFx/netFy per patch.
+    void fineRK2Substep_(Real dtF, double tS1, Real theta1, double tS2,
+                         Real theta2, std::vector<std::vector<Cons>>& netFx,
+                         std::vector<std::vector<Cons>>& netFy) {
+        std::vector<int> active;
+        activeSlots_(active);
+        const std::size_t np = patches.size();
+        fillAllPatchGhosts_(tS1, theta1);
+        fineDivergenceO2_(active);
+        std::vector<std::vector<Cons>> pF1x(np), pF1y(np);
+        for (std::size_t k = 0; k < np; ++k) {
+            const int s = patches[k].slot;
+            pF1x[k].assign(pool_.poolFx(s), pool_.poolFx(s) + poolN_());
+            pF1y[k].assign(pool_.poolFy(s), pool_.poolFy(s) + poolN_());
+        }
+        pool_.rk2Stage1Pool(dtF, active);
+        fillAllPatchGhosts_(tS2, theta2);
+        fineDivergenceO2_(active);
+        pool_.rk2Stage2Pool(dtF, active);
+        netFx.assign(np, {});
+        netFy.assign(np, {});
+        for (std::size_t k = 0; k < np; ++k) {
+            const int s = patches[k].slot;
+            netFx[k].assign(pool_.poolFx(s), pool_.poolFx(s) + poolN_());
+            netFy[k].assign(pool_.poolFy(s), pool_.poolFy(s) + poolN_());
+            avgFlux_(netFx[k].data(), pF1x[k].data(), poolN_());
+            avgFlux_(netFy[k].data(), pF1y[k].data(), poolN_());
+        }
+    }
+
+    // 2nd-order subcycled RK2: base RK2 over dtC, each patch two dtF=dtC/2 RK2
+    // substeps; reflux backs the averaged coarse flux out once, applies each
+    // substep's averaged fine flux.
+    void stepCutO2Subcycled_(Real dtC, double t) {
+        const Real dtF = dtC / 2;
+        GridRef c = coarseRef();
+        coarseOld_.assign(c.q, c.q + std::size_t(c.totx()) * c.toty());
+        const std::size_t np = patches.size();
+
+        // base RK2 over dtC, averaged flux in cutFxC_/cutFyC_ (CPU copies)
+        fillPhysicalGhosts(c, t);
+        coarse_.divO2();
+        std::vector<Cons> Fc1x(coarse_.fxData(), coarse_.fxData() + coarseN_());
+        std::vector<Cons> Fc1y(coarse_.fyData(), coarse_.fyData() + coarseN_());
+        coarse_.rk2Stage1(dtC);
+        fillPhysicalGhosts(c, t + dtC);
+        coarse_.divO2();
+        coarse_.rk2Stage2(dtC);
+        std::vector<Cons> Fcx(coarse_.fxData(), coarse_.fxData() + coarseN_());
+        std::vector<Cons> Fcy(coarse_.fyData(), coarse_.fyData() + coarseN_());
+        avgFlux_(Fcx.data(), Fc1x.data(), coarseN_());
+        avgFlux_(Fcy.data(), Fc1y.data(), coarseN_());
+        if (cfg_.reflux)
+            for (const Patch& p : patches)
+                cutRefluxBackout_(p, dtC, Fcx.data(), Fcy.data());
+
+        std::vector<std::vector<Cons>> nFx, nFy;
+        fineRK2Substep_(dtF, t, Real(0), t + dtF, Real(0.5), nFx, nFy); // sub 1
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < np; ++k)
+                cutRefluxFineApply_(patches[k], dtF, nFx[k].data(),
+                                    nFy[k].data());
+        fineRK2Substep_(dtF, t + dtF, Real(0.5), t + dtC, Real(1), nFx,
+                        nFy); // substep 2
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < np; ++k)
+                cutRefluxFineApply_(patches[k], dtF, nFx[k].data(),
+                                    nFy[k].data());
     }
 
     // Global fine cell (gfi,gfj) that patch cell (i,j) maps to, periodic wrap.
@@ -519,11 +710,12 @@ private:
     }
 
     // Back the COARSE interface flux out of the uncovered neighbour (once).
-    void cutRefluxBackout_(const Patch& p, Real dtC) {
+    void cutRefluxBackout_(const Patch& p, Real dtC, const Cons* fxIn = nullptr,
+                           const Cons* fyIn = nullptr) {
         GridRef c = coarseRef();
         const int bc = cfg_.blockC;
-        const Cons* fxC = coarse_.fxData();
-        const Cons* fyC = coarse_.fyData();
+        const Cons* fxC = fxIn ? fxIn : coarse_.fxData();
+        const Cons* fyC = fyIn ? fyIn : coarse_.fyData();
         if (const SideNb n = leftNb_(p); n.ok && !covered(n.block, p.bj))
             for (int r = 0; r < bc; ++r)
                 c.at(NG + n.cell, NG + p.cj0 + r) = cutRefluxCorr_(
@@ -633,7 +825,8 @@ private:
             }
         p.geo = buildGeo_(nf_, nf_, x0_ + p.ci0 * dxc_, y0_ + p.cj0 * dyc_,
                           nf_ * (dxc_ / 2), nf_ * (dyc_ / 2));
-        pool_.setPoolGeometry(slot, p.geo);
+        pool_.setPoolGeometry(slot, p.geo, x0_ + p.ci0 * dxc_,
+                              y0_ + p.cj0 * dyc_);
         return p;
     }
 
@@ -650,6 +843,7 @@ private:
     std::vector<Cons> coarseOld_; // coarse t^n copy (subcycled ghosts)
     cutcell::Geometry coarseGeo_; // CPU mirror of coarse EB moments
     int stepCount_ = 0;
+    bool o2Ready_ = false; // O2 pipelines/buffers enabled
 };
 
 } // namespace mm
