@@ -529,7 +529,19 @@ normal velocity, slip). First brick laid:
   identical to the Amr2 scatter path. Gate (body spanning a 4×4 patch block,
   reflective box): GPU vs CPU (`Amr2` cut) **lock-step over 200 steps → worst
   relative ρ diff 4.4e-6 single-rate, 3.6e-6 subcycled**, and the GPU composite
-  mass conserves to **1.1e-7** (fp32 floor). Remaining: 2nd order on GPU.
+  mass conserves to **1.1e-7** (fp32 floor).
+  **Phase 5k (increment 8, GPU)** (`feature/cutcell-gpu-amr`, gate `cutcell_gpu`
+  gate 4): the **2nd-order** single-grid cut-cell operator on Metal —
+  least-squares primitive gradients (Barth-Jespersen limited, `cc_grad`),
+  reconstructed to the face centres (`cc_flux_x/y_o2`, constant at grid
+  boundaries) and to the **EB centroid** (`cc_dc_o2`, offset stashed in the
+  `CCMom` pads by `setGeometry`), advanced with **SSP-RK2** (`cc_rk2` + a saved
+  tⁿ buffer); `CutCell2DGpu::enableO2`/`divO2`/`rk2Stage1`/`rk2Stage2`. Gate: GPU
+  vs the CPU `stepCutCell` oracle (which already showed design order 2.1) in
+  lock-step over 100 steps → worst relative ρ diff **1.0e-3** (the LSQ + limiter
+  in fp32 vs the CPU double path). Remaining: 2nd order in the *AMR* composite —
+  needs a 2nd-order CPU AMR-cut oracle first (the current `Amr2`/`AmrML` cut
+  paths are 1st order); a further facet.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

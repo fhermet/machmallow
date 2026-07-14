@@ -203,6 +203,124 @@ inline void ccUpdateBody(device float4* q, device const CCMom* geo,
     q[id] = floorState(q[id] + P.dt * D[id]);
 }
 
+// ---- 2nd-order bodies (least-squares gradients + reconstruction) ---------
+// Linear reconstruction of a primitive state at offset (ox,oy) from the cell.
+inline float4 recon(float4 w, float4 gdx, float4 gdy, float ox, float oy) {
+    return w + gdx * ox + gdy * oy;
+}
+
+// Least-squares primitive gradients over the fluid 3x3 neighbourhood, Barth-
+// Jespersen limited (matches the CPU lsqGradients). Uniform grid, so the
+// neighbour offset is exactly (di*dx, dj*dy).
+inline void ccGradBody(device const float4* q, device const CCMom* geo,
+                       device float4* Gdx, device float4* Gdy, constant CCP& P,
+                       int base, int i, int j) {
+    const int id = base + j * P.tx + i;
+    if (geo[id].vol <= TINY) { Gdx[id] = float4(0.0f); Gdy[id] = float4(0.0f);
+        return; }
+    const float4 wc = toPrim(q[id]);
+    float Sxx = 0.0f, Sxy = 0.0f, Syy = 0.0f;
+    float4 bx = float4(0.0f), by = float4(0.0f);
+    float4 wlo = wc, whi = wc;
+    for (int dj = -1; dj <= 1; ++dj)
+        for (int di = -1; di <= 1; ++di) {
+            if (di == 0 && dj == 0) continue;
+            const int nb = id + dj * P.tx + di;
+            if (geo[nb].vol <= TINY) continue;
+            const float dxk = float(di) * P.dx, dyk = float(dj) * P.dy;
+            const float w = 1.0f / (dxk * dxk + dyk * dyk);
+            Sxx += w * dxk * dxk; Sxy += w * dxk * dyk; Syy += w * dyk * dyk;
+            const float4 wk = toPrim(q[nb]);
+            const float4 dW = wk - wc;
+            bx += w * dxk * dW; by += w * dyk * dW;
+            wlo = min(wlo, wk); whi = max(whi, wk);
+        }
+    const float det = Sxx * Syy - Sxy * Sxy;
+    float4 gdx = float4(0.0f), gdy = float4(0.0f);
+    if (det > 1e-30f) {
+        for (int c = 0; c < 4; ++c) {
+            const float gx = (Syy * bx[c] - Sxy * by[c]) / det;
+            const float gy = (Sxx * by[c] - Sxy * bx[c]) / det;
+            float phi = 1.0f;
+            for (int dj = -1; dj <= 1; ++dj)
+                for (int di = -1; di <= 1; ++di) {
+                    if (di == 0 && dj == 0) continue;
+                    const int nb = id + dj * P.tx + di;
+                    if (geo[nb].vol <= TINY) continue;
+                    const float d = gx * (float(di) * P.dx) +
+                                    gy * (float(dj) * P.dy);
+                    float lim = 1.0f;
+                    if (d > 1e-30f) lim = min(1.0f, (whi[c] - wc[c]) / d);
+                    else if (d < -1e-30f) lim = min(1.0f, (wlo[c] - wc[c]) / d);
+                    phi = min(phi, lim);
+                }
+            gdx[c] = phi * gx; gdy[c] = phi * gy;
+        }
+    }
+    Gdx[id] = gdx; Gdy[id] = gdy;
+}
+
+// 2nd-order aperture-weighted x/y face fluxes: reconstruct L/R to the face
+// centre. Boundary faces use constant reconstruction (ox=0), matching the CPU
+// (else an interior gradient against a zero-gradient ghost leaks at the wall).
+inline void ccFluxXo2Body(device const float4* q, device const CCMom* geo,
+                          device const float4* Gdx, device const float4* Gdy,
+                          device float4* Fx, constant CCP& P, int base,
+                          int i, int j) {
+    const int id = base + j * P.tx + i;
+    const float a = geo[id].apXhi;
+    if (a <= TINY) { Fx[id] = float4(0.0f); return; }
+    const bool bnd = (i < NG) || (i + 1 >= NG + P.nx);
+    const float ox = bnd ? 0.0f : 0.5f * P.dx;
+    const float4 wL = recon(toPrim(q[id]), Gdx[id], Gdy[id], ox, 0.0f);
+    const float4 wR = recon(toPrim(q[id + 1]), Gdx[id + 1], Gdy[id + 1], -ox,
+                            0.0f);
+    Fx[id] = (a * P.dy) * hllcFluxX(wL, wR);
+}
+inline void ccFluxYo2Body(device const float4* q, device const CCMom* geo,
+                          device const float4* Gdx, device const float4* Gdy,
+                          device float4* Fy, constant CCP& P, int base,
+                          int i, int j) {
+    const int id = base + j * P.tx + i;
+    const float a = geo[id].apYhi;
+    if (a <= TINY) { Fy[id] = float4(0.0f); return; }
+    const bool bnd = (j < NG) || (j + 1 >= NG + P.ny);
+    const float oy = bnd ? 0.0f : 0.5f * P.dy;
+    const float4 wB = recon(toPrim(q[id]), Gdx[id], Gdy[id], 0.0f, oy);
+    const float4 wT = recon(toPrim(q[id + P.tx]), Gdx[id + P.tx],
+                            Gdy[id + P.tx], 0.0f, -oy);
+    Fy[id] = (a * P.dx) * hllcFluxY(wB, wT);
+}
+
+// 2nd-order conservative divergence: same face-flux balance as ccDcBody, but
+// the EB wall flux is reconstructed to the boundary centroid (offset pad0,pad1
+// = centroid - cell centre, filled by setGeometry).
+inline void ccDcO2Body(device const float4* q, device const CCMom* geo,
+                       device const float4* Gdx, device const float4* Gdy,
+                       device const float4* Fx, device const float4* Fy,
+                       device float4* Dc, constant CCP& P, int base,
+                       int i, int j) {
+    const int id = base + j * P.tx + i;
+    const float kc = geo[id].vol;
+    if (kc <= TINY) { Dc[id] = float4(0.0f); return; }
+    float4 dU = (Fx[id - 1] - Fx[id]) + (Fy[id - P.tx] - Fy[id]);
+    const CCMom m = geo[id];
+    if (kc < 1.0f - TINY && m.ebArea > TINY) {
+        const float4 w = recon(toPrim(q[id]), Gdx[id], Gdy[id], m.pad0, m.pad1);
+        dU -= m.ebArea * ebWallFlux(w, -m.ebnx, -m.ebny);
+    }
+    Dc[id] = (1.0f / (kc * P.dx * P.dy)) * dU;
+}
+
+// SSP-RK2 combine: q^{n+1} = 0.5 q^n + 0.5 (q1 + dt D(q1)); q holds q1.
+inline void ccRk2Body(device float4* q, device const float4* qn,
+                      device const CCMom* geo, device const float4* D,
+                      constant CCP& P, int base, int i, int j) {
+    const int id = base + j * P.tx + i;
+    if (geo[id].vol <= TINY) return;
+    q[id] = floorState(0.5f * qn[id] + 0.5f * (q[id] + P.dt * D[id]));
+}
+
 // ---- plain kernels (one grid) -------------------------------------------
 kernel void cc_flux_x(device const float4* q [[buffer(0)]],
                       device const CCMom* geo [[buffer(1)]],
@@ -289,4 +407,54 @@ kernel void cc_update_pool(device float4* q [[buffer(0)]],
                            uint3 g [[thread_position_in_grid]]) {
     ccUpdateBody(q, geo, D, P, int(slots[g.z]) * P.stride,
                  int(g.x) + NG, int(g.y) + NG);
+}
+
+// ---- 2nd-order plain kernels (one grid) ---------------------------------
+kernel void cc_grad(device const float4* q [[buffer(0)]],
+                    device const CCMom* geo [[buffer(1)]],
+                    device float4* Gdx [[buffer(2)]],
+                    device float4* Gdy [[buffer(3)]],
+                    constant CCP& P [[buffer(4)]],
+                    uint2 g [[thread_position_in_grid]]) {
+    ccGradBody(q, geo, Gdx, Gdy, P, 0, int(g.x) + NG, int(g.y) + NG);
+}
+kernel void cc_flux_x_o2(device const float4* q [[buffer(0)]],
+                         device const CCMom* geo [[buffer(1)]],
+                         device const float4* Gdx [[buffer(2)]],
+                         device const float4* Gdy [[buffer(3)]],
+                         device float4* Fx [[buffer(4)]],
+                         constant CCP& P [[buffer(5)]],
+                         uint2 g [[thread_position_in_grid]]) {
+    ccFluxXo2Body(q, geo, Gdx, Gdy, Fx, P, 0, int(g.x) + NG - 1,
+                  int(g.y) + NG);
+}
+kernel void cc_flux_y_o2(device const float4* q [[buffer(0)]],
+                         device const CCMom* geo [[buffer(1)]],
+                         device const float4* Gdx [[buffer(2)]],
+                         device const float4* Gdy [[buffer(3)]],
+                         device float4* Fy [[buffer(4)]],
+                         constant CCP& P [[buffer(5)]],
+                         uint2 g [[thread_position_in_grid]]) {
+    ccFluxYo2Body(q, geo, Gdx, Gdy, Fy, P, 0, int(g.x) + NG,
+                  int(g.y) + NG - 1);
+}
+kernel void cc_dc_o2(device const float4* q [[buffer(0)]],
+                     device const CCMom* geo [[buffer(1)]],
+                     device const float4* Gdx [[buffer(2)]],
+                     device const float4* Gdy [[buffer(3)]],
+                     device const float4* Fx [[buffer(4)]],
+                     device const float4* Fy [[buffer(5)]],
+                     device float4* Dc [[buffer(6)]],
+                     constant CCP& P [[buffer(7)]],
+                     uint2 g [[thread_position_in_grid]]) {
+    ccDcO2Body(q, geo, Gdx, Gdy, Fx, Fy, Dc, P, 0, int(g.x) + NG,
+               int(g.y) + NG);
+}
+kernel void cc_rk2(device float4* q [[buffer(0)]],
+                   device const float4* qn [[buffer(1)]],
+                   device const CCMom* geo [[buffer(2)]],
+                   device const float4* D [[buffer(3)]],
+                   constant CCP& P [[buffer(4)]],
+                   uint2 g [[thread_position_in_grid]]) {
+    ccRk2Body(q, qn, geo, D, P, 0, int(g.x) + NG, int(g.y) + NG);
 }
