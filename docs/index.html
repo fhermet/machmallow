@@ -126,6 +126,7 @@
     letter-spacing:.15em; text-transform:uppercase; color:var(--cyan)}
   .galgroup:first-of-type{margin-top:6px}
   .gal{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px}
+  .gal .wide{grid-column:1 / -1}   /* wide panorama figures span the full row */
   figure{margin:0; background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden}
   figure img{width:100%; display:block; background:#fff}
   figcaption{padding:12px 14px; color:var(--mut); font-size:.88rem}
@@ -231,24 +232,24 @@
       <figcaption><b>Order of accuracy</b> · measured L1 convergence rate.</figcaption></figure>
   </div>
 
-  <h3 class="galgroup">Shocks, AMR &amp; embedded geometry</h3>
+  <h3 class="galgroup">Shocks &amp; adaptive mesh</h3>
   <div class="gal">
-    <figure><img src="gallery/dmr.png" alt="Double Mach reflection">
-      <figcaption><b>Double Mach reflection</b> · hybrid subcycled AMR.</figcaption></figure>
-    <figure><img src="gallery/cutcell.png" alt="Cut-cell surface pressure">
-      <figcaption><b>Mach 2 cylinder</b> · cut-cell surface Cp vs staircase &amp; pitot.</figcaption></figure>
+    <figure class="wide"><img src="gallery/dmr.png" alt="Double Mach reflection">
+      <figcaption><b>Double Mach reflection</b> · hybrid subcycled AMR (the mesh tracks the shocks).</figcaption></figure>
   </div>
 
-  <h3 class="galgroup">Viscous · Navier–Stokes</h3>
+  <h3 class="galgroup">Cut cells · embedded geometry</h3>
   <div class="gal">
-    <figure><img src="gallery/blasius.png" alt="Blasius boundary layer">
-      <figcaption><b>Blasius boundary layer</b> · no-slip flat plate vs theory.</figcaption></figure>
+    <figure><img src="gallery/cutcell.png" alt="Cut-cell surface pressure">
+      <figcaption><b>Mach 2 cylinder</b> · cut-cell surface Cp vs staircase &amp; pitot.</figcaption></figure>
     <figure><img src="gallery/cutcell_cylinder.png" alt="Viscous cylinder Re=40">
       <figcaption><b>Viscous cylinder, Re = 40</b> · recirculation bubble &amp; drag.</figcaption></figure>
   </div>
 
-  <h3 class="galgroup">Multi-physics · two-gas &amp; reacting</h3>
+  <h3 class="galgroup">Viscous, two-gas &amp; reacting</h3>
   <div class="gal">
+    <figure><img src="gallery/blasius.png" alt="Blasius boundary layer">
+      <figcaption><b>Blasius boundary layer</b> · no-slip flat plate vs theory.</figcaption></figure>
     <figure><img src="gallery/hs.png" alt="Shock–bubble interaction">
       <figcaption><b>Shock–bubble (Haas &amp; Sturtevant)</b> · two-gas, vs experiment.</figcaption></figure>
     <figure><img src="gallery/detonation.png" alt="Chapman–Jouguet detonation">
