@@ -66,6 +66,17 @@ def find_font(size, regular=False):
 ACCENT = (159, 211, 255)
 
 
+def fit_font(text, target, max_w, regular=False):
+    """Largest font (starting at `target` px) whose `text` fits within max_w."""
+    size = target
+    while size > 10:
+        f = find_font(size, regular=regular)
+        if f.getlength(text) <= max_w:
+            return f
+        size -= 2
+    return find_font(size, regular=regular)
+
+
 def add_label(img, title, subtitle=None):
     """Professional two-line title at the top: bold keyword line + a smaller
     keyword-rich subtitle (SEO). Clean text with a soft halo, no box."""
@@ -73,12 +84,12 @@ def add_label(img, title, subtitle=None):
     over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(over)
     y = int(H * 0.040)
-    tfont = find_font(int(H * 0.050))
+    tfont = fit_font(title, int(H * 0.050), int(W * 0.92))
     d.text((W // 2, y), title, font=tfont, anchor="ma",
            fill=(255, 255, 255, 245), stroke_width=max(3, H // 380),
            stroke_fill=(0, 0, 0, 235))
     if subtitle:
-        sfont = find_font(int(H * 0.0225), regular=True)
+        sfont = fit_font(subtitle, int(H * 0.0225), int(W * 0.94), regular=True)
         d.text((W // 2, y + int(H * 0.062)), subtitle, font=sfont,
                anchor="ma", fill=ACCENT + (235,), stroke_width=2,
                stroke_fill=(0, 0, 0, 210))
@@ -140,6 +151,31 @@ def add_watermark(img, text="machmallow", opacity=0.62):
     d.text((W - m, H - m), text, font=font, anchor="rs",
            fill=(255, 255, 255, a), stroke_width=max(2, H // 540),
            stroke_fill=(0, 0, 0, int(a * 0.85)))
+    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+
+
+def add_reveal_caption(img, title, subtitle=None):
+    """Explanatory caption for the AMR end-card: a bold line + a smaller line,
+    centred in the lower third so it never hides the refined shock/body at the
+    top. Slight scrim behind for legibility over the busy AMR overlay."""
+    W, H = img.size
+    over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(over)
+    y = int(H * 0.80)
+    # soft scrim band behind the text
+    band = Image.new("RGBA", (W, int(H * 0.16)), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(band)
+    bd.rectangle([0, 0, W, band.height], fill=(0, 0, 0, 120))
+    over.alpha_composite(band, (0, y - int(H * 0.03)))
+    tfont = fit_font(title, int(H * 0.050), int(W * 0.92))
+    d.text((W // 2, y), title, font=tfont, anchor="ma",
+           fill=(255, 255, 255, 250), stroke_width=max(3, H // 380),
+           stroke_fill=(0, 0, 0, 235))
+    if subtitle:
+        sfont = fit_font(subtitle, int(H * 0.024), int(W * 0.94), regular=True)
+        d.text((W // 2, y + int(H * 0.064)), subtitle, font=sfont,
+               anchor="ma", fill=ACCENT + (240,), stroke_width=2,
+               stroke_fill=(0, 0, 0, 220))
     return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
 
 
@@ -279,6 +315,16 @@ def main():
     ap.add_argument("--end", type=int, default=None)
     ap.add_argument("--mask-circle", default=None)
     ap.add_argument("--render-height", type=int, default=1280)
+    # AMR reveal end-card (a still frame rendered with --amr-boxes)
+    ap.add_argument("--reveal-frame", default=None,
+                    help="PNG (field + AMR boxes) held at the end as a card")
+    ap.add_argument("--reveal-seconds", type=float, default=2.5,
+                    help="hold duration of the AMR reveal card")
+    ap.add_argument("--reveal-fade", type=int, default=10,
+                    help="crossfade N frames from the loop into the reveal card")
+    ap.add_argument("--reveal-title", default="Adaptive Mesh Refinement")
+    ap.add_argument("--reveal-sub",
+                    default="the grid refines itself around the shock & body")
     args = ap.parse_args()
 
     if args.prefix:
@@ -319,6 +365,27 @@ def main():
         frames = [add_flow_arrow(f, args.flow_arrow) for f in frames]
     if not args.no_watermark:
         frames = [add_watermark(f) for f in frames]
+
+    # AMR reveal end-card: fade from the loop into a held still that shows the
+    # mesh blocks tracking the shock and body (mirrors the DMR reveal).
+    if args.reveal_frame:
+        card = fit(Image.open(args.reveal_frame).convert("RGB"))
+        card = add_reveal_caption(card, args.reveal_title, args.reveal_sub)
+        if not args.no_watermark:
+            card = add_watermark(card)
+        k = max(0, args.reveal_fade)
+        if k > 0 and frames:
+            last = np.asarray(frames[-1], np.float32)
+            c = np.asarray(card, np.float32)
+            fade = [Image.fromarray(
+                (((1 - (i + 1) / (k + 1)) * last +
+                  ((i + 1) / (k + 1)) * c)).astype(np.uint8))
+                for i in range(k)]
+            frames += fade
+        hold = max(1, int(round(args.reveal_seconds * args.fps)))
+        frames += [card] * hold
+        print(f"AMR reveal: {k}-frame fade + {hold}-frame hold "
+              f"({args.reveal_seconds:.1f}s card)")
 
     encode(frames, args.out, args.fps)
 
