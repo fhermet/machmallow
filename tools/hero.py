@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -77,23 +77,53 @@ def fit_font(text, target, max_w, regular=False):
     return find_font(size, regular=regular)
 
 
+def _tracked_positions(draw, text, font, tracking, cx, y):
+    """Per-glyph x positions for a centred, letter-spaced line. Returns
+    (positions, total_width, text_height)."""
+    widths = [draw.textlength(ch, font=font) for ch in text]
+    total = sum(widths) + tracking * max(0, len(text) - 1)
+    ascent, descent = font.getmetrics()
+    x = cx - total / 2
+    pos = []
+    for ch, w in zip(text, widths):
+        pos.append((x, ch))
+        x += w + tracking
+    return pos, total, ascent + descent
+
+
 def add_label(img, title, subtitle=None):
-    """Professional two-line title at the top: bold keyword line + a smaller
-    keyword-rich subtitle (SEO). Clean text with a soft halo, no box."""
-    W, H = img.size
+    """Branded title at the top: letter-spaced wordmark with a soft glow (not a
+    hard stroke) and a short icefire accent rule beneath — reads 'designed',
+    not raw. Optional smaller subtitle kept for reuse."""
+    base = img.convert("RGBA")
+    W, H = base.size
+    y = int(H * 0.045)
+    tfont = fit_font(title, int(H * 0.038), int(W * 0.80))
+    track = max(2, int(H * 0.005))                 # letter spacing
+    meas = ImageDraw.Draw(base)
+    pos, total, th = _tracked_positions(meas, title, tfont, track, W / 2, y)
+
+    # soft dark glow (blurred) for legibility over the field, no hard outline
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    for x, ch in pos:
+        gd.text((x, y), ch, font=tfont, fill=(0, 0, 0, 210))
+    glow = glow.filter(ImageFilter.GaussianBlur(max(4, H // 220)))
+    base = Image.alpha_composite(base, glow)
+
     over = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(over)
-    y = int(H * 0.040)
-    tfont = fit_font(title, int(H * 0.050), int(W * 0.92))
-    d.text((W // 2, y), title, font=tfont, anchor="ma",
-           fill=(255, 255, 255, 245), stroke_width=max(3, H // 380),
-           stroke_fill=(0, 0, 0, 235))
+    od = ImageDraw.Draw(over)
+    for x, ch in pos:                              # crisp white wordmark
+        od.text((x, y), ch, font=tfont, fill=(255, 255, 255, 252))
+    base = Image.alpha_composite(base, over)
+
     if subtitle:
-        sfont = fit_font(subtitle, int(H * 0.0225), int(W * 0.94), regular=True)
-        d.text((W // 2, y + int(H * 0.062)), subtitle, font=sfont,
-               anchor="ma", fill=ACCENT + (235,), stroke_width=2,
-               stroke_fill=(0, 0, 0, 210))
-    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+        sfont = fit_font(subtitle, int(H * 0.021), int(W * 0.94), regular=True)
+        sd = ImageDraw.Draw(base)
+        sd.text((W // 2, y + th + int(H * 0.012)), subtitle, font=sfont,
+                anchor="ma", fill=ACCENT + (230,), stroke_width=2,
+                stroke_fill=(0, 0, 0, 205))
+    return base.convert("RGB")
 
 
 def add_flow_arrow(img, direction="down", opacity=0.92):
@@ -180,6 +210,21 @@ def add_reveal_caption(img, title, subtitle=None):
 
 
 # ---- geometry ------------------------------------------------------------
+def to_vertical_contain(img, W=1080, H=1920):
+    """Rotate a horizontal wake 90° CW (flow -> top-to-bottom), then scale to
+    FIT entirely inside WxH and centre on black. For a very long wake (wide
+    domain) this shows the FULL length developing; the black side bars are
+    invisible against the black field background."""
+    r = img.transpose(Image.ROTATE_270)
+    rw, rh = r.size
+    s = min(W / rw, H / rh)                       # contain
+    r = r.resize((max(1, round(rw * s)), max(1, round(rh * s))), Image.LANCZOS)
+    rw, rh = r.size
+    canvas = Image.new("RGB", (W, H), (0, 0, 0))
+    canvas.paste(r, ((W - rw) // 2, (H - rh) // 2))
+    return canvas
+
+
 def to_vertical(img, W=1080, H=1920, top=0.5):
     """Rotate a horizontal wake 90° CW (flow -> top-to-bottom), then scale to
     COVER WxH and crop (no black bars): centre horizontally, anchor the
@@ -293,6 +338,9 @@ def main():
     ap.add_argument("--out", required=True, help="output .mp4")
     ap.add_argument("--format", choices=["vertical", "wide"],
                     default="vertical", help="9:16 Short (default) or 16:9")
+    ap.add_argument("--fit", choices=["cover", "contain"], default="cover",
+                    help="vertical: cover (crop to fill) or contain (fit whole "
+                         "wake, black side bars) — contain for very long wakes")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--no-loop", action="store_true",
                     help="keep the full sequence (no seamless-loop cut)")
@@ -336,8 +384,12 @@ def main():
     frames = load_frames(frames_dir)
     print(f"loaded {len(frames)} frames")
 
-    fit = to_wide if args.format == "wide" else \
-        (lambda im: to_vertical(im, top=args.top))
+    if args.format == "wide":
+        fit = to_wide
+    elif args.fit == "contain":
+        fit = to_vertical_contain
+    else:
+        fit = lambda im: to_vertical(im, top=args.top)
     frames = [fit(f) for f in frames]
 
     if not args.no_loop:

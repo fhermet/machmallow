@@ -62,10 +62,14 @@ characteristic non-reflecting BC remains in the backlog.
   the cell-quantized mask (circle + half-plane). Remaining: log plotting.
   Without depending on ParaView for daily use. **Hero Short pipeline**
   (`tools/hero.py`): 9:16/16:9, seamless loop (period auto-detect + crossfade
-  for aperiodic wakes), width-fit titles, brand watermark, and an **AMR
-  reveal end-card** (`--reveal-frame`: an `--amr-boxes` still held with a
-  caption — the mesh blocks tracking shock & body, as in the DMR short). Used
-  by the Mach-2 cut-cell cylinder hero (`cases/cylinder_hero.ini`).
+  for aperiodic wakes), `--fit cover|contain` (crop-to-fill vs fit-the-whole-
+  wake for very long domains), branded title (letter-spaced wordmark + soft
+  glow, width auto-fit), brand watermark, adjustable fps, and an **AMR reveal
+  end-card** (`--reveal-frame`: an `--amr-boxes` still held with a caption —
+  the mesh blocks tracking shock & wake, as in the DMR short). Drives the
+  Mach-2 cylinder hero (`cases/cylinder_hero.ini`): deep AMR (5 levels, finest
+  1/400) over a stretched domain so the wake vortex street develops; body
+  drawn smooth via the kappa-aware `--solid-case` mask.
   **V&V figure dossier** (`vv/`): `vv/generate.py` runs the V&V drivers and
   turns their output into committed comparison figures (computed vs
   exact/theory) + one illustrated fiche per case (`vv/cases/`) — now covering
