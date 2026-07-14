@@ -490,12 +490,15 @@ normal velocity, slip). First brick laid:
   reflux into a cut cell passes the increment through the same hybrid
   redistribution as the advance), κ-restriction and EB-band tagging — all behind
   `cfg.cutCell` + `AmrML::momentFn` (staircase/WENO/species paths untouched).
-  Gates: composite mass drift **4.6e-8 (2-level), 1.2e-8 (2-level subcycled),
-  8.1e-8 (3-level), 1.5e-8 (3-level subcycled)** for a body nested in the finest
-  level. **Known limitation** (reported, not gated): a body whose cut cells abut
-  a coarse-fine seam loses the redistribution that crosses that seam to the
-  covering-level restriction (~2e-5) — the fp32 floor there needs AMReX-style
-  cross-level re-redistribution. Remaining: GPU port.
+  Gates use a body **large enough to straddle the coarse-fine seams at every
+  level** (the demanding cross-level case): composite mass drift **9.7e-8
+  (2-level), 6.0e-9 (2-level subcycled), 1.2e-7 (3-level), 4.1e-9 (3-level
+  subcycled)** — the fp32 floor, i.e. cut cells are conservative *across*
+  coarse-fine boundaries, not only when nested. Resolution note: on a very
+  coarse base (few cells across the body) with 3 levels a degenerate patch
+  topology can raise the drift to ~2e-5 — an under-resolution artifact
+  (base 48 → 1.2e-7 vs base 32 → 2.2e-5), not a scheme defect. Remaining: GPU
+  port.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
