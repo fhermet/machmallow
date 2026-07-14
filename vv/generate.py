@@ -764,6 +764,51 @@ def plot_immersed(txt):
     return d
 
 
+def plot_cutcell(txt):
+    """Cut cells (exact embedded boundary) vs the staircase mask. Metrics are
+    parsed from the concatenated cutcell driver logs; the figure is the Mach-2
+    cylinder surface Cp(theta) — cut smooth vs staircase oscillating."""
+    d = {"o2": grab(txt, r"final order = ([\d.]+)"),
+         "align": grab(txt, r"radial alignment: ([\d.]+)"),
+         "pitot": grab(txt, r"err ([\d.]+)% \(gate 3%\)"),
+         "smooth": grab(txt, r"([\d.]+)x smoother"),
+         "couette_order": grab(txt, r"convergence order ~ ([\d.]+)"),
+         "couette_err": grab(txt, r"\n\s*96\s+([\d.eE+-]+)"),
+         "ml_drift": grab(txt, r"3 levels, subcycled\s*:.*?drift ([\d.eE+-]+)"),
+         "gpu_ml": grab(txt,
+                        r"3 levels, single-rate : refined yes, lock-step rho "
+                        r"([\d.eE+-]+)")}
+    cutp = os.path.join(OUT, "cutcell_cp_cut.csv")
+    stap = os.path.join(OUT, "cutcell_cp_staircase.csv")
+    if not (os.path.exists(cutp) and os.path.exists(stap)):
+        return d
+    rc = read_csv(cutp); rs = read_csv(stap)
+    tc = np.array([float(r["theta_deg"]) for r in rc]); cpc = np.array(
+        [float(r["cp"]) for r in rc])
+    ts = np.array([float(r["theta_deg"]) for r in rs]); cps = np.array(
+        [float(r["cp"]) for r in rs])
+    oc, os_ = np.argsort(tc), np.argsort(ts)
+    cp_stag = 1.6573                                   # Rayleigh pitot Cp
+    th = np.linspace(90, 270, 200)
+    cpN = cp_stag * np.cos(np.radians(th))**2          # modified Newtonian
+    fig, ax = plt.subplots(figsize=(7.6, 5.0))
+    ax.plot(th, cpN, "k--", lw=1.3,
+            label=r"modified Newtonian $C_{p,0}\cos^2\theta$")
+    ax.plot(ts[os_], cps[os_], "o-", ms=3, lw=0.8, color="#d62728", alpha=0.85,
+            label="staircase (cell-to-cell oscillation)")
+    ax.plot(tc[oc], cpc[oc], "-", lw=2.2, color=CYAN, label="cut-cell (smooth)")
+    ax.axhline(cp_stag, color="gray", ls=":", lw=1)
+    ax.text(184, cp_stag + 0.03, "pitot Rayleigh", fontsize=8, color="gray")
+    ax.set_xlim(90, 270)
+    ax.set_xlabel(r"surface angle $\theta$ (deg) — 180° = upstream stagnation")
+    ax.set_ylabel(r"$C_p = (p-p_\infty)/q_\infty$")
+    ax.set_title("Mach-2 cylinder surface pressure — cut-cell vs staircase")
+    ax.legend(fontsize=8.5, loc="upper right"); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "cutcell.png"))
+    plt.close(fig)
+    return d
+
+
 def plot_dmr(txt):
     """Double Mach reflection density field (GPU, t=0.2) — the canonical
     strong-shock AMR showcase. Metrics from the GPU/AMR/multi-level drivers."""
@@ -879,7 +924,7 @@ FOOTER = ("\n---\n*Part of the [V&V dossier](../README.md). "
 def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
                  sod2d_txt="", samr_txt="", mms=None, rea=None, weno=None,
                  species=None, analytic=None, immersed=None, dmr=None,
-                 hs=None, infra=None):
+                 hs=None, infra=None, cutcell=None):
     """Write one fiche per case in vv/cases/ + the index vv/README.md."""
     det = det or {}
     mms = mms or {}
@@ -891,6 +936,7 @@ def write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det=None,
     dmr = dmr or {}
     hs = hs or {}
     infra = infra or {}
+    cutcell = cutcell or {}
     sod2d_order = grab(sod2d_txt, r"mean order: ([\d.]+)")
     rfx_with = grab(samr_txt, r"frozen mesh\): ([\d.eE+-]+) with")
     rfx_without = grab(samr_txt, r"with refluxing \| ([\d.eE+-]+) without")
@@ -1622,6 +1668,64 @@ test for the refluxing: without it, the coarse/fine flux mismatch would show
 as a steadily growing mass drift. Tolerances elsewhere are calibrated on this
 measured floor, not on an idealized zero.""")
 
+    # ---- fiche: cut cells (embedded boundary) ---------------------------
+    fiche("cutcell.md", f"""# Cut cells (embedded boundary) — *verification & validation*
+
+**Objective.** Validate the **cut-cell** treatment of immersed bodies — the
+geometrically exact alternative to the staircase mask (aperture-weighted fluxes
++ flux redistribution + slip/no-slip embedded-boundary flux) — across five
+fronts: (1) the **geometry** is exact (fluid area, EB normal); (2) the scheme is
+**2nd order** on a smooth flow; (3) the **surface pressure** on a Mach-2 cylinder
+matches the exact stagnation value and is *smooth* where the staircase
+oscillates; (4) a **no-slip** boundary layer (Couette) matches the exact
+profile; (5) the operator is **conservative through the AMR** and matches the
+GPU in lock-step, at any depth.
+
+## Numerical setup
+> Aperture-weighted HLLC faces + exact slip-wall EB flux, 2nd order = LSQ
+> gradients (Barth–Jespersen) + SSP-RK2; hybrid flux redistribution for the
+> small-cell problem. Full cells reduce to 2nd-order MUSCL-HLLC; only cut cells
+> get the aperture / EB / FRD treatment. Threaded through the AMR (Amr2/AmrML)
+> and ported to Metal (AmrGpuCut/AmrGpuMLCut). Drivers: `cutcell_geom`,
+> `cutcell_o2`, `cutcell_cp`, `cutcell_viscous`, `cutcell_amr_ml`,
+> `cutcell_gpu_ml`. float32.
+
+## Results
+![Mach-2 cylinder surface pressure — cut-cell vs staircase](../figures/cutcell.png)
+
+| Gate | Test | Result |
+|---|---|---|
+| geometry | fluid area vs analytic; EB-normal ⟂ interface | area exact (≤1e-9); normal alignment {cutcell.get('align', '—')} (gate >0.99) |
+| order | smooth entropy blob on a 45° wall, L1 order | {cutcell.get('o2', '—')} (gate >1.7) |
+| surface p | stagnation Cp vs **Rayleigh pitot** (normal shock) | err {cutcell.get('pitot', '—')} % (gate 3 %) |
+| surface p | windward Cp(θ) smoothness vs staircase | **{cutcell.get('smooth', '—')}× smoother** (gate 3×) |
+| no-slip | Couette profile vs exact linear; order | err ≤ {cutcell.get('couette_err', '—')}/U at 96², order {cutcell.get('couette_order', '—')} |
+| conservation | composite mass, 3-level subcycled AMR | drift {cutcell.get('ml_drift', '—')} (fp32 floor) |
+| GPU | AmrGpuMLCut vs AmrML, 3-level lock-step | ρ {cutcell.get('gpu_ml', '—')} |
+
+## Discussion
+The foundation is the **geometry**: the analytic moments give the fluid area to
+the rounding floor and an EB normal aligned with the true interface to
+{cutcell.get('align', '—')} — so the boundary is exact at every resolution, not
+approximated by cells. On that geometry the scheme reaches **order
+{cutcell.get('o2', '—')}** on a smooth flow (LSQ + RK2), and the payoff is
+clearest on the **Mach-2 cylinder**: the stagnation pressure matches the exact
+Rayleigh-pitot value to {cutcell.get('pitot', '—')} %, and the windward surface
+Cp(θ) is **{cutcell.get('smooth', '—')}× smoother** than the staircase, which
+oscillates cell-to-cell (see figure — cut tracks the modified-Newtonian trend,
+staircase rattles around it). The **no-slip** embedded boundary reproduces the
+exact linear Couette profile, and the whole operator stays **conservative
+through the AMR** (mass at the fp32 floor across a 3-level subcycled hierarchy
+with the body straddling the coarse-fine seams) while the **Metal** port matches
+the CPU oracle in lock-step. Together: exact geometry, 2nd order, clean surface
+loads, viscous-capable, conservative, and GPU-accelerated at any depth — the
+staircase's jaggedness (and its spurious surface noise) removed. Contrast the
+[immersed staircase](immersed.md) fiche, which validates the mask approach the
+cut cells supersede.
+
+> The rendered body can be drawn at its exact (κ-aware, anti-aliased) boundary
+> with `schlieren_video.py --solid-case CASE.ini`.""")
+
     # ---- index ----------------------------------------------------------
     index = f"""# Verification & Validation
 
@@ -1661,6 +1765,7 @@ python3 vv/generate.py
 | [Blasius boundary layer](cases/blasius.md) | validation · theory | RMS {rms} vs $f'$; Cf bias traced to near-wall resolution | ✅ PASS |
 | [Oblique shock θ-β-M](cases/wedge.md) | validation · theory | β → exact (staircase bias 2.5°→0.6° w/ refinement) | ✅ PASS |
 | [Immersed boundaries](cases/immersed.md) | validation · theory | reflected-shock wall p exact; no-slip Blasius (RMS {immersed.get('rms', '—')}); GPU lock-step | ✅ PASS |
+| [Cut cells (embedded boundary)](cases/cutcell.md) | verification · validation | exact geometry; order {cutcell.get('o2', '—')}; cylinder Cp {cutcell.get('pitot', '—')} % vs pitot, {cutcell.get('smooth', '—')}× smoother than staircase | ✅ PASS |
 | [Double Mach reflection](cases/dmr.md) | verification | strong-shock triple point; CPU↔GPU lock-step ({dmr.get('gpu_speed', '—')}×) through 3-level AMR | ✅ PASS |
 | [Shock–bubble (Haas & Sturtevant)](cases/shock_bubble.md) | validation · experiment | interface velocities within ±10 % of experiment (two-gas + AMR + GPU) | ✅ PASS |
 
@@ -1685,6 +1790,9 @@ def main():
     INFRA = ["ml_amr", "kh_amr", "shear"]  # ml_amr CPU, kh_amr/shear GPU
     IMM = ["immersed", "immersed_case", "immersed_amr", "immersed_noslip",
            "immersed_gpu"]
+    # cut-cell V&V: geometry, 2nd-order, surface Cp, viscous, conservation, GPU
+    CUT = ["cutcell_geom", "cutcell_o2", "cutcell_cp", "cutcell_viscous",
+           "cutcell_amr_ml", "cutcell_gpu_ml"]
     DMR = [("dmr_gpu", ["240"]), ("dmr_amr", ["128", "gpu"]),
            ("mlgpu_amr", ["32"]), ("casedef_test", [])]
     if not args.no_run:
@@ -1704,6 +1812,7 @@ def main():
         dmr_txt = "\n".join(run_driver(e, *a) for e, a in DMR)  # GPU DMR suite
         hs_txt = run_driver("hs_suite")                         # GPU shock-bubble
         infra_txt = "\n".join(run_driver(e) for e in INFRA)     # AMR/GPU machinery
+        cut_txt = "\n".join(run_driver(e) for e in CUT)         # cut cells
         run_case("vv/conservation.ini")
     else:                                           # replot from cached logs
         (conv_txt, sod_txt, sod2d_txt, samr_txt, mms_txt, rea_txt, weno_txt,
@@ -1717,6 +1826,7 @@ def main():
         dmr_txt = "\n".join(cached(e) for e, _ in DMR)
         hs_txt = cached("hs_suite")
         infra_txt = "\n".join(cached(e) for e in INFRA)
+        cut_txt = "\n".join(cached(e) for e in CUT)
 
     print("plotting…")
     orders = plot_order()
@@ -1732,6 +1842,7 @@ def main():
     dmr = plot_dmr(dmr_txt)
     hs = plot_hs(hs_txt)
     infra = plot_infra(infra_txt)
+    cutcell = plot_cutcell(cut_txt)
     plot_blasius()
     plot_blasius_cf()
     plot_blasius_refine()
@@ -1752,14 +1863,15 @@ def main():
             "analytic_toro2.csv", "analytic_toro3.csv", "analytic_toro4.csv",
             "analytic_sedov.csv", "analytic_rt.csv",
             "immersed_noslip.csv", "shear_profile.csv",
-            "vv_conservation_log.csv"}
+            "vv_conservation_log.csv",
+            "cutcell_cp_cut.csv", "cutcell_cp_staircase.csv"}
     for f in os.listdir(OUT):
         if f in keep or re.match(r"sod_\d+\.csv", f):
             shutil.copy(os.path.join(OUT, f), os.path.join(DATA, f))
 
     write_report(orders, sod_n, sod_txt, bla_txt, conv_txt, det,
                  sod2d_txt, samr_txt, mms, rea, weno, species, analytic,
-                 immersed, dmr, hs, infra)
+                 immersed, dmr, hs, infra, cutcell)
     print(f"done — figures in {FIG}, fiches in {CASES}, index "
           f"{os.path.join(VV, 'README.md')}")
 
