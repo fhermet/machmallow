@@ -53,6 +53,12 @@ struct AmrConfig {
                                 // rate, Amr2): aperture-weighted fluxes +
                                 // flux redistribution instead of a staircase
                                 // mask. Requires Amr2::momentFn.
+    bool cutCellO2 = false;     // 2nd-order cut cells (LSQ gradients +
+                                // reconstruction + SSP-RK2) instead of the
+                                // 1st-order operator. Full cells reduce to
+                                // 2nd-order MUSCL-HLLC; only cut cells get the
+                                // aperture / EB / FRD treatment. Implies
+                                // cutCell.
 };
 
 class Amr2 {
@@ -151,7 +157,11 @@ public:
     void step(Real dt, double t) {
         if (cutCellOn_() && coarseGeo_.cell.empty())
             coarseGeo_ = buildGeo_(coarse);
-        if (cutCellOn_() && cfg_.subcycle && !patches.empty())
+        if (cutO2On_() && cfg_.subcycle && !patches.empty())
+            stepCutO2Subcycled_(dt, t); // 2nd-order subcycled (RK2)
+        else if (cutO2On_())
+            stepCutO2SingleRate_(dt, t); // 2nd-order CPU cut cells (RK2)
+        else if (cutCellOn_() && cfg_.subcycle && !patches.empty())
             stepCutSubcycled_(dt, t); // subcycled CPU cut cells
         else if (cutCellOn_())
             stepCutSingleRate_(dt, t); // single-rate CPU cut cells
@@ -464,21 +474,180 @@ private:
     // lands in a patch's ghosts into the sibling that owns those cells, then
     // update. Records the per-patch extensive fluxes (pFx_/pFy_) for reflux.
     void advanceCutFinePatches_(Real dt) {
+        if (patches.empty()) return;
+        cutFineDivergence_(cfg_.cutCellO2);
+        for (std::size_t k = 0; k < patches.size(); ++k)
+            applyCutUpdate(patches[k].grid, patches[k].geo, pD_[k], dt);
+    }
+
+    // Composite divergence of every patch (no update): per-patch Dc (1st or 2nd
+    // order), Dc ghosts from siblings, hybrid + FRD, redistribution scattered
+    // into the owning siblings. Records extensive fluxes in pFx_/pFy_.
+    void cutFineDivergence_(bool o2) {
         const std::size_t np = patches.size();
-        if (np == 0) return;
         pDc_.resize(np);
         pD_.resize(np);
         pFx_.resize(np);
         pFy_.resize(np);
-        for (std::size_t k = 0; k < np; ++k)
-            pDc_[k] = cutCellDc(patches[k].grid, patches[k].geo, pFx_[k],
-                                pFy_[k]);
+        if (o2) {
+            pGrad_.resize(np);
+            for (std::size_t k = 0; k < np; ++k)
+                pGrad_[k] = lsqGradients(patches[k].grid, patches[k].geo);
+            for (std::size_t k = 0; k < np; ++k) fillPatchGradGhosts_(k);
+            for (std::size_t k = 0; k < np; ++k)
+                pDc_[k] = cutCellDcO2(patches[k].grid, patches[k].geo,
+                                      pGrad_[k], pFx_[k], pFy_[k],
+                                      domainSides(patches[k]));
+        } else {
+            for (std::size_t k = 0; k < np; ++k)
+                pDc_[k] = cutCellDc(patches[k].grid, patches[k].geo, pFx_[k],
+                                    pFy_[k]);
+        }
         for (std::size_t k = 0; k < np; ++k) fillPatchDcGhosts_(k);
         for (std::size_t k = 0; k < np; ++k)
             pD_[k] = cutCellHybridD(patches[k].grid, patches[k].geo, pDc_[k]);
         for (std::size_t k = 0; k < np; ++k) scatterPatchDGhosts_(k);
+    }
+
+    bool cutO2On_() const { return cutCellOn_() && cfg_.cutCellO2; }
+
+    // Base-grid 2nd-order divergence (single grid: ghost Dc stays 0, the FRD
+    // sheds nothing across the domain boundary). Records base fluxes.
+    std::vector<Cons> cutBaseDivergenceO2_() {
+        const auto grad = lsqGradients(coarse, coarseGeo_);
+        const std::vector<Cons> Dc =
+            cutCellDcO2(coarse, coarseGeo_, grad, cutFxC_, cutFyC_);
+        return cutCellHybridD(coarse, coarseGeo_, Dc);
+    }
+
+    // SSP-RK2 combine of one grid: U <- floor(0.5 Uold + 0.5 (U + dt D)).
+    void rk2Combine_(Grid& g, const cutcell::Geometry& geo,
+                     const std::vector<Cons>& old, const std::vector<Cons>& D,
+                     Real dt) {
+        const Real tiny = Real(1e-9);
+        for (int j = NG; j < NG + g.ny; ++j)
+            for (int i = NG; i < NG + g.nx; ++i)
+                if (double(geo.at(i, j).vol) > double(tiny)) {
+                    const std::size_t id = g.idx(i, j);
+                    g.at(i, j) = floorState(Real(0.5) * old[id] +
+                                            Real(0.5) * (g.at(i, j) +
+                                                         dt * D[id]));
+                }
+    }
+
+    // 2nd-order (SSP-RK2) single-rate cut-cell step. Both the base grid and the
+    // fine composite advance with two stages; reflux uses the time-AVERAGED
+    // extensive fluxes 0.5*(F1+F2), so conservation is preserved. Full cells
+    // reduce to 2nd-order MUSCL-HLLC; only cut cells get aperture / EB / FRD.
+    void stepCutO2SingleRate_(Real dt, double t) {
+        const std::size_t np = patches.size();
+        // ---- stage 1 (state = U^n) ----
+        fillPhysicalGhosts(coarse, t);
+        fillAllPatchGhosts_(t, Real(-1));
+        const std::vector<Cons> DC1 = cutBaseDivergenceO2_();
+        std::vector<Cons> Fc1x = cutFxC_, Fc1y = cutFyC_; // base stage-1 flux
+        cutFineDivergence_(true);
+        std::vector<std::vector<Cons>> pD1 = pD_, pF1x = pFx_, pF1y = pFy_;
+
+        coarseO2Old_ = coarse.q;
+        pOld_.resize(np);
+        for (std::size_t k = 0; k < np; ++k) pOld_[k] = patches[k].grid.q;
+
+        applyCutUpdate(coarse, coarseGeo_, DC1, dt); // base -> U1
         for (std::size_t k = 0; k < np; ++k)
-            applyCutUpdate(patches[k].grid, patches[k].geo, pD_[k], dt);
+            applyCutUpdate(patches[k].grid, patches[k].geo, pD1[k], dt);
+
+        // ---- stage 2 (state = U1) ----
+        fillPhysicalGhosts(coarse, t + dt);
+        fillAllPatchGhosts_(t + dt, Real(-1));
+        const std::vector<Cons> DC2 = cutBaseDivergenceO2_(); // records Fc2
+        cutFineDivergence_(true);                             // records Ff2
+
+        rk2Combine_(coarse, coarseGeo_, coarseO2Old_, DC2, dt);
+        for (std::size_t k = 0; k < np; ++k)
+            rk2Combine_(patches[k].grid, patches[k].geo, pOld_[k], pD_[k], dt);
+
+        // ---- reflux with the time-averaged fluxes 0.5*(F1+F2) ----
+        if (cfg_.reflux) {
+            avgFlux_(cutFxC_, Fc1x);
+            avgFlux_(cutFyC_, Fc1y);
+            for (std::size_t k = 0; k < np; ++k) {
+                avgFlux_(pFx_[k], pF1x[k]);
+                avgFlux_(pFy_[k], pF1y[k]);
+            }
+            for (std::size_t k = 0; k < np; ++k) {
+                cutRefluxBackout_(patches[k], dt);
+                cutRefluxFineApply_(patches[k], dt, pFx_[k], pFy_[k]);
+            }
+        }
+    }
+
+    static void avgFlux_(std::vector<Cons>& a, const std::vector<Cons>& b) {
+        for (std::size_t i = 0; i < a.size(); ++i)
+            a[i] = Real(0.5) * (a[i] + b[i]);
+    }
+
+    // Base-grid SSP-RK2 over dtC. Leaves the base at t^{n+1} and the TIME-
+    // AVERAGED extensive base fluxes 0.5*(Fc1+Fc2) in cutFxC_/cutFyC_ (for the
+    // single reflux back-out). Assumes base ghosts filled at t; refills at t+dtC.
+    void cutBaseRK2_(Real dtC, double t) {
+        const std::vector<Cons> DC1 = cutBaseDivergenceO2_(); // records Fc1
+        std::vector<Cons> Fc1x = cutFxC_, Fc1y = cutFyC_;
+        coarseO2Old_ = coarse.q;
+        applyCutUpdate(coarse, coarseGeo_, DC1, dtC); // -> U1
+        fillPhysicalGhosts(coarse, t + dtC);
+        const std::vector<Cons> DC2 = cutBaseDivergenceO2_(); // records Fc2
+        rk2Combine_(coarse, coarseGeo_, coarseO2Old_, DC2, dtC);
+        avgFlux_(cutFxC_, Fc1x);
+        avgFlux_(cutFyC_, Fc1y);
+    }
+
+    // One fine-composite SSP-RK2 substep over dtF, with time-interpolated coarse
+    // ghosts (theta1 at the substep start, theta2 at its end). Leaves the
+    // patches advanced and the TIME-AVERAGED fine fluxes in pFx_/pFy_.
+    void cutFineRK2Substep_(Real dtF, double tS1, Real theta1, double tS2,
+                            Real theta2) {
+        const std::size_t np = patches.size();
+        // stage 1
+        fillAllPatchGhosts_(tS1, theta1);
+        cutFineDivergence_(true);
+        std::vector<std::vector<Cons>> pF1x = pFx_, pF1y = pFy_;
+        pOld_.resize(np);
+        for (std::size_t k = 0; k < np; ++k) pOld_[k] = patches[k].grid.q;
+        for (std::size_t k = 0; k < np; ++k)
+            applyCutUpdate(patches[k].grid, patches[k].geo, pD_[k], dtF);
+        // stage 2
+        fillAllPatchGhosts_(tS2, theta2);
+        cutFineDivergence_(true);
+        for (std::size_t k = 0; k < np; ++k)
+            rk2Combine_(patches[k].grid, patches[k].geo, pOld_[k], pD_[k], dtF);
+        for (std::size_t k = 0; k < np; ++k) {
+            avgFlux_(pFx_[k], pF1x[k]);
+            avgFlux_(pFy_[k], pF1y[k]);
+        }
+    }
+
+    // 2nd-order (SSP-RK2) SUBCYCLED cut-cell step: the base advances one dtC
+    // (RK2), each patch takes two dtF = dtC/2 substeps (RK2 each) with time-
+    // interpolated coarse ghosts. Reflux backs the (single, averaged) coarse
+    // flux out once, applies each substep's averaged fine flux.
+    void stepCutO2Subcycled_(Real dtC, double t) {
+        const Real dtF = dtC / 2;
+        coarseOld_ = coarse.q; // t^n for the theta-blend prolongation
+        fillPhysicalGhosts(coarse, t);
+        cutBaseRK2_(dtC, t);   // base -> t^{n+1}, net flux in cutFxC_/cutFyC_
+        if (cfg_.reflux)
+            for (Patch& p : patches) cutRefluxBackout_(p, dtC);
+
+        cutFineRK2Substep_(dtF, t, Real(0), t + dtF, Real(0.5)); // substep 1
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < patches.size(); ++k)
+                cutRefluxFineApply_(patches[k], dtF, pFx_[k], pFy_[k]);
+
+        cutFineRK2Substep_(dtF, t + dtF, Real(0.5), t + dtC, Real(1)); // sub 2
+        if (cfg_.reflux)
+            for (std::size_t k = 0; k < patches.size(); ++k)
+                cutRefluxFineApply_(patches[k], dtF, pFx_[k], pFy_[k]);
     }
 
     // Global fine-cell (gfi,gfj) that a patch cell (i,j) maps to, with periodic
@@ -511,6 +680,24 @@ private:
                 if (pi >= 0)
                     pDc_[k][p.grid.idx(i, j)] = pDc_[pi][patches[pi].grid.idx(
                         si, sj)];
+            }
+    }
+
+    // Fill patch k's gradient ghosts from the sibling that owns each ghost cell
+    // (same-level copy), so 2nd-order reconstruction at sibling seams sees the
+    // neighbour's slope. Ghosts with no sibling (coarse-fine / domain) stay 0 —
+    // constant reconstruction there, which cutCellDcO2's physSides handles.
+    void fillPatchGradGhosts_(std::size_t k) {
+        const Patch& p = patches[k];
+        const int nf = p.grid.nx;
+        for (int j = 0; j < p.grid.toty(); ++j)
+            for (int i = 0; i < p.grid.totx(); ++i) {
+                if (i >= NG && i < NG + nf && j >= NG && j < NG + nf) continue;
+                int si, sj;
+                const int pi = siblingCell_(p, i, j, si, sj);
+                if (pi >= 0)
+                    pGrad_[k][p.grid.idx(i, j)] =
+                        pGrad_[pi][patches[pi].grid.idx(si, sj)];
             }
     }
 
@@ -881,6 +1068,9 @@ private:
     std::vector<Cons> cutFxC_, cutFyC_;          // base extensive fluxes
     std::vector<std::vector<Cons>> pDc_, pD_;    // per-patch divergences
     std::vector<std::vector<Cons>> pFx_, pFy_;   // per-patch extensive fluxes
+    std::vector<std::vector<PrimGrad>> pGrad_;   // per-patch LSQ gradients (O2)
+    std::vector<Cons> coarseO2Old_;              // base U^n (RK2 combine)
+    std::vector<std::vector<Cons>> pOld_;        // per-patch U^n (RK2 combine)
     int stepCount_ = 0;
 };
 
