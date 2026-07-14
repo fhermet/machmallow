@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>machmallow · a compressible CFD solver on Apple Silicon (Metal GPU)</title>
+<meta name="description" content="machmallow is a 2D compressible CFD solver (Euler & Navier–Stokes) with block-structured hybrid CPU/GPU AMR and cut-cell embedded boundaries, written from scratch in C++/Metal for Apple Silicon. Open source (MIT).">
+<meta name="author" content="machmallow">
+<link rel="canonical" href="https://fhermet.github.io/machmallow/">
+<meta name="theme-color" content="#06090f">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Ctext%20y='.9em'%20font-size='88'%3E%F0%9F%94%A5%3C/text%3E%3C/svg%3E">
+<!-- Open Graph -->
+<meta property="og:title" content="machmallow · compressible CFD on Apple Silicon">
+<meta property="og:description" content="Euler & Navier–Stokes, block-structured AMR, cut cells, GPU (Metal). Open-source, from scratch on a Mac.">
+<meta property="og:image" content="https://fhermet.github.io/machmallow/og-preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:url" content="https://fhermet.github.io/machmallow/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="machmallow">
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="machmallow · compressible CFD on Apple Silicon">
+<meta name="twitter:description" content="Euler & Navier–Stokes, block-structured AMR, cut cells, GPU (Metal). Open-source, from scratch on a Mac.">
+<meta name="twitter:image" content="https://fhermet.github.io/machmallow/og-preview.png">
+<!-- Structured data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "machmallow",
+  "description": "A 2D compressible CFD solver (Euler & Navier–Stokes) with block-structured hybrid CPU/GPU AMR and cut-cell embedded boundaries, written from scratch in C++/Metal for Apple Silicon.",
+  "url": "https://fhermet.github.io/machmallow/",
+  "codeRepository": "https://github.com/fhermet/machmallow",
+  "programmingLanguage": ["C++", "Metal"],
+  "runtimePlatform": "macOS (Apple Silicon)",
+  "license": "https://opensource.org/licenses/MIT",
+  "keywords": "CFD, computational fluid dynamics, compressible flow, Euler equations, Navier-Stokes, AMR, adaptive mesh refinement, cut cells, GPU, Metal, Apple Silicon, shock capturing, WENO, MUSCL"
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#06090f;
+    --panel:#0d131c;
+    --panel2:#111a26;
+    --line:#1e2a3a;
+    --ink:#e8eef6;
+    --mut:#9fb0c3;
+    --cyan:#7cc7ff;
+    --cyan-soft:#9fd3ff;
+    --ember:#ff8a4c;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Space Grotesk",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--cyan-soft); text-decoration:none}
+  a:hover{color:#fff}
+  code,pre{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+  .wrap{max-width:1080px; margin:0 auto; padding:0 22px}
+
+  /* nav */
+  nav{
+    position:sticky; top:0; z-index:10; backdrop-filter:blur(10px);
+    background:rgba(6,9,15,.72); border-bottom:1px solid var(--line);
+  }
+  nav .wrap{display:flex; align-items:center; gap:20px; height:58px}
+  .brand{font-weight:700; letter-spacing:.14em; text-transform:lowercase}
+  .brand .dot{color:var(--cyan)}
+  nav .links{margin-left:auto; display:flex; gap:22px; font-size:.92rem}
+  nav .links a{color:var(--mut)}
+  nav .links a:hover{color:#fff}
+  @media(max-width:640px){nav .links{display:none}}
+
+  /* hero */
+  header.hero{position:relative; overflow:hidden; border-bottom:1px solid var(--line)}
+  header.hero::before{
+    content:""; position:absolute; inset:0;
+    background:radial-gradient(60% 55% at 50% 0%, rgba(124,199,255,.12), transparent 70%);
+    pointer-events:none;
+  }
+  .hero .wrap{padding:70px 22px 40px; text-align:center; position:relative}
+  h1{font-size:clamp(2.4rem,6vw,4rem); margin:0 0 .1em; letter-spacing:-.01em}
+  h1 .fire{background:linear-gradient(90deg,var(--cyan),var(--ember)); -webkit-background-clip:text; background-clip:text; color:transparent}
+  .tag{font-size:clamp(1rem,2.4vw,1.3rem); color:var(--mut); font-style:italic; margin:.2em 0 1em}
+  .pitch{max-width:680px; margin:0 auto 1.4em; color:var(--ink); font-size:1.05rem}
+  .badges{display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-bottom:1.6em}
+  .badge{font-size:.8rem; color:var(--cyan-soft); border:1px solid var(--line);
+    background:var(--panel); padding:4px 11px; border-radius:999px; letter-spacing:.02em}
+  .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-bottom:8px}
+  .btn{
+    display:inline-flex; align-items:center; gap:8px; font-weight:500;
+    padding:11px 20px; border-radius:10px; border:1px solid var(--line);
+    background:var(--panel); color:var(--ink); transition:.15s;
+  }
+  .btn:hover{border-color:var(--cyan); color:#fff; transform:translateY(-1px)}
+  .btn.primary{background:linear-gradient(90deg,rgba(124,199,255,.22),rgba(255,138,76,.18)); border-color:transparent}
+  .shot{margin:34px auto 0; max-width:900px}
+  .shot img{width:100%; border-radius:14px; border:1px solid var(--line); display:block}
+  .shot .cap{color:var(--mut); font-size:.85rem; margin-top:10px; text-align:center}
+
+  /* sections */
+  section{padding:64px 0; border-bottom:1px solid var(--line)}
+  h2{font-size:clamp(1.5rem,3.4vw,2rem); margin:0 0 .2em; letter-spacing:-.01em}
+  h2 .k{color:var(--cyan)}
+  .lead{color:var(--mut); margin:0 0 2em; max-width:640px}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:22px; transition:.15s;
+  }
+  .card:hover{border-color:#2c3e56; background:var(--panel2)}
+  .card h3{margin:0 0 .4em; font-size:1.08rem}
+  .card h3 .ic{color:var(--cyan); margin-right:8px}
+  .card p{margin:0; color:var(--mut); font-size:.94rem}
+
+  /* gallery */
+  .galgroup{margin:30px 0 12px; font-size:.78rem; font-weight:500;
+    letter-spacing:.15em; text-transform:uppercase; color:var(--cyan)}
+  .galgroup:first-of-type{margin-top:6px}
+  .gal{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px}
+  figure{margin:0; background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  figure img{width:100%; display:block; background:#fff}
+  figcaption{padding:12px 14px; color:var(--mut); font-size:.88rem}
+  figcaption b{color:var(--ink); font-weight:600}
+
+  /* code */
+  pre{
+    background:#080c13; border:1px solid var(--line); border-radius:12px;
+    padding:18px 20px; overflow-x:auto; font-size:.9rem; color:#cfe0f2;
+  }
+  pre .c{color:#6b8299}
+  pre .p{color:var(--cyan-soft)}
+  .steps{display:grid; gap:14px}
+
+  footer{padding:46px 0 60px; color:var(--mut); font-size:.9rem}
+  footer .wrap{display:flex; flex-wrap:wrap; gap:24px; align-items:center; justify-content:space-between}
+  footer a{color:var(--cyan-soft)}
+  .flinks{display:flex; gap:20px; flex-wrap:wrap}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <span class="brand">machmallow<span class="dot">.</span></span>
+  <div class="links">
+    <a href="#features">Features</a>
+    <a href="#gallery">Validation</a>
+    <a href="#quickstart">Quickstart</a>
+    <a href="https://github.com/fhermet/machmallow">GitHub</a>
+    <a href="https://www.youtube.com/@MachMallow-q1m">YouTube</a>
+  </div>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <h1>mach<span class="fire">mallow</span> 🔥🧁</h1>
+  <p class="tag">Soft on the outside, supersonic on the inside.</p>
+  <p class="pitch">A 2D compressible CFD solver (<b>Euler &amp; Navier–Stokes</b>)
+    with block-structured <b>hybrid CPU/GPU AMR</b> and <b>cut-cell</b> embedded
+    boundaries, written from scratch in <b>C++/Metal</b> for Apple Silicon.</p>
+  <div class="badges">
+    <span class="badge">C++20</span>
+    <span class="badge">Metal / metal-cpp</span>
+    <span class="badge">macOS 15+ · Apple Silicon</span>
+    <span class="badge">float32</span>
+    <span class="badge">MIT license</span>
+    <span class="badge">no dependencies</span>
+  </div>
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/fhermet/machmallow">★ View on GitHub</a>
+    <a class="btn" href="#quickstart">Quickstart</a>
+    <a class="btn" href="https://www.youtube.com/@MachMallow-q1m">▶ Watch on YouTube</a>
+  </div>
+  <div class="shot">
+    <img src="hero.gif" alt="Mach 2 bow shock and vortical wake over an immersed cylinder, vorticity in the icefire colormap">
+    <div class="cap">Mach 2 flow over a cylinder · vorticity (icefire) + schlieren, adaptive mesh, on an Apple M4.</div>
+  </div>
+</div></header>
+
+<section id="features"><div class="wrap">
+  <h2>What's <span class="k">inside</span></h2>
+  <p class="lead">Every numerical method implemented from scratch, readable end
+    to end, a mini-AMReX that runs on your Mac's GPU.</p>
+  <div class="grid">
+    <div class="card"><h3><span class="ic">◆</span>Block-structured AMR</h3>
+      <p>AMReX-style patch hierarchy of arbitrary depth. Recursive Berger–Colella
+        subcycling, pairwise refluxing, guaranteed nesting on regrid.</p></div>
+    <div class="card"><h3><span class="ic">◆</span>Hybrid CPU/GPU</h3>
+      <p>The GPU computes fluxes on every level through one shared slot pool; the
+        CPU handles regridding. Metal, shaders compiled at runtime, zero-copy
+        unified memory.</p></div>
+    <div class="card"><h3><span class="ic">◆</span>Cut cells</h3>
+      <p>The solid surface cuts <em>through</em> the cells (exact volume
+        fractions and face apertures) instead of a blocky staircase, giving
+        clean walls at modest resolution. Slip or viscous no-slip, at any AMR
+        depth.</p></div>
+    <div class="card"><h3><span class="ic">◆</span>Numerical schemes</h3>
+      <p>Finite volume: 2nd-order MUSCL-Hancock with an HLLC Riemann solver, or
+        5th-order WENO5 + SSP-RK3. Positivity-preserving, with a verified order
+        of accuracy (including MMS for the viscous terms).</p></div>
+    <div class="card"><h3><span class="ic">◆</span>Multi-physics</h3>
+      <p>Compressible Navier–Stokes (Pr = 0.72, adiabatic no-slip walls),
+        two-gas mixtures, and single-step Arrhenius reactions for
+        detonation / deflagration.</p></div>
+    <div class="card"><h3><span class="ic">◆</span>Declarative &amp; validated</h3>
+      <p>A single <code>.ini</code> case file drives everything, pre-flight
+        catches errors, macOS CI. Nothing lands without a quantitative
+        validation gate.</p></div>
+  </div>
+</div></section>
+
+<section id="gallery"><div class="wrap">
+  <h2>Proven against <span class="k">references</span></h2>
+  <p class="lead">Nothing lands without a quantitative gate. Every method is
+    checked against an exact solution, theory, or experiment, grouped below
+    from fundamentals to multi-physics. Full dossier in
+    <a href="https://github.com/fhermet/machmallow/tree/main/vv">vv/</a>.</p>
+
+  <h3 class="galgroup">Fundamentals · exact solutions &amp; order</h3>
+  <div class="gal">
+    <figure><img src="gallery/sod.png" alt="Sod shock tube">
+      <figcaption><b>Sod shock tube</b> · vs exact Riemann solution.</figcaption></figure>
+    <figure><img src="gallery/order_of_accuracy.png" alt="Order of accuracy">
+      <figcaption><b>Order of accuracy</b> · measured L1 convergence rate.</figcaption></figure>
+  </div>
+
+  <h3 class="galgroup">Shocks, AMR &amp; embedded geometry</h3>
+  <div class="gal">
+    <figure><img src="gallery/dmr.png" alt="Double Mach reflection">
+      <figcaption><b>Double Mach reflection</b> · hybrid subcycled AMR.</figcaption></figure>
+    <figure><img src="gallery/cutcell.png" alt="Cut-cell surface pressure">
+      <figcaption><b>Mach 2 cylinder</b> · cut-cell surface Cp vs staircase &amp; pitot.</figcaption></figure>
+  </div>
+
+  <h3 class="galgroup">Viscous · Navier–Stokes</h3>
+  <div class="gal">
+    <figure><img src="gallery/blasius.png" alt="Blasius boundary layer">
+      <figcaption><b>Blasius boundary layer</b> · no-slip flat plate vs theory.</figcaption></figure>
+    <figure><img src="gallery/cutcell_cylinder.png" alt="Viscous cylinder Re=40">
+      <figcaption><b>Viscous cylinder, Re = 40</b> · recirculation bubble &amp; drag.</figcaption></figure>
+  </div>
+
+  <h3 class="galgroup">Multi-physics · two-gas &amp; reacting</h3>
+  <div class="gal">
+    <figure><img src="gallery/hs.png" alt="Shock–bubble interaction">
+      <figcaption><b>Shock–bubble (Haas &amp; Sturtevant)</b> · two-gas, vs experiment.</figcaption></figure>
+    <figure><img src="gallery/detonation.png" alt="Chapman–Jouguet detonation">
+      <figcaption><b>Chapman–Jouguet detonation</b> · 1D, Strang-coupled reaction.</figcaption></figure>
+  </div>
+</div></section>
+
+<section id="quickstart"><div class="wrap">
+  <h2>Get <span class="k">running</span></h2>
+  <p class="lead">macOS 15+, Command Line Tools, CMake ≥ 3.24. metal-cpp is
+    vendored, nothing else to install.</p>
+  <div class="steps">
+<pre><span class="c"># 1. clone</span>
+git clone https://github.com/fhermet/machmallow.git
+cd machmallow</pre>
+<pre><span class="c"># 2. build (Release)</span>
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build</pre>
+<pre><span class="c"># 3. run a case</span>
+./build/run cases/dmr.ini               <span class="c"># double Mach reflection (hybrid AMR)</span>
+./build/run cases/cylinder_bowshock.ini <span class="c"># Mach 2 bow shock over a cylinder</span>
+./build/run cases/shear.ini             <span class="c"># viscous shear layer (Navier–Stokes)</span></pre>
+<pre><span class="c"># 4. render a video</span>
+python3 tools/schlieren_video.py --prefix out/dmr --style schlieren</pre>
+  </div>
+  <p style="margin-top:1.6em; color:var(--mut)">Read the
+    <a href="https://github.com/fhermet/machmallow/blob/main/docs/GUIDE.md">User Guide</a> ·
+    <a href="https://github.com/fhermet/machmallow/blob/main/docs/ARCHITECTURE.md">Architecture</a> ·
+    <a href="https://github.com/fhermet/machmallow/blob/main/docs/NUMERICS.md">Numerics</a> ·
+    <a href="https://github.com/fhermet/machmallow/blob/main/docs/VALIDATION.md">Validation</a> ·
+    <a href="https://github.com/fhermet/machmallow/blob/main/docs/CASE_FORMAT.md">Case format</a>.</p>
+</div></section>
+
+<footer><div class="wrap">
+  <div>© 2026 machmallow · MIT license · built from scratch on an Apple M4, with AI pair-programming.</div>
+  <div class="flinks">
+    <a href="https://github.com/fhermet/machmallow">GitHub</a>
+    <a href="https://www.youtube.com/@MachMallow-q1m">YouTube</a>
+    <a href="https://github.com/fhermet/machmallow/blob/main/ROADMAP.md">Roadmap</a>
+  </div>
+</div></footer>
+
+</body>
+</html>

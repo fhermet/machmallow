@@ -5,6 +5,8 @@
 A 2D compressible CFD solver (Euler and Navier–Stokes) with block-structured
 hybrid CPU/GPU AMR, written from scratch in C++/Metal for Apple Silicon.
 
+**🌐 [machmallow.github.io site](https://fhermet.github.io/machmallow/)** · **[▶ YouTube](https://www.youtube.com/@MachMallow-q1m)**
+
 ![Mach 2 bow shock and vortical wake over an immersed cylinder, vorticity in the icefire colormap](docs/hero.gif)
 
 <sub>Mach 2 flow over a cylinder — vorticity (icefire) + schlieren, adaptive-mesh, on an Apple M4.</sub>
