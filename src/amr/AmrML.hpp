@@ -430,7 +430,7 @@ private:
         for (Patch& p : ps) fillPatchGradGhosts_(l, p);
         for (Patch& p : ps)
             p.cutDc = cutCellDcO2(p.grid, p.geo, p.cutGrad, p.Fx, p.Fy,
-                                  domainSides_(l, p));
+                                  domainSides_(l, p), cfg_.mu);
         for (Patch& p : ps) fillPatchDcGhosts_(l, p);
         for (Patch& p : ps) p.cutD = cutCellHybridD(p.grid, p.geo, p.cutDc);
         for (Patch& p : ps) scatterPatchDGhosts_(l, p);
@@ -446,7 +446,9 @@ private:
             auto grad = lsqGradients(base, baseGeo_);
             const std::vector<Cons> D1 = cutCellHybridD(
                 base, baseGeo_,
-                cutCellDcO2(base, baseGeo_, grad, baseFx_, baseFy_));
+                cutCellDcO2(base, baseGeo_, grad, baseFx_, baseFy_,
+                            SideLeft | SideRight | SideBottom | SideTop,
+                            cfg_.mu));
             std::vector<Cons> F1x = baseFx_, F1y = baseFy_;
             rkB0_ = base.q;
             applyCutUpdate(base, baseGeo_, D1, dt);
@@ -454,7 +456,9 @@ private:
             grad = lsqGradients(base, baseGeo_);
             const std::vector<Cons> D2 = cutCellHybridD(
                 base, baseGeo_,
-                cutCellDcO2(base, baseGeo_, grad, baseFx_, baseFy_));
+                cutCellDcO2(base, baseGeo_, grad, baseFx_, baseFy_,
+                            SideLeft | SideRight | SideBottom | SideTop,
+                            cfg_.mu));
             rk2Combine_(base, baseGeo_, rkB0_, D2, dt);
             avgFlux_(baseFx_, F1x);
             avgFlux_(baseFy_, F1y);

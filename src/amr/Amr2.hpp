@@ -497,7 +497,7 @@ private:
             for (std::size_t k = 0; k < np; ++k)
                 pDc_[k] = cutCellDcO2(patches[k].grid, patches[k].geo,
                                       pGrad_[k], pFx_[k], pFy_[k],
-                                      domainSides(patches[k]));
+                                      domainSides(patches[k]), cfg_.mu);
         } else {
             for (std::size_t k = 0; k < np; ++k)
                 pDc_[k] = cutCellDc(patches[k].grid, patches[k].geo, pFx_[k],
@@ -516,7 +516,8 @@ private:
     std::vector<Cons> cutBaseDivergenceO2_() {
         const auto grad = lsqGradients(coarse, coarseGeo_);
         const std::vector<Cons> Dc =
-            cutCellDcO2(coarse, coarseGeo_, grad, cutFxC_, cutFyC_);
+            cutCellDcO2(coarse, coarseGeo_, grad, cutFxC_, cutFyC_,
+                        SideLeft | SideRight | SideBottom | SideTop, cfg_.mu);
         return cutCellHybridD(coarse, coarseGeo_, Dc);
     }
 

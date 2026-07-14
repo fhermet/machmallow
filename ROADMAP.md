@@ -610,9 +610,20 @@ normal velocity, slip). First brick laid:
   the `cc_*_o2` bodies, `CutCell2DGpu::setViscosity`. Gate (planar Couette, a
   no-slip wall carried by the immersed boundary, wall moving at U on top): GPU
   vs CPU `stepCutCell(mu)` in lock-step **1.2e-3**, and the GPU steady profile
-  within **0.88%** of the exact linear Couette solution. Single-grid; wiring it
-  through the AMR composite (viscous reflux, `AmrGpuCut`/`AmrGpuMLCut` viscosity)
-  is the remaining step.
+  within **0.88%** of the exact linear Couette solution.
+  **Phase 5p (viscous cut cells in the AMR, GPU)** (`feature/cutcell-amr-viscous`,
+  gate `cutcell_amr_viscous`): the viscous flux threaded through the whole
+  cut-cell AMR. `cutCellDcO2` gained the `mu>0` branch (so the CPU `Amr2`/`AmrML`
+  O2 oracles are viscous); the viscous stress rides in the recorded extensive
+  fluxes, so the averaged-flux reflux stays conservative with **no separate
+  viscous reflux** (the viscous flux carries zero mass, and momentum/energy
+  refluxing is the same machinery). `AmrGpuCut`/`AmrGpuMLCut` push `mu`/`kT` onto
+  the coarse grid + every level's pool when O2 is enabled. Gate: GPU vs CPU
+  (`Amr2`/`AmrML` O2, mu>0) lock-step **1.2e-5 (2-level), 1.3e-5 (3-level)**,
+  composite mass at the fp32 floor **5.7e-7**. Also fixed `AmrGpuCut::totalMass`
+  to be κ-weighted (it summed plain ρ·area, over-counting cut/covered cells — a
+  latent measurement bug, exposed by this gate). **Cut cells are now viscous
+  everywhere: single-grid + AMR, CPU + GPU, at 2nd order.**
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 

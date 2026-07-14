@@ -165,6 +165,8 @@ public:
         }
     }
 
+    // kappa-weighted composite fluid mass (uncovered coarse + fine patches);
+    // cut cells contribute only their fluid fraction, covered cells nothing.
     double totalMass() const {
         double m = 0;
         const GridRef c = coarseRef();
@@ -172,13 +174,15 @@ public:
         for (int j = 0; j < c.ny; ++j)
             for (int i = 0; i < c.nx; ++i)
                 if (!covered(i / cfg_.blockC, j / cfg_.blockC))
-                    m += double(c.at(NG + i, NG + j).rho) * ac;
+                    m += double(coarseGeo_.at(NG + i, NG + j).vol) * ac *
+                         double(c.at(NG + i, NG + j).rho);
         for (const Patch& p : patches) {
             const GridRef g = patchRef(p);
             const double af = double(g.dx) * g.dy;
             for (int j = NG; j < NG + g.ny; ++j)
                 for (int i = NG; i < NG + g.nx; ++i)
-                    m += double(g.at(i, j).rho) * af;
+                    m += double(p.geo.at(i, j).vol) * af *
+                         double(g.at(i, j).rho);
         }
         return m;
     }
@@ -311,6 +315,11 @@ private:
         if (cfg_.cutCellO2 && !o2Ready_) {
             coarse_.enableO2();
             pool_.enableO2Pool();
+            if (cfg_.mu > 0) {
+                const Real kT = heatConductivity(cfg_.mu);
+                coarse_.setViscosity(cfg_.mu, kT);
+                pool_.setViscosity(cfg_.mu, kT);
+            }
             o2Ready_ = true;
         }
     }
