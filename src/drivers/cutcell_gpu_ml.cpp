@@ -43,11 +43,12 @@ auto initCond() {
         return toCons({1, 0, 0, Real(1.0 + 0.4 * std::exp(-rr / 0.01))});
     };
 }
-AmrConfig cutConfig(int maxLevels, bool subcycle) {
+AmrConfig cutConfig(int maxLevels, bool subcycle, bool o2 = false) {
     AmrConfig cfg;
     cfg.blockC = BC;
     cfg.maxLevels = maxLevels;
     cfg.cutCell = true;
+    cfg.cutCellO2 = o2;
     cfg.reflux = true;
     cfg.subcycle = subcycle;
     cfg.regridEvery = 1 << 30;     // static EB: tag once at init, then hold
@@ -59,9 +60,9 @@ AmrConfig cutConfig(int maxLevels, bool subcycle) {
 // Lock-step + GPU mass drift over an N-level cut-cell run. worst = worst
 // relative rho diff GPU vs AmrML; massDrift = GPU composite conservation.
 void run(int maxLevels, bool subcycle, double& worst, double& massDrift,
-         bool& deepestRefined) {
+         bool& deepestRefined, bool o2 = false) {
     const auto ic = initCond();
-    const AmrConfig cfg = cutConfig(maxLevels, subcycle);
+    const AmrConfig cfg = cutConfig(maxLevels, subcycle, o2);
 
     // CPU oracle.
     AmrML amr(NC, NC, 0, 0, 1, 1, cfg);
@@ -146,6 +147,17 @@ int main() {
         std::printf("gate %d — %s : refined %s, lock-step rho %.3e (gate 1e-2), "
                     "GPU mass %.3e (gate 1e-6)\n",
                     gate++, c.name, ref ? "yes" : "NO", worst, mass);
+        ok = ok && ref && worst < 1e-2 && mass < 1e-6;
+    }
+    // 2nd-order (lock-step vs AmrML O2), 3 levels single-rate + subcycled.
+    for (bool sub : {false, true}) {
+        double worst = 0, mass = 0;
+        bool ref = false;
+        run(3, sub, worst, mass, ref, /*o2=*/true);
+        std::printf("gate %d — 3 levels %s O2 : refined %s, lock-step rho %.3e "
+                    "(gate 1e-2), GPU mass %.3e (gate 1e-6)\n",
+                    gate++, sub ? "subcycled  " : "single-rate",
+                    ref ? "yes" : "NO", worst, mass);
         ok = ok && ref && worst < 1e-2 && mass < 1e-6;
     }
     std::printf(ok ? "PASS\n" : "FAIL\n");
