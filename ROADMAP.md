@@ -497,8 +497,17 @@ normal velocity, slip). First brick laid:
   coarse-fine boundaries, not only when nested. Resolution note: on a very
   coarse base (few cells across the body) with 3 levels a degenerate patch
   topology can raise the drift to ~2e-5 — an under-resolution artifact
-  (base 48 → 1.2e-7 vs base 32 → 2.2e-5), not a scheme defect. Remaining: GPU
-  port.
+  (base 48 → 1.2e-7 vs base 32 → 2.2e-5), not a scheme defect.
+  **Phase 5i (increment 6, GPU)** (`feature/cutcell-gpu`, gate `cutcell_gpu`):
+  the 1st-order cut-cell operator ported to **Metal** (`shaders/cutcell.metal` +
+  `CutCell2DGpu`) — aperture-weighted HLLC face fluxes, slip-wall EB flux,
+  conservative divergence, hybrid divergence + **flux redistribution in GATHER
+  form** (each cell collects what its neighbours shed, no atomics — the GPU
+  idiom for the CPU scatter), positivity floor. Physics copied verbatim from
+  `euler2d.metal` so the GPU matches the CPU oracle. Gate: GPU vs CPU
+  `cutCellStepFluxed` in **lock-step over 100 steps → worst relative ρ diff
+  2.98e-6** (fp32 reassociation of the gather-vs-scatter FRD sum). Remaining:
+  GPU AMR (cut-cell pool kernels + reflux/restriction), then 2nd order on GPU.
 
 ## Backlog (pulled into a milestone when it serves, never in the abstract)
 
