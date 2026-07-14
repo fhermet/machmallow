@@ -122,6 +122,9 @@
   .card p{margin:0; color:var(--mut); font-size:.94rem}
 
   /* gallery */
+  .galgroup{margin:30px 0 12px; font-size:.78rem; font-weight:500;
+    letter-spacing:.15em; text-transform:uppercase; color:var(--cyan)}
+  .galgroup:first-of-type{margin-top:6px}
   .gal{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px}
   figure{margin:0; background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden}
   figure img{width:100%; display:block; background:#fff}
@@ -215,24 +218,39 @@
 
 <section id="gallery"><div class="wrap">
   <h2>Proven against <span class="k">references</span></h2>
-  <p class="lead">A slice of the validation &amp; verification suite: computed vs
-    exact solutions, theory and experiment. Full dossier in
+  <p class="lead">Nothing lands without a quantitative gate. Every method is
+    checked against an exact solution, theory, or experiment, grouped below
+    from fundamentals to multi-physics. Full dossier in
     <a href="https://github.com/fhermet/machmallow/tree/main/vv">vv/</a>.</p>
+
+  <h3 class="galgroup">Fundamentals · exact solutions &amp; order</h3>
   <div class="gal">
     <figure><img src="gallery/sod.png" alt="Sod shock tube">
       <figcaption><b>Sod shock tube</b> · vs exact Riemann solution.</figcaption></figure>
+    <figure><img src="gallery/order_of_accuracy.png" alt="Order of accuracy">
+      <figcaption><b>Order of accuracy</b> · measured L1 convergence rate.</figcaption></figure>
+  </div>
+
+  <h3 class="galgroup">Shocks, AMR &amp; embedded geometry</h3>
+  <div class="gal">
     <figure><img src="gallery/dmr.png" alt="Double Mach reflection">
       <figcaption><b>Double Mach reflection</b> · hybrid subcycled AMR.</figcaption></figure>
-    <figure><img src="gallery/blasius.png" alt="Blasius boundary layer">
-      <figcaption><b>Blasius boundary layer</b> · no-slip flat plate.</figcaption></figure>
-    <figure><img src="gallery/order_of_accuracy.png" alt="Order of accuracy">
-      <figcaption><b>Order of accuracy</b> · measured L1 convergence.</figcaption></figure>
-    <figure><img src="gallery/hs.png" alt="Shock–bubble interaction">
-      <figcaption><b>Shock–bubble (Haas &amp; Sturtevant)</b> · two-gas, vs experiment.</figcaption></figure>
-    <figure><img src="gallery/cutcell_cylinder.png" alt="Viscous cylinder Re=40">
-      <figcaption><b>Viscous cylinder, Re = 40</b> · recirculation bubble &amp; drag (cut cells).</figcaption></figure>
     <figure><img src="gallery/cutcell.png" alt="Cut-cell surface pressure">
       <figcaption><b>Mach 2 cylinder</b> · cut-cell surface Cp vs staircase &amp; pitot.</figcaption></figure>
+  </div>
+
+  <h3 class="galgroup">Viscous · Navier–Stokes</h3>
+  <div class="gal">
+    <figure><img src="gallery/blasius.png" alt="Blasius boundary layer">
+      <figcaption><b>Blasius boundary layer</b> · no-slip flat plate vs theory.</figcaption></figure>
+    <figure><img src="gallery/cutcell_cylinder.png" alt="Viscous cylinder Re=40">
+      <figcaption><b>Viscous cylinder, Re = 40</b> · recirculation bubble &amp; drag.</figcaption></figure>
+  </div>
+
+  <h3 class="galgroup">Multi-physics · two-gas &amp; reacting</h3>
+  <div class="gal">
+    <figure><img src="gallery/hs.png" alt="Shock–bubble interaction">
+      <figcaption><b>Shock–bubble (Haas &amp; Sturtevant)</b> · two-gas, vs experiment.</figcaption></figure>
     <figure><img src="gallery/detonation.png" alt="Chapman–Jouguet detonation">
       <figcaption><b>Chapman–Jouguet detonation</b> · 1D, Strang-coupled reaction.</figcaption></figure>
   </div>
