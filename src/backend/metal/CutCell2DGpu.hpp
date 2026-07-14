@@ -56,11 +56,16 @@ public:
         for (MTL::Buffer* b : {q_, Fx_, Fy_, Dc_, D_, geo_}) b->release();
         for (MTL::Buffer* b : {qP_, FxP_, FyP_, DcP_, DP_, geoP_, slots_})
             if (b) b->release();
+        for (MTL::Buffer* b : {Gdx_, Gdy_, qn_})
+            if (b) b->release();
         for (MTL::ComputePipelineState* p :
              {fluxX_, fluxY_, dc_, hybrid_, update_})
             p->release();
         for (MTL::ComputePipelineState* p :
              {fluxXP_, fluxYP_, dcP_, hybridP_, updateP_})
+            if (p) p->release();
+        for (MTL::ComputePipelineState* p :
+             {grad_, fluxXo2_, fluxYo2_, dcO2_, rk2_})
             if (p) p->release();
         lib_->release();
     }
@@ -73,7 +78,10 @@ public:
     }
 
     // Upload the embedded-boundary geometry (tx*ty cells, ghosts included).
-    void setGeometry(const cutcell::Geometry& G) {
+    // (x0,y0) is the grid origin used to build G: pad0/pad1 store the EB
+    // centroid offset from the cell centre (for 2nd-order EB reconstruction),
+    // which is origin-independent, so the default 0 suffices at 1st order.
+    void setGeometry(const cutcell::Geometry& G, Real x0 = 0, Real y0 = 0) {
         auto* g = static_cast<CCMom*>(geo_->contents());
         for (int j = 0; j < ty_; ++j)
             for (int i = 0; i < tx_; ++i) {
@@ -85,6 +93,10 @@ public:
                 c.ebArea = float(m.eb.area);
                 c.ebnx = float(m.eb.nx);
                 c.ebny = float(m.eb.ny);
+                const Real xc = x0 + (Real(i - NG) + Real(0.5)) * dx_;
+                const Real yc = y0 + (Real(j - NG) + Real(0.5)) * dy_;
+                c.pad0 = float(m.eb.cx - xc);
+                c.pad1 = float(m.eb.cy - yc);
                 g[std::size_t(j) * tx_ + i] = c;
             }
     }
@@ -136,6 +148,57 @@ public:
     Cons* dData() { return static_cast<Cons*>(D_->contents()); }
     const Cons* fxData() const { return static_cast<Cons*>(Fx_->contents()); }
     const Cons* fyData() const { return static_cast<Cons*>(Fy_->contents()); }
+
+    // ---- 2nd-order single-grid step (SSP-RK2) ----------------------------
+    // Enable the 2nd-order path: least-squares gradients + reconstructed face
+    // / EB fluxes, advanced with SSP-RK2. Allocates the gradient + t^n buffers.
+    void enableO2() {
+        grad_ = ctx_.makePipeline(lib_, "cc_grad");
+        fluxXo2_ = ctx_.makePipeline(lib_, "cc_flux_x_o2");
+        fluxYo2_ = ctx_.makePipeline(lib_, "cc_flux_y_o2");
+        dcO2_ = ctx_.makePipeline(lib_, "cc_dc_o2");
+        rk2_ = ctx_.makePipeline(lib_, "cc_rk2");
+        const std::size_t n = std::size_t(tx_) * ty_;
+        const auto mk4 = [&] {
+            return ctx_.device()->newBuffer(n * sizeof(Cons),
+                                            MTL::ResourceStorageModeShared);
+        };
+        Gdx_ = mk4(); Gdy_ = mk4(); qn_ = mk4();
+    }
+    // 2nd-order FRD'd divergence D from the current state (grad -> flux ->
+    // D^c -> hybrid). Ghosts filled by the caller.
+    void divO2() {
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_), 0, 0};
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encode(cmd, grad_, {q_, geo_, Gdx_, Gdy_}, p, nx_, ny_);
+        encode(cmd, fluxXo2_, {q_, geo_, Gdx_, Gdy_, Fx_}, p, nx_ + 1, ny_);
+        encode(cmd, fluxYo2_, {q_, geo_, Gdx_, Gdy_, Fy_}, p, nx_, ny_ + 1);
+        encode(cmd, dcO2_, {q_, geo_, Gdx_, Gdy_, Fx_, Fy_, Dc_}, p, nx_, ny_);
+        encode(cmd, hybrid_, {geo_, Dc_, D_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    // RK2 stage 1: save q^n, then q <- floor(q + dt D). Call divO2() first.
+    void rk2Stage1(Real dt) {
+        std::memcpy(qn_->contents(), q_->contents(),
+                    std::size_t(tx_) * ty_ * sizeof(Cons));
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_), float(dt),
+                       0};
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encode(cmd, update_, {q_, geo_, D_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
+    // RK2 stage 2: q <- floor(0.5 q^n + 0.5 (q + dt D)). Call divO2() (from
+    // the stage-1 state) first.
+    void rk2Stage2(Real dt) {
+        const Params p{tx_, ty_, nx_, ny_, float(dx_), float(dy_), float(dt),
+                       0};
+        MTL::CommandBuffer* cmd = ctx_.queue()->commandBuffer();
+        encode(cmd, rk2_, {q_, qn_, geo_, D_}, p, nx_, ny_);
+        cmd->commit();
+        cmd->waitUntilCompleted();
+    }
 
     // ---- pooled multi-patch layout (all slots advanced in one dispatch) ---
     // Every slot holds a full tx*ty grid; the pool kernels select a slot via
@@ -282,6 +345,11 @@ private:
                               *update_ = nullptr;
     MTL::Buffer *q_ = nullptr, *Fx_ = nullptr, *Fy_ = nullptr, *Dc_ = nullptr,
                 *D_ = nullptr, *geo_ = nullptr;
+    // 2nd-order path (allocated by enableO2)
+    MTL::ComputePipelineState *grad_ = nullptr, *fluxXo2_ = nullptr,
+                              *fluxYo2_ = nullptr, *dcO2_ = nullptr,
+                              *rk2_ = nullptr;
+    MTL::Buffer *Gdx_ = nullptr, *Gdy_ = nullptr, *qn_ = nullptr;
     // pooled multi-patch layout (allocated by enablePool)
     int nSlots_ = 0;
     MTL::ComputePipelineState *fluxXP_ = nullptr, *fluxYP_ = nullptr,

@@ -129,6 +129,11 @@ add_executable(cutcell_gpu src/drivers/cutcell_gpu.cpp)
 target_link_libraries(cutcell_gpu PRIVATE mm_metal)
 target_include_directories(cutcell_gpu PRIVATE src)
 
+# Hybrid CPU/GPU two-level cut-cell AMR, lock-step vs the Amr2 cut oracle.
+add_executable(cutcell_gpu_amr src/drivers/cutcell_gpu_amr.cpp)
+target_link_libraries(cutcell_gpu_amr PRIVATE mm_metal)
+target_include_directories(cutcell_gpu_amr PRIVATE src)
+
 # WENO5 + SSP-RK3 scheme validation (uniform grid, CPU).
 add_executable(weno_suite src/drivers/weno_suite.cpp)
 target_include_directories(weno_suite PRIVATE src)

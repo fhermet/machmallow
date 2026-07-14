@@ -20,6 +20,64 @@
 
 using namespace mm;
 
+namespace {
+
+// 2nd-order GPU cut-cell (LSQ gradients + reconstructed face/EB fluxes, SSP-RK2)
+// vs the CPU oracle stepCutCell, in lock-step over 100 steps. Same immersed
+// cylinder / reflective box / pressure-bump IC as gate 1.
+double secondOrderDrift() {
+    const int NC = 96;
+    const double cx = 0.5, cy = 0.5, r = 0.2;
+    const auto circle = [&](double x0, double x1, double y0, double y1) {
+        return cutcell::circleMoments(cx, cy, r, x0, x1, y0, y1);
+    };
+    const auto ic = [&](double x, double y) {
+        const double rr = (x - 0.3) * (x - 0.3) + (y - 0.5) * (y - 0.5);
+        return toCons({1, 0, 0, Real(1.0 + 0.4 * std::exp(-rr / 0.01))});
+    };
+    const auto fill = [](auto& g) {
+        fillReflectiveLeft(g);  fillReflectiveRight(g);
+        fillReflectiveBottom(g); fillReflectiveTop(g);
+    };
+
+    Grid gc(NC, NC, 0, 0, 1, 1);
+    const auto geo = cutcell::build(gc, circle);
+    for (int j = 0; j < gc.toty(); ++j)
+        for (int i = 0; i < gc.totx(); ++i)
+            gc.at(i, j) = ic(double(gc.xc(i)), double(gc.yc(j)));
+
+    MetalContext ctx;
+    CutCell2DGpu gpu(ctx, NC, NC, gc.dx, gc.dy);
+    gpu.setGeometry(geo); // x0=y0=0: EB-centroid offset exact
+    gpu.enableO2();
+    GridRef gg = gpu.ref(0, 0);
+    for (int j = 0; j < gc.toty(); ++j)
+        for (int i = 0; i < gc.totx(); ++i) gg.at(i, j) = gc.at(i, j);
+
+    double worst = 0;
+    for (int s = 0; s < 100; ++s) {
+        const Real dt = maxStableDt(gc, Real(0.4));
+        stepCutCell(gc, geo, dt, fill, /*limited=*/true, /*mu=*/0);
+        fill(gg);
+        gpu.divO2();
+        gpu.rk2Stage1(dt);
+        fill(gg);
+        gpu.divO2();
+        gpu.rk2Stage2(dt);
+        for (int j = NG; j < NG + NC; ++j)
+            for (int i = NG; i < NG + NC; ++i) {
+                if (geo.at(i, j).vol <= Real(1e-9)) continue;
+                const double a = double(gc.at(i, j).rho);
+                const double b = double(gg.at(i, j).rho);
+                worst = std::max(worst,
+                                 std::fabs(a - b) / std::max(std::fabs(a), 1e-3));
+            }
+    }
+    return worst;
+}
+
+} // namespace
+
 int main() {
     const int NC = 96;
     const double cx = 0.5, cy = 0.5, r = 0.2;
@@ -108,7 +166,13 @@ int main() {
                 "diff %.3e (gate 1e-6, bit-exact expected)\n", worstPool);
     std::printf("gate 3 — phase-split vs monolithic step: worst relative rho "
                 "diff %.3e (gate 1e-6, bit-exact expected)\n", worstPhase);
-    const bool ok = worst < 1e-2 && worstPool < 1e-6 && worstPhase < 1e-6;
+    const double worstO2 = secondOrderDrift();
+    std::printf("gate 4 — 2nd-order GPU (LSQ + RK2) vs CPU stepCutCell lock-step "
+                "over 100 steps: worst relative rho diff %.3e (gate 1e-2)\n",
+                worstO2);
+
+    const bool ok = worst < 1e-2 && worstPool < 1e-6 && worstPhase < 1e-6 &&
+                    worstO2 < 1e-2;
     std::printf(ok ? "PASS\n" : "FAIL\n");
     return ok ? 0 : 1;
 }
