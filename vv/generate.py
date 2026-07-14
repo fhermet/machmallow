@@ -806,7 +806,66 @@ def plot_cutcell(txt):
     ax.legend(fontsize=8.5, loc="upper right"); ax.grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(os.path.join(FIG, "cutcell.png"))
     plt.close(fig)
+
+    _plot_cutcell_geom()
+    _plot_cutcell_order(txt)
     return d
+
+
+def _plot_cutcell_geom():
+    """Geometry actually seen by the solver: fluid fraction kappa (sub-cell,
+    supersampled analytic) vs the binary staircase mask, zoomed on the rim."""
+    dx, cx, cy, r = 2.4 / 240, 0.8, 0.8, 0.18       # the cylinder case grid
+    i0, i1, j0, j1, ss = 55, 105, 55, 105, 24
+    stair = np.zeros((j1 - j0, i1 - i0)); kap = np.zeros_like(stair)
+    for jj, j in enumerate(range(j0, j1)):
+        for ii, i in enumerate(range(i0, i1)):
+            xc, yc = (i + 0.5) * dx, (j + 0.5) * dx
+            stair[jj, ii] = 1.0 if (xc - cx)**2 + (yc - cy)**2 < r * r else 0.0
+            xs = (i + (np.arange(ss) + 0.5) / ss) * dx
+            ys = (j + (np.arange(ss) + 0.5) / ss) * dx
+            X, Y = np.meshgrid(xs, ys)
+            kap[jj, ii] = np.mean(((X - cx)**2 + (Y - cy)**2) >= r * r)  # fluid
+    ext = [i0 * dx, i1 * dx, j0 * dx, j1 * dx]
+    th = np.linspace(0, 2 * np.pi, 400)
+    fig, ax = plt.subplots(1, 2, figsize=(9.4, 4.9))
+    for a, fld, t in ((ax[0], 1 - stair, "staircase: binary mask (0/1 per cell)"),
+                      (ax[1], 1 - kap,
+                       r"cut-cell: solid fraction $1-\kappa$ (sub-cell)")):
+        a.imshow(fld, origin="lower", extent=ext, cmap="gray",
+                 interpolation="nearest", vmin=0, vmax=1)
+        a.plot(cx + r * np.cos(th), cy + r * np.sin(th), "r-", lw=1.4)
+        a.set_title(t, fontsize=11); a.set_xticks([]); a.set_yticks([])
+    fig.suptitle("Geometry seen by the solver (rim zoom, dx=0.01) — "
+                 "exact circle in red", fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(os.path.join(FIG, "cutcell_geom.png"))
+    plt.close(fig)
+
+
+def _plot_cutcell_order(txt):
+    """L1 error vs h for the 2nd-order cut operator (entropy blob on a 45°
+    wall), parsed from the cutcell_o2 log, with order-1 and order-2 guides."""
+    pts = re.findall(r"N=\s*(\d+)\s+L1 = ([\d.eE+-]+)", txt)
+    if len(pts) < 2:
+        return
+    N = np.array([int(n) for n, _ in pts], float)
+    L1 = np.array([float(l) for _, l in pts])
+    h = 1.0 / N
+    slope = np.polyfit(np.log(h), np.log(L1), 1)[0]
+    fig, ax = plt.subplots(figsize=(5.6, 4.9))
+    ax.loglog(h, L1, "o-", color=CYAN, ms=6, lw=1.8,
+              label=f"cut-cell 2nd order (p={slope:.2f})")
+    for p, style in [(1, ":"), (2, "--")]:
+        ax.loglog(h, L1.max() * (h / h.max())**p, style, color="gray", lw=1,
+                  alpha=0.7)
+        ax.text(h[0], L1.max() * (h[0] / h.max())**p, f" order {p}",
+                color="gray", fontsize=8, va="center")
+    ax.set_xlabel("grid spacing $h$"); ax.set_ylabel(r"$L_1(\rho)$ error")
+    ax.set_title("Cut-cell 2nd-order convergence (smooth flow)")
+    ax.legend(fontsize=9); ax.grid(alpha=0.3, which="both")
+    fig.tight_layout(); fig.savefig(os.path.join(FIG, "cutcell_order.png"))
+    plt.close(fig)
 
 
 def plot_dmr(txt):
@@ -1691,6 +1750,20 @@ GPU in lock-step, at any depth.
 > `cutcell_gpu_ml`. float32.
 
 ## Results
+
+**Geometry — exact vs staircase.** The fluid fraction κ the solver actually
+uses (sub-cell) hugs the true circle, where the staircase mask steps in and out
+of it by up to a full cell:
+
+![Cut-cell fluid fraction κ vs the binary staircase mask](../figures/cutcell_geom.png)
+
+**2nd-order convergence** on a smooth flow (entropy blob grazing a 45° wall):
+
+![Cut-cell 2nd-order convergence](../figures/cutcell_order.png)
+
+**Surface pressure** on the Mach-2 cylinder — cut-cell smooth (tracks the
+modified-Newtonian trend to the pitot value), staircase oscillates cell-to-cell:
+
 ![Mach-2 cylinder surface pressure — cut-cell vs staircase](../figures/cutcell.png)
 
 | Gate | Test | Result |

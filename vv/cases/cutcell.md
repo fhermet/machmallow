@@ -20,6 +20,20 @@ GPU in lock-step, at any depth.
 > `cutcell_gpu_ml`. float32.
 
 ## Results
+
+**Geometry — exact vs staircase.** The fluid fraction κ the solver actually
+uses (sub-cell) hugs the true circle, where the staircase mask steps in and out
+of it by up to a full cell:
+
+![Cut-cell fluid fraction κ vs the binary staircase mask](../figures/cutcell_geom.png)
+
+**2nd-order convergence** on a smooth flow (entropy blob grazing a 45° wall):
+
+![Cut-cell 2nd-order convergence](../figures/cutcell_order.png)
+
+**Surface pressure** on the Mach-2 cylinder — cut-cell smooth (tracks the
+modified-Newtonian trend to the pitot value), staircase oscillates cell-to-cell:
+
 ![Mach-2 cylinder surface pressure — cut-cell vs staircase](../figures/cutcell.png)
 
 | Gate | Test | Result |
