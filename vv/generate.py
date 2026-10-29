@@ -1113,7 +1113,7 @@ order).
 | viscous + gravity, MUSCL | {mms.get('vgrav', '—')} |
 | inviscid, MUSCL | {mms.get('imuscl', '—')} |
 | CFL sensitivity, inviscid MUSCL (gate 5 %) | {mms.get('cinv', '—')} % |
-| CFL sensitivity, viscous MUSCL (info) | {mms.get('cvisc', '—')} % |
+| CFL sensitivity, viscous MUSCL (gate 5 %) | {mms.get('cvisc', '—')} % |
 
 ## Discussion
 Both schemes reach order **~2** on the viscous operator, capped at 2 by the
@@ -1121,12 +1121,10 @@ Both schemes reach order **~2** on the viscous operator, capped at 2 by the
 gravity variant stays at 2. Inviscid MUSCL is order 2 with an error
 independent of the CFL. This used to be ~1: the source was added *after*
 the step, outside the Hancock predictor, which leaves an O(dt) error on the
-equilibrium (error ∝ CFL). The same splitting affected gravity; both now
-enter the predictor as a half-dt term (CPU and GPU), which also makes a
-fluid at rest under gravity hydrostatically balanced to the float32 floor.
-The viscous flux is still evaluated outside the predictor, hence the
-remaining CFL sensitivity of the viscous case (informative until it moves
-into the predictor).""")
+equilibrium (error ∝ CFL). The same splitting affected gravity and the
+viscous flux (+14 % between CFL 0.4 and 0.2); all three now enter the
+predictor as a half-dt term (CPU and GPU), which also makes a fluid at rest
+under gravity hydrostatically balanced to the float32 floor.""")
 
     # ---- fiche 1c: 0D reactor kinetics (verification vs analytic) -------
     fiche("reactor.md", f"""# 0D reactor kinetics — *verification vs analytic*

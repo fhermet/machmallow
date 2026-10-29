@@ -151,6 +151,87 @@ inline float4 wallFluxY(float4 W, float un) {
 // CPU NS() in addViscousFluxes).
 inline float4 nsGhost(float4 w) { return float4(w.x, -w.y, -w.z, w.w); }
 
+// Central viscous flux (Stokes + Fourier) through an x face (i+1/2, j) from
+// its 6-cell stencil (w00 | w10 normal, w0p/w0m/w1p/w1m transverse), as
+// the vector ADDED to the convective flux (mirrors the CPU
+// addViscousFluxes). One arithmetic for every path -> lock-step.
+inline float4 viscCoreX(float4 w00, float4 w10, float4 w0p, float4 w0m,
+                        float4 w1p, float4 w1m, constant Params& P) {
+    const float ux = (w10.y - w00.y) / P.dx;
+    const float vx = (w10.z - w00.z) / P.dx;
+    const float Tx = (w10.w / w10.x - w00.w / w00.x) / P.dx;
+    const float uy = ((w0p.y + w1p.y) - (w0m.y + w1m.y)) / (4.0f * P.dy);
+    const float vy = ((w0p.z + w1p.z) - (w0m.z + w1m.z)) / (4.0f * P.dy);
+    const float txx = P.mu * ((4.0f / 3.0f) * ux - (2.0f / 3.0f) * vy);
+    const float txy = P.mu * (uy + vx);
+    const float ub = 0.5f * (w00.y + w10.y);
+    const float vb = 0.5f * (w00.z + w10.z);
+    return float4(0.0f, -txx, -txy, -(ub * txx + vb * txy + P.kT * Tx));
+}
+
+// Same for a y face (i, j+1/2): w00 | w01 normal, wp0/wm0/wp1/wm1
+// transverse.
+inline float4 viscCoreY(float4 w00, float4 w01, float4 wp0, float4 wm0,
+                        float4 wp1, float4 wm1, constant Params& P) {
+    const float uy = (w01.y - w00.y) / P.dy;
+    const float vy = (w01.z - w00.z) / P.dy;
+    const float Ty = (w01.w / w01.x - w00.w / w00.x) / P.dy;
+    const float ux = ((wp0.y + wp1.y) - (wm0.y + wm1.y)) / (4.0f * P.dx);
+    const float vx = ((wp0.z + wp1.z) - (wm0.z + wm1.z)) / (4.0f * P.dx);
+    const float txy = P.mu * (uy + vx);
+    const float tyy = P.mu * ((4.0f / 3.0f) * vy - (2.0f / 3.0f) * ux);
+    const float ub = 0.5f * (w00.y + w01.y);
+    const float vb = 0.5f * (w00.z + w01.z);
+    return float4(0.0f, -txy, -tyy, -(ub * txy + vb * tyy + P.kT * Ty));
+}
+
+// Viscous flux through the x face (i+1/2, j) of cell `id`, from t^n cell
+// values. A solid neighbour becomes a no-slip ghost (mirror of the face's
+// fluid cell) so the wall is adherent; a solid/solid face carries none.
+inline float4 viscFluxX(device const float4* q, device const uchar* solid,
+                        constant Params& P, int id) {
+    const bool sl = solid[id] != 0, sr = solid[id + 1] != 0;
+    if (sl && sr) return float4(0.0f);
+    const float4 f00 = toPrim(q[id]);
+    const float4 f10 = toPrim(q[id + 1]);
+    const float4 refF = sl ? f10 : f00;
+    return viscCoreX(
+        sl ? nsGhost(f10) : f00, sr ? nsGhost(f00) : f10,
+        solid[id + P.tx] ? nsGhost(refF) : toPrim(q[id + P.tx]),
+        solid[id - P.tx] ? nsGhost(refF) : toPrim(q[id - P.tx]),
+        solid[id + P.tx + 1] ? nsGhost(refF) : toPrim(q[id + P.tx + 1]),
+        solid[id - P.tx + 1] ? nsGhost(refF) : toPrim(q[id - P.tx + 1]), P);
+}
+
+inline float4 viscFluxY(device const float4* q, device const uchar* solid,
+                        constant Params& P, int id) {
+    const bool sb = solid[id] != 0, st = solid[id + P.tx] != 0;
+    if (sb && st) return float4(0.0f);
+    const float4 f00 = toPrim(q[id]);
+    const float4 f01 = toPrim(q[id + P.tx]);
+    const float4 refF = sb ? f01 : f00;
+    return viscCoreY(
+        sb ? nsGhost(f01) : f00, st ? nsGhost(f00) : f01,
+        solid[id + 1] ? nsGhost(refF) : toPrim(q[id + 1]),
+        solid[id - 1] ? nsGhost(refF) : toPrim(q[id - 1]),
+        solid[id + P.tx + 1] ? nsGhost(refF) : toPrim(q[id + P.tx + 1]),
+        solid[id + P.tx - 1] ? nsGhost(refF) : toPrim(q[id + P.tx - 1]), P);
+}
+
+// Mask-free variants (two-gas path: no immersed bodies there).
+inline float4 viscFluxXFree(device const float4* q, constant Params& P,
+                            int id) {
+    return viscCoreX(toPrim(q[id]), toPrim(q[id + 1]),
+                     toPrim(q[id + P.tx]), toPrim(q[id - P.tx]),
+                     toPrim(q[id + P.tx + 1]), toPrim(q[id - P.tx + 1]), P);
+}
+inline float4 viscFluxYFree(device const float4* q, constant Params& P,
+                            int id) {
+    return viscCoreY(toPrim(q[id]), toPrim(q[id + P.tx]),
+                     toPrim(q[id + 1]), toPrim(q[id - 1]),
+                     toPrim(q[id + P.tx + 1]), toPrim(q[id + P.tx - 1]), P);
+}
+
 // ---- kernel bodies --------------------------------------------------------
 
 inline void predictorBody(device const float4* q, device float4* xL,
@@ -189,6 +270,17 @@ inline void predictorBody(device const float4* q, device float4* xL,
                float4(0.0f, rho * P.gx, rho * P.gy,
                       P.gx * q0.y + P.gy * q0.z);
     }
+    if (P.mu > 0.0f && i >= NG - 1 && i <= NG + P.nx && j >= NG - 1 &&
+        j <= NG + P.ny) {
+        // half-dt viscous divergence on the ghost ring + interior (the
+        // faces the update uses; mirrors the CPU)
+        const float4 dv =
+            (1.0f / P.dx) * (viscFluxX(q, solid, P, id - 1) -
+                             viscFluxX(q, solid, P, id)) +
+            (1.0f / P.dy) * (viscFluxY(q, solid, P, id - P.tx) -
+                             viscFluxY(q, solid, P, id));
+        adv += (0.5f * P.dt) * dv;
+    }
 
     float4 fxl = xl + adv, fxr = xr + adv;
     float4 fyb = yb + adv, fyt = yt + adv;
@@ -218,36 +310,7 @@ inline void fluxXBody(device const float4* xL, device const float4* xR,
     if (sr) { const float4 w = toPrim(xR[id]); F = wallFluxX(w, w.y); }
     else if (sl) { const float4 w = toPrim(xL[id + 1]); F = wallFluxX(w, -w.y); }
     else F = hllcFluxX(toPrim(xR[id]), toPrim(xL[id + 1]));
-    if (P.mu > 0.0f) {
-        // Central viscous flux from t^n cell values (mirrors the CPU).
-        // A solid neighbour becomes a no-slip ghost (mirror of the face's
-        // fluid cell) so the wall is adhérente — same rule as the CPU.
-        const float4 f00 = toPrim(q[id]);
-        const float4 f10 = toPrim(q[id + 1]);
-        const float4 refF = sl ? f10 : f00;
-        const float4 w00 = sl ? nsGhost(f10) : f00;
-        const float4 w10 = sr ? nsGhost(f00) : f10;
-        const float4 w0p =
-            solid[id + P.tx] ? nsGhost(refF) : toPrim(q[id + P.tx]);
-        const float4 w0m =
-            solid[id - P.tx] ? nsGhost(refF) : toPrim(q[id - P.tx]);
-        const float4 w1p =
-            solid[id + P.tx + 1] ? nsGhost(refF) : toPrim(q[id + P.tx + 1]);
-        const float4 w1m =
-            solid[id - P.tx + 1] ? nsGhost(refF) : toPrim(q[id - P.tx + 1]);
-        const float ux = (w10.y - w00.y) / P.dx;
-        const float vx = (w10.z - w00.z) / P.dx;
-        const float Tx = (w10.w / w10.x - w00.w / w00.x) / P.dx;
-        const float uy = ((w0p.y + w1p.y) - (w0m.y + w1m.y)) / (4.0f * P.dy);
-        const float vy = ((w0p.z + w1p.z) - (w0m.z + w1m.z)) / (4.0f * P.dy);
-        const float txx = P.mu * ((4.0f / 3.0f) * ux - (2.0f / 3.0f) * vy);
-        const float txy = P.mu * (uy + vx);
-        const float ub = 0.5f * (w00.y + w10.y);
-        const float vb = 0.5f * (w00.z + w10.z);
-        F.y -= txx;
-        F.z -= txy;
-        F.w -= ub * txx + vb * txy + P.kT * Tx;
-    }
+    if (P.mu > 0.0f) F += viscFluxX(q, solid, P, id);
     Fx[id] = F;
 }
 
@@ -262,31 +325,7 @@ inline void fluxYBody(device const float4* yB, device const float4* yT,
     if (st) { const float4 w = toPrim(yT[id]); F = wallFluxY(w, w.z); }
     else if (sb) { const float4 w = toPrim(yB[id + P.tx]); F = wallFluxY(w, -w.z); }
     else F = hllcFluxY(toPrim(yT[id]), toPrim(yB[id + P.tx]));
-    if (P.mu > 0.0f) {
-        const float4 f00 = toPrim(q[id]);
-        const float4 f01 = toPrim(q[id + P.tx]);
-        const float4 refF = sb ? f01 : f00;
-        const float4 w00 = sb ? nsGhost(f01) : f00;
-        const float4 w01 = st ? nsGhost(f00) : f01;
-        const float4 wp0 = solid[id + 1] ? nsGhost(refF) : toPrim(q[id + 1]);
-        const float4 wm0 = solid[id - 1] ? nsGhost(refF) : toPrim(q[id - 1]);
-        const float4 wp1 =
-            solid[id + P.tx + 1] ? nsGhost(refF) : toPrim(q[id + P.tx + 1]);
-        const float4 wm1 =
-            solid[id + P.tx - 1] ? nsGhost(refF) : toPrim(q[id + P.tx - 1]);
-        const float uy = (w01.y - w00.y) / P.dy;
-        const float vy = (w01.z - w00.z) / P.dy;
-        const float Ty = (w01.w / w01.x - w00.w / w00.x) / P.dy;
-        const float ux = ((wp0.y + wp1.y) - (wm0.y + wm1.y)) / (4.0f * P.dx);
-        const float vx = ((wp0.z + wp1.z) - (wm0.z + wm1.z)) / (4.0f * P.dx);
-        const float txy = P.mu * (uy + vx);
-        const float tyy = P.mu * ((4.0f / 3.0f) * vy - (2.0f / 3.0f) * ux);
-        const float ub = 0.5f * (w00.y + w01.y);
-        const float vb = 0.5f * (w00.z + w01.z);
-        F.y -= txy;
-        F.z -= tyy;
-        F.w -= ub * txy + vb * tyy + P.kT * Ty;
-    }
+    if (P.mu > 0.0f) F += viscFluxY(q, solid, P, id);
     Fy[id] = F;
 }
 
@@ -585,8 +624,17 @@ inline void predictorYBody(device const float4* q, device const float2* sc,
     const float4 pyb = face(w0, -1.0f, dwy);
     const float4 pyt = face(w0, +1.0f, dwy);
 
-    const float4 adv = hx * (fluxXG(pxl, fxv.z) - fluxXG(pxr, fxv.w)) +
-                       hy * (fluxYG(pyb, fyv.z) - fluxYG(pyt, fyv.w));
+    float4 adv = hx * (fluxXG(pxl, fxv.z) - fluxXG(pxr, fxv.w)) +
+                 hy * (fluxYG(pyb, fyv.z) - fluxYG(pyt, fyv.w));
+    if (P.mu > 0.0f && i >= NG - 1 && i <= NG + P.nx && j >= NG - 1 &&
+        j <= NG + P.ny) { // half-dt viscous divergence (mirrors the CPU)
+        const float4 dv =
+            (1.0f / P.dx) * (viscFluxXFree(q, P, id - 1) -
+                             viscFluxXFree(q, P, id)) +
+            (1.0f / P.dy) * (viscFluxYFree(q, P, id - P.tx) -
+                             viscFluxYFree(q, P, id));
+        adv += (0.5f * P.dt) * dv;
+    }
     float4 fxl = toConsG(pxl, fxv.z) + adv;
     float4 fxr = toConsG(pxr, fxv.w) + adv;
     float4 fyb = toConsG(pyb, fyv.z) + adv;
@@ -620,25 +668,7 @@ inline void fluxXYBody(device const float4* xL, device const float4* xR,
     float ss = 0.0f;
     float4 F = hllcFluxXG(toPrimG(xR[id], GL), 1.0f + 1.0f / GL,
                           toPrimG(xL[idp], GR), 1.0f + 1.0f / GR, ss);
-    if (P.mu > 0.0f) { // viscous flux (deflagration); g1==g2 -> toPrim
-        const float4 w00 = toPrim(q[id]);
-        const float4 w10 = toPrim(q[id + 1]);
-        const float4 w0p = toPrim(q[id + P.tx]);
-        const float4 w0m = toPrim(q[id - P.tx]);
-        const float4 w1p = toPrim(q[id + P.tx + 1]);
-        const float4 w1m = toPrim(q[id - P.tx + 1]);
-        const float ux = (w10.y - w00.y) / P.dx;
-        const float vx = (w10.z - w00.z) / P.dx;
-        const float Tx = (w10.w / w10.x - w00.w / w00.x) / P.dx;
-        const float uy = ((w0p.y + w1p.y) - (w0m.y + w1m.y)) / (4 * P.dy);
-        const float vy = ((w0p.z + w1p.z) - (w0m.z + w1m.z)) / (4 * P.dy);
-        const float txx = P.mu * ((4.0f / 3.0f) * ux - (2.0f / 3.0f) * vy);
-        const float txy = P.mu * (uy + vx);
-        const float ub = 0.5f * (w00.y + w10.y);
-        const float vb = 0.5f * (w00.z + w10.z);
-        F.y -= txx; F.z -= txy;
-        F.w -= ub * txx + vb * txy + P.kT * Tx;
-    }
+    if (P.mu > 0.0f) F += viscFluxXFree(q, P, id); // g1==g2 -> toPrim
     Fx[id] = F;
     sFx[id] = float4(F.x * (F.x > 0.0f ? fX[id].y : fX[idp].x), ss,
                      ss * (ss > 0.0f ? GL : GR), 0.0f);
@@ -659,25 +689,7 @@ inline void fluxYYBody(device const float4* yB, device const float4* yT,
                                  float4(R.x, R.z, R.y, R.w),
                                  1.0f + 1.0f / GT, ss);
     float4 F = float4(fr.x, fr.z, fr.y, fr.w);
-    if (P.mu > 0.0f) { // viscous flux (deflagration)
-        const float4 w00 = toPrim(q[id]);
-        const float4 w01 = toPrim(q[id + P.tx]);
-        const float4 wp0 = toPrim(q[id + 1]);
-        const float4 wm0 = toPrim(q[id - 1]);
-        const float4 wp1 = toPrim(q[id + P.tx + 1]);
-        const float4 wm1 = toPrim(q[id + P.tx - 1]);
-        const float uy = (w01.y - w00.y) / P.dy;
-        const float vy = (w01.z - w00.z) / P.dy;
-        const float Ty = (w01.w / w01.x - w00.w / w00.x) / P.dy;
-        const float ux = ((wp0.y + wp1.y) - (wm0.y + wm1.y)) / (4 * P.dx);
-        const float vx = ((wp0.z + wp1.z) - (wm0.z + wm1.z)) / (4 * P.dx);
-        const float txy = P.mu * (uy + vx);
-        const float tyy = P.mu * ((4.0f / 3.0f) * vy - (2.0f / 3.0f) * ux);
-        const float ub = 0.5f * (w00.y + w01.y);
-        const float vb = 0.5f * (w00.z + w01.z);
-        F.y -= txy; F.z -= tyy;
-        F.w -= ub * txy + vb * tyy + P.kT * Ty;
-    }
+    if (P.mu > 0.0f) F += viscFluxYFree(q, P, id); // (deflagration)
     Fy[id] = F;
     sFy[id] = float4(F.x * (F.x > 0.0f ? fY[id].y : fY[idp].x), ss,
                      ss * (ss > 0.0f ? GB : GT), 0.0f);

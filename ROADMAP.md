@@ -131,8 +131,14 @@ characteristic non-reflecting BC remains in the backlog.
     order on the finest pair, stops WENO5 at N=64 (fp32 stagnation above), and
     gates the CFL sensitivity (inviscid < 5 %). The old viscous 2.10 was
     flattered by the split error (~60 % of the error at N=128): now 1.95.
-  - [ ] Viscous flux in the predictor (CPU + GPU, all MUSCL paths): the
-    viscous MMS error still moves +14 % between CFL 0.4 and 0.2. Then gate it.
+  - [x] **Viscous flux in the predictor** (CPU `step2D` / `step2DY`, GPU
+    `predictorBody` / `predictorYBody`): the t^n viscous face fluxes are
+    computed once over the interior + ghost-ring faces, their divergence
+    enters the predictor (half dt) and the same fluxes go to the corrector.
+    WENO5 and cut cells (method of lines) were already consistent. Viscous MMS
+    CFL sensitivity +14 % → −0.7 %, now gated (< 5 %); viscous order 2.02.
+    Other viscous gates barely move (Blasius Cf +7.0 % → +6.8 %, immersed
+    viscous lock-step 4.2e-4 → 2.5e-4).
 
 ### v1.1 — See and measure *(demo + lab)*
 The project gains its eyes and its scientific instrumentation.
