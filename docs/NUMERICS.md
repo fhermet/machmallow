@@ -254,7 +254,7 @@ flowchart TD
 | Tool | What it checks |
 |---|---|
 | `convergence` | smooth Euler order: entropy wave (~5 WENO), vortex (~2); Sod (~1, discontinuity) |
-| `mms` | order of the **Navier–Stokes** operator via manufactured solutions: viscous order 2 (MUSCL 2.10, WENO5 1.97), + gravity source |
+| `mms` | order of the **Navier–Stokes** operator via manufactured solutions: viscous order 2 (MUSCL 1.95, WENO5 1.95), + gravity source; inviscid source coupling order 2 and CFL-independent |
 | `casedef_test` | equivalence of the declarative system to the historical presets |
 | lock-step `mlgpu_amr`, `dmr_amr`… | GPU **bit-identical** to the CPU |
 

@@ -20,7 +20,7 @@ struct Params {
     float dx, dy, dt;
     int stride;   // cells per pool slot (0 for plain kernels)
     float mu, kT; // dynamic viscosity and heat conductivity (0 = Euler)
-    float gx, gy; // gravity (split source in the update kernel)
+    float gx, gy; // gravity (half-dt in the predictor + split in the update)
     float g1, g2; // two-gas gammas (species kernels only)
     int rks;            // WENO/RK3: stage index (0, 1, 2)
     float rka, rkb, rkw; // q = rka*u0 + rkb*(q + dt L); flux weight
@@ -180,8 +180,15 @@ inline void predictorBody(device const float4* q, device float4* xL,
 
     const float hx = 0.5f * P.dt / P.dx;
     const float hy = 0.5f * P.dt / P.dy;
-    const float4 adv = hx * (fluxX(toPrim(xl)) - fluxX(toPrim(xr))) +
-                       hy * (fluxY(toPrim(yb)) - fluxY(toPrim(yt)));
+    float4 adv = hx * (fluxX(toPrim(xl)) - fluxX(toPrim(xr))) +
+                 hy * (fluxY(toPrim(yb)) - fluxY(toPrim(yt)));
+    if (P.gx != 0.0f || P.gy != 0.0f) {
+        // half-dt gravity in the predictor (well balanced; mirrors the CPU)
+        const float rho = max(q0.x, RHO_FLOOR);
+        adv += (0.5f * P.dt) *
+               float4(0.0f, rho * P.gx, rho * P.gy,
+                      P.gx * q0.y + P.gy * q0.z);
+    }
 
     float4 fxl = xl + adv, fxr = xr + adv;
     float4 fyb = yb + adv, fyt = yt + adv;

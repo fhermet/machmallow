@@ -41,7 +41,7 @@ line**. Unknown keys are flagged by `./build/run --check`.
 
 | Key | Meaning |
 |---|---|
-| `gravity = gx gy` | gravity (split source); `reflective` walls become hydrostatic |
+| `gravity = gx gy` | gravity (half-dt in the Hancock predictor + split source: a fluid at rest stays balanced); `reflective` walls become hydrostatic |
 
 ---
 

@@ -22,7 +22,7 @@ python3 vv/generate.py
 | Case | Type | Key result | Status |
 |---|---|---|---|
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
-| [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes) | ✅ PASS |
+| [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes); source coupling CFL-independent | ✅ PASS |
 | [0D reactor kinetics](cases/reactor.md) | verification | Arrhenius integrator vs exact (isothermal/adiabatic/stiff) | ✅ PASS |
 | [WENO5 scheme suite](cases/weno.md) | verification | WENO5 6.0× less dissipative than MUSCL (vortex); bit-exact on AMR | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |

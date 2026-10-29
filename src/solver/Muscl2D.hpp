@@ -159,9 +159,14 @@ inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu,
 }
 
 // Advance one step of size dt. Ghost cells must be filled by the caller.
-// Gravity is a split source applied after the conservative update, with
-// the energy work term taken at the momentum midpoint (2nd order in the
-// split step); cell-local, so AMR refluxing is unaffected.
+// Sources (gravity, and the optional per-cell `src`) enter the Hancock
+// predictor as a half-dt term, so the face states of an equilibrium
+// (flux divergence = source) do not move: without it the steady state
+// carries an O(dt) error (MMS, hydrostatic drift). They are then applied
+// after the conservative update — gravity with the energy work term taken
+// at the momentum midpoint; cell-local, so AMR refluxing is unaffected.
+// `src` (optional, size g.q.size()) must also be set on the 1-cell ghost
+// ring the predictor reads.
 //
 // `solid` (optionnel, taille g.q.size(), 0 = fluide) immerge un corps
 // solide : les cellules solides ne sont pas mises à jour, et chaque face
@@ -171,8 +176,10 @@ inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu,
 // les formes obliques).
 inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
                    Real gx = 0, Real gy = 0,
-                   const std::uint8_t* solid = nullptr) {
+                   const std::uint8_t* solid = nullptr,
+                   const Cons* src = nullptr) {
     const int tx = g.totx(), ty = g.toty();
+    const bool grav = gx != 0 || gy != 0;
     s.resize(g.q.size());
 
     const Real hx = Real(0.5) * dt / g.dx;
@@ -201,9 +208,15 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
             const Cons xr = q0 + Real(0.5) * dqx;
             const Cons yb = q0 - Real(0.5) * dqy;
             const Cons yt = q0 + Real(0.5) * dqy;
-            const Cons adv =
+            Cons adv =
                 hx * (fluxX(toPrim(xl)) - fluxX(toPrim(xr))) +
                 hy * (fluxY(toPrim(yb)) - fluxY(toPrim(yt)));
+            if (grav) { // half-dt gravity: keeps equilibria well balanced
+                const Real rho = std::max(q0.rho, RHO_FLOOR);
+                adv += Real(0.5) * dt *
+                       Cons{0, rho * gx, rho * gy, gx * q0.mx + gy * q0.my};
+            }
+            if (src != nullptr) adv += Real(0.5) * dt * src[id];
             s.xL[id] = xl + adv;
             s.xR[id] = xr + adv;
             s.yB[id] = yb + adv;
@@ -266,7 +279,14 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
                        ly * (s.Fy[g.idx(i, j - 1)] - s.Fy[id]);
         }
 
-    if (gx != 0 || gy != 0) {
+    if (src != nullptr)
+        for (int j = NG; j < NG + g.ny; ++j)
+            for (int i = NG; i < NG + g.nx; ++i) {
+                const std::size_t id = g.idx(i, j);
+                if (!sol(i, j)) g.q[id] += dt * src[id];
+            }
+
+    if (grav) {
         for (int j = NG; j < NG + g.ny; ++j)
             for (int i = NG; i < NG + g.nx; ++i) {
                 if (sol(i, j)) continue;

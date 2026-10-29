@@ -444,7 +444,7 @@ def plot_reactor(txt):
 
 def plot_mms(txt):
     """Manufactured-solution order study: L1 vs N. Viscous ~2 (both schemes),
-    steady-inviscid ~1 (numerical-viscosity-limited, informative)."""
+    inviscid MUSCL ~2 (source in the Hancock predictor)."""
     path = os.path.join(OUT, "mms.csv")
     if not os.path.exists(path):
         return {}
@@ -457,19 +457,20 @@ def plot_mms(txt):
         "viscous MUSCL": ("o-", CYAN, 1.0),
         "viscous WENO5": ("s-", EMBER, 1.0),
         "viscous MUSCL+gravity": ("^-", PURPLE, 1.0),
-        "inviscid MUSCL": (".--", "gray", 0.55),
+        "inviscid MUSCL": ("d--", "gray", 1.0),
         "inviscid WENO5": (".--", "silver", 0.55),
     }
     fig, ax = plt.subplots(figsize=(6.4, 5.0))
     for lab, pts in sorted(series.items()):
         pts.sort()
         N = np.array([p[0] for p in pts]); L1 = np.array([p[1] for p in pts])
-        slope = -np.polyfit(np.log(N), np.log(L1), 1)[0]
+        # finest-pair order, as the driver's gate (N=16 is pre-asymptotic)
+        slope = np.log(L1[-2] / L1[-1]) / np.log(N[-1] / N[-2])
         fmt, col, a = style.get(lab, ("o-", "black", 1.0))
         ax.loglog(N, L1, fmt, color=col, alpha=a, ms=5,
                   label=f"{lab}  (p={slope:.2f})")
     N0 = np.array([16.0, 128.0])
-    for p, key in [(1, "inviscid MUSCL"), (2, "viscous MUSCL")]:
+    for p, key in [(2, "viscous MUSCL")]:
         if key in series:
             b = sorted(series[key])[0][1] * 1.25
             ax.loglog(N0, b * (N0 / 16.0) ** (-p), ":", color="gray", lw=1)
@@ -482,7 +483,10 @@ def plot_mms(txt):
     plt.close(fig)
     return {"vmuscl": grab(txt, r"visqueux MUSCL ([\d.]+)"),
             "vweno": grab(txt, r"WENO5 ([\d.]+) ;"),
-            "vgrav": grab(txt, r"visqueux\+gravite ([\d.]+)")}
+            "vgrav": grab(txt, r"visqueux\+gravite ([\d.]+)"),
+            "imuscl": grab(txt, r"inviscide MUSCL ([\d.]+)"),
+            "cinv": grab(txt, r"sensibilite CFL inviscide ([+\-\d.]+)"),
+            "cvisc": grab(txt, r"sensibilite CFL visqueux ([+\-\d.]+)")}
 
 
 def plot_weno(txt):
@@ -1079,20 +1083,25 @@ separately at order 2 by manufactured solutions (`mms`; see the MMS fiche).""")
     # ---- fiche 1b: manufactured solution (Navier-Stokes order) ----------
     fiche("mms.md", f"""# Manufactured solution (MMS) — *verification (Navier–Stokes order)*
 
-**Objective.** Verify the **viscous Navier–Stokes** operator converges at its
-design order 2. A smooth steady solution is imposed with an exact source term
+**Objective.** Verify the **Navier–Stokes** operator (and its source
+coupling) converges at its design order 2. A smooth stationary solution is
+made an exact solution of the forced equations by the source term
 $S = \\nabla\\!\\cdot F_{{\\rm Euler}} - \\nabla\\!\\cdot F_{{\\rm visc}}$; the
-discrete L1 error must then fall as $O(h^2)$. This is the only gate that pins
-the **viscous** operator's order (the
+discrete L1 error at a fixed time must then fall as $O(h^2)$ **and must not
+depend on the time step**. This is the only gate that pins the **viscous**
+operator's order and the source/predictor coupling (the
 [order-of-accuracy](order_of_accuracy.md) fiche covers the inviscid transient
 order).
 
 ## Numerical setup
 > Smooth periodic manufactured solution (sinusoidal ρ,u,v,p), source computed
-> **in double** by 4th-order finite differences and injected each step. Relax
-> to steady state, measure L1(ρ) vs the manufactured field, N = 16 → 128,
-> μ = 0.01, CFL 0.4. Schemes MUSCL & WENO5 (+ a gravity-source variant).
-> Driver: `mms`. float32.
+> **in double** by 4th-order finite differences and passed to the scheme (it
+> enters the Hancock predictor / every RK stage). Start from the exact field,
+> advance to T = 0.5, measure L1(ρ) vs the manufactured field, N = 16 → 128
+> (WENO5 → 64: above that its per-step increment falls under the float32 ulp
+> and the state stagnates), μ = 0.01, CFL 0.4. Observed order = finest pair
+> (N = 16 is pre-asymptotic). Schemes MUSCL & WENO5 (+ a gravity variant),
+> plus a CFL-sensitivity check e(0.4)/e(0.2) at N = 64. Driver: `mms`. float32.
 
 ## Results
 ![MMS order study](../figures/mms.png)
@@ -1102,17 +1111,22 @@ order).
 | viscous, MUSCL | {mms.get('vmuscl', '—')} |
 | viscous, WENO5 | {mms.get('vweno', '—')} |
 | viscous + gravity, MUSCL | {mms.get('vgrav', '—')} |
+| inviscid, MUSCL | {mms.get('imuscl', '—')} |
+| CFL sensitivity, inviscid MUSCL (gate 5 %) | {mms.get('cinv', '—')} % |
+| CFL sensitivity, viscous MUSCL (info) | {mms.get('cvisc', '—')} % |
 
 ## Discussion
-Both schemes reach order **~2** on the viscous operator — capped at 2 by the
-**central 2nd-order viscous flux** (shared by MUSCL and WENO5), exactly as
-expected, so the full Navier–Stokes discretization is verified at order 2. The
-gravity-source variant stays at 2 (a sign or work-term bug would break the
-steady state and the order). The faint **inviscid** curves sit at ~1: with no
-physical viscosity the steady-state error is set by the scheme's *numerical*
-viscosity (1st order on this solution) — that is **not** the transient design
-order (MUSCL ~2, WENO5 ~4–5), which the order-of-accuracy fiche verifies by
-advecting an exact solution.""")
+Both schemes reach order **~2** on the viscous operator, capped at 2 by the
+**central 2nd-order viscous flux** shared by MUSCL and WENO5, and the
+gravity variant stays at 2. Inviscid MUSCL is order 2 with an error
+independent of the CFL. This used to be ~1: the source was added *after*
+the step, outside the Hancock predictor, which leaves an O(dt) error on the
+equilibrium (error ∝ CFL). The same splitting affected gravity; both now
+enter the predictor as a half-dt term (CPU and GPU), which also makes a
+fluid at rest under gravity hydrostatically balanced to the float32 floor.
+The viscous flux is still evaluated outside the predictor, hence the
+remaining CFL sensitivity of the viscous case (informative until it moves
+into the predictor).""")
 
     # ---- fiche 1c: 0D reactor kinetics (verification vs analytic) -------
     fiche("reactor.md", f"""# 0D reactor kinetics — *verification vs analytic*
@@ -1864,7 +1878,7 @@ python3 vv/generate.py
 | Case | Type | Key result | Status |
 |---|---|---|---|
 | [Order of accuracy](cases/order_of_accuracy.md) | verification | MUSCL ~2, WENO5 high-order, low error constant | ✅ PASS |
-| [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes) | ✅ PASS |
+| [Manufactured solution](cases/mms.md) | verification | viscous Navier–Stokes order 2 (both schemes); source coupling CFL-independent | ✅ PASS |
 | [0D reactor kinetics](cases/reactor.md) | verification | Arrhenius integrator vs exact (isothermal/adiabatic/stiff) | ✅ PASS |
 | [WENO5 scheme suite](cases/weno.md) | verification | WENO5 {weno.get('ratio', '—')}× less dissipative than MUSCL (vortex); bit-exact on AMR | ✅ PASS |
 | [Conservation](cases/conservation.md) | verification | mass & energy at the float32 floor (AMR, periodic) | ✅ PASS |

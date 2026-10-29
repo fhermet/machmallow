@@ -116,20 +116,24 @@ inline void wenoFluxes(const Grid& g, ScratchW& s, Real mu = 0) {
 
 // One SSP-RK3 step; fill(g) refreshes the ghosts and is called before
 // every stage's flux evaluation. mu > 0 enables the viscous flux.
+// `src` (optional, size g.q.size()) is a per-cell source added to L(q) in
+// every stage — not after the step, which would put an O(dt) error on
+// the steady state.
 template <class Fill>
 inline void stepWeno2D(Grid& g, Real dt, ScratchW& s, Fill&& fill,
-                       Real mu = 0) {
+                       Real mu = 0, const Cons* src = nullptr) {
     s.resize(g.q.size());
     const Real lx = dt / g.dx, ly = dt / g.dy;
     const auto applyRhs = [&](Real a, Real b) {
-        // q = a*u0 + b*(q + dt*L(q)) on the interior
+        // q = a*u0 + b*(q + dt*(L(q) + src)) on the interior
         for (int j = NG; j < NG + g.ny; ++j)
             for (int i = NG; i < NG + g.nx; ++i) {
                 const std::size_t id = g.idx(i, j);
-                const Cons adv =
+                Cons adv =
                     g.q[id] +
                     lx * (s.Fx[g.idx(i - 1, j)] - s.Fx[id]) +
                     ly * (s.Fy[g.idx(i, j - 1)] - s.Fy[id]);
+                if (src != nullptr) adv += dt * src[id];
                 g.q[id] = a * s.u0[id] + b * adv;
             }
     };
