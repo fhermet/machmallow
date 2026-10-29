@@ -25,6 +25,7 @@ struct ScratchY {
     std::vector<Real> yxL, yxR, yyB, yyT, Fpx, Fpy; // face Y and phi flux
     std::vector<Real> gxL, gxR, gyB, gyT;           // face Gamma
     std::vector<Real> Ssx, Ssy, Fgx, Fgy; // contact speeds, Gamma flux
+    std::vector<Cons> Vx, Vy; // viscous face fluxes at t^n (mu > 0)
     void resize(std::size_t n) {
         xL.resize(n); xR.resize(n); yB.resize(n); yT.resize(n);
         Fx.resize(n); Fy.resize(n);
@@ -67,7 +68,9 @@ inline Real maxStableDtY(const Grid& g, const std::vector<Real>& Gm,
 // generated. phi = rho*Y remains the conserved species mass.
 // mu > 0 adds the central-difference Stokes + Fourier viscous flux to
 // the convective face fluxes (shared single-gas operator) — needed for
-// deflagrations, where the flame propagates by heat conduction.
+// deflagrations, where the flame propagates by heat conduction. As in
+// step2D, its t^n divergence also enters the Hancock predictor (half dt),
+// so a viscous equilibrium carries no O(dt) splitting error.
 inline void step2DY(Grid& g, std::vector<Real>& phi,
                     std::vector<Real>& Gm, Real dt, ScratchY& s,
                     const GasPair& gas, Real mu = 0) {
@@ -83,6 +86,14 @@ inline void step2DY(Grid& g, std::vector<Real>& phi,
     };
     const Real Gmin = std::min(gas.Gamma(0), gas.Gamma(1));
     const Real Gmax = std::max(gas.Gamma(0), gas.Gamma(1));
+
+    // Viscous face fluxes at t^n, interior + ghost-ring faces.
+    if (mu > 0) {
+        s.Vx.assign(g.q.size(), Cons{0, 0, 0, 0});
+        s.Vy.assign(g.q.size(), Cons{0, 0, 0, 0});
+        addViscousFluxes(g, s.Vx, s.Vy, mu, nullptr, 1);
+    }
+    const Real idx = Real(1) / g.dx, idy = Real(1) / g.dy;
 
     // Predictor: limited slopes on conserved vars AND on Y; the face
     // Gamma comes from the face Y (reconstructed, not time-advanced —
@@ -156,9 +167,16 @@ inline void step2DY(Grid& g, std::vector<Real>& phi,
             const Cons xr = toConsG(pxr, s.gxR[id]);
             const Cons yb = toConsG(pyb, s.gyB[id]);
             const Cons yt = toConsG(pyt, s.gyT[id]);
-            const Cons adv =
+            Cons adv =
                 hx * (fluxXG(pxl, s.gxL[id]) - fluxXG(pxr, s.gxR[id])) +
                 hy * (fluxYG(pyb, s.gyB[id]) - fluxYG(pyt, s.gyT[id]));
+            if (mu > 0 && i >= NG - 1 && i <= NG + g.nx && j >= NG - 1 &&
+                j <= NG + g.ny) { // half-dt viscous divergence
+                const Cons dv =
+                    idx * (s.Vx[g.idx(i - 1, j)] - s.Vx[id]) +
+                    idy * (s.Vy[g.idx(i, j - 1)] - s.Vy[id]);
+                adv += Real(0.5) * dt * dv;
+            }
             s.xL[id] = xl + adv;
             s.xR[id] = xr + adv;
             s.yB[id] = yb + adv;
@@ -213,7 +231,15 @@ inline void step2DY(Grid& g, std::vector<Real>& phi,
 
     // Viscous flux (Stokes + Fourier) on the conserved faces — drives
     // the deflagration's heat conduction; species/Gamma fluxes unchanged.
-    if (mu > 0) addViscousFluxes(g, s.Fx, s.Fy, mu);
+    // Same t^n fluxes as the predictor.
+    if (mu > 0) {
+        for (int j = NG; j < NG + g.ny; ++j)
+            for (int i = NG - 1; i < NG + g.nx; ++i)
+                s.Fx[g.idx(i, j)] += s.Vx[g.idx(i, j)];
+        for (int j = NG - 1; j < NG + g.ny; ++j)
+            for (int i = NG; i < NG + g.nx; ++i)
+                s.Fy[g.idx(i, j)] += s.Vy[g.idx(i, j)];
+    }
 
     // Conservative update (Cons and species together).
     const Real lx = dt / g.dx, ly = dt / g.dy;

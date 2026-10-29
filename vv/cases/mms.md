@@ -25,12 +25,12 @@ order).
 
 | Operator | Observed order |
 |---|---|
-| viscous, MUSCL | 1.95 |
+| viscous, MUSCL | 2.02 |
 | viscous, WENO5 | 1.95 |
-| viscous + gravity, MUSCL | 1.93 |
+| viscous + gravity, MUSCL | 2.10 |
 | inviscid, MUSCL | 1.95 |
 | CFL sensitivity, inviscid MUSCL (gate 5 %) | +0.3 % |
-| CFL sensitivity, viscous MUSCL (info) | +14.4 % |
+| CFL sensitivity, viscous MUSCL (gate 5 %) | -0.7 % |
 
 ## Discussion
 Both schemes reach order **~2** on the viscous operator, capped at 2 by the
@@ -38,12 +38,10 @@ Both schemes reach order **~2** on the viscous operator, capped at 2 by the
 gravity variant stays at 2. Inviscid MUSCL is order 2 with an error
 independent of the CFL. This used to be ~1: the source was added *after*
 the step, outside the Hancock predictor, which leaves an O(dt) error on the
-equilibrium (error ∝ CFL). The same splitting affected gravity; both now
-enter the predictor as a half-dt term (CPU and GPU), which also makes a
-fluid at rest under gravity hydrostatically balanced to the float32 floor.
-The viscous flux is still evaluated outside the predictor, hence the
-remaining CFL sensitivity of the viscous case (informative until it moves
-into the predictor).
+equilibrium (error ∝ CFL). The same splitting affected gravity and the
+viscous flux (+14 % between CFL 0.4 and 0.2); all three now enter the
+predictor as a half-dt term (CPU and GPU), which also makes a fluid at rest
+under gravity hydrostatically balanced to the float32 floor.
 
 ---
 *Part of the [V&V dossier](../README.md). Regenerate: `python3 vv/generate.py`. Source data: [`../data/`](../data/).*

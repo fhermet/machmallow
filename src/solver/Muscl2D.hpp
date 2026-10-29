@@ -58,6 +58,7 @@ inline Real maxStableDt(const Grid& g, Real cfl, Real mu = 0) {
 // Scratch buffers reused across steps.
 struct Scratch2D {
     std::vector<Cons> xL, xR, yB, yT, Fx, Fy;
+    std::vector<Cons> Vx, Vy; // viscous face fluxes at t^n (mu > 0)
     void resize(std::size_t n) {
         xL.resize(n); xR.resize(n); yB.resize(n); yT.resize(n);
         Fx.resize(n); Fy.resize(n);
@@ -77,9 +78,14 @@ struct Scratch2D {
 // normal heat flux). Solid/solid faces carry no viscous flux. The slip
 // pressure wall is handled by the convective flux; this shear makes it
 // no-slip. With solid = nullptr the path is byte-identical to before.
+// `ext` widens the face range by that many cells around the interior
+// (ext = 1: the faces of the 1-cell ghost ring, which the Hancock
+// predictor needs; the stencil then reaches 2 ghost layers, corners
+// included — every ghost fill covers them).
 inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
                              std::vector<Cons>& Fy, Real mu,
-                             const std::uint8_t* solid = nullptr) {
+                             const std::uint8_t* solid = nullptr,
+                             int ext = 0) {
     const Real kT = heatConductivity(mu);
     const Real c23 = Real(2.0 / 3.0), c43 = Real(4.0 / 3.0);
     const auto sol = [&](int ii, int jj) {
@@ -87,8 +93,8 @@ inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
     };
     const auto NS = [](Prim w) { w.u = -w.u; w.v = -w.v; return w; };
 
-    for (int j = NG; j < NG + g.ny; ++j) // x faces (i+1/2, j)
-        for (int i = NG - 1; i < NG + g.nx; ++i) {
+    for (int j = NG - ext; j < NG + g.ny + ext; ++j) // x faces (i+1/2, j)
+        for (int i = NG - 1 - ext; i < NG + g.nx + ext; ++i) {
             const bool sl = sol(i, j), sr = sol(i + 1, j);
             if (sl && sr) continue; // no viscous flux across a solid wall
             const Prim f00 = toPrim(g.at(i, j));
@@ -120,8 +126,8 @@ inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
             F.E -= ub * txx + vb * txy + kT * Tx;
         }
 
-    for (int j = NG - 1; j < NG + g.ny; ++j) // y faces (i, j+1/2)
-        for (int i = NG; i < NG + g.nx; ++i) {
+    for (int j = NG - 1 - ext; j < NG + g.ny + ext; ++j) // y faces (i, j+1/2)
+        for (int i = NG - ext; i < NG + g.nx + ext; ++i) {
             const bool sb = sol(i, j), st = sol(i, j + 1);
             if (sb && st) continue;
             const Prim f00 = toPrim(g.at(i, j));
@@ -153,10 +159,6 @@ inline void addViscousFluxes(const Grid& g, std::vector<Cons>& Fx,
             F.E -= ub * txy + vb * tyy + kT * Ty;
         }
 }
-inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu,
-                             const std::uint8_t* solid = nullptr) {
-    addViscousFluxes(g, s.Fx, s.Fy, mu, solid);
-}
 
 // Advance one step of size dt. Ghost cells must be filled by the caller.
 // Sources (gravity, and the optional per-cell `src`) enter the Hancock
@@ -166,7 +168,9 @@ inline void addViscousFluxes(const Grid& g, Scratch2D& s, Real mu,
 // after the conservative update — gravity with the energy work term taken
 // at the momentum midpoint; cell-local, so AMR refluxing is unaffected.
 // `src` (optional, size g.q.size()) must also be set on the 1-cell ghost
-// ring the predictor reads.
+// ring the predictor reads. The viscous flux divergence (mu > 0, from t^n
+// cell values) enters the predictor the same way; the same face fluxes are
+// then added to the corrector, so the viscous operator is evaluated once.
 //
 // `solid` (optionnel, taille g.q.size(), 0 = fluide) immerge un corps
 // solide : les cellules solides ne sont pas mises à jour, et chaque face
@@ -190,6 +194,18 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
     };
     const auto mirX = [](Cons c) { c.mx = -c.mx; return c; };
     const auto mirY = [](Cons c) { c.my = -c.my; return c; };
+
+    // Viscous face fluxes at t^n, interior + ghost-ring faces.
+    if (mu > 0) {
+        s.Vx.assign(g.q.size(), Cons{0, 0, 0, 0});
+        s.Vy.assign(g.q.size(), Cons{0, 0, 0, 0});
+        addViscousFluxes(g, s.Vx, s.Vy, mu, solid, 1);
+    }
+    const Real idx = Real(1) / g.dx, idy = Real(1) / g.dy;
+    const auto inRing = [&](int ii, int jj) {
+        return ii >= NG - 1 && ii <= NG + g.nx && jj >= NG - 1 &&
+               jj <= NG + g.ny;
+    };
 
     // Predictor: time-advanced face states (needs a 1-cell ring of ghosts).
     for (int j = 1; j < ty - 1; ++j) {
@@ -217,6 +233,12 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
                        Cons{0, rho * gx, rho * gy, gx * q0.mx + gy * q0.my};
             }
             if (src != nullptr) adv += Real(0.5) * dt * src[id];
+            if (mu > 0 && inRing(i, j)) { // half-dt viscous divergence
+                const Cons dv =
+                    idx * (s.Vx[g.idx(i - 1, j)] - s.Vx[id]) +
+                    idy * (s.Vy[g.idx(i, j - 1)] - s.Vy[id]);
+                adv += Real(0.5) * dt * dv;
+            }
             s.xL[id] = xl + adv;
             s.xR[id] = xr + adv;
             s.yB[id] = yb + adv;
@@ -267,7 +289,14 @@ inline void step2D(Grid& g, Real dt, Scratch2D& s, Real mu = 0,
             s.Fy[id] = hllcFluxY(toPrim(B), toPrim(T));
         }
 
-    if (mu > 0) addViscousFluxes(g, s, mu, solid);
+    if (mu > 0) { // same t^n viscous fluxes as the predictor
+        for (int j = NG; j < NG + g.ny; ++j)
+            for (int i = NG - 1; i < NG + g.nx; ++i)
+                s.Fx[g.idx(i, j)] += s.Vx[g.idx(i, j)];
+        for (int j = NG - 1; j < NG + g.ny; ++j)
+            for (int i = NG; i < NG + g.nx; ++i)
+                s.Fy[g.idx(i, j)] += s.Vy[g.idx(i, j)];
+    }
 
     // Conservative update.
     const Real lx = dt / g.dx, ly = dt / g.dy;

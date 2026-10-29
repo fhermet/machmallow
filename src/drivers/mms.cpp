@@ -19,11 +19,10 @@
 //
 // Gates : ordre observe (paire la plus fine) >= 1.8 (conception 2) en visqueux
 // (MUSCL, WENO5, MUSCL + gravite) ET en inviscide MUSCL ; et erreur
-// independante de la CFL en inviscide MUSCL (|e(0.4)/e(0.2) - 1| < 5 %) :
-// un source ajoute APRES le pas (hors predicteur) laisse une erreur O(dt)
-// -> ordre 1 et erreur proportionnelle a la CFL. En visqueux le flux
-// visqueux n'est pas encore dans le predicteur : la dependance a la CFL
-// y est affichee (informatif), pas encore une porte.
+// independante de la CFL en MUSCL, inviscide ET visqueux
+// (|e(0.4)/e(0.2) - 1| < 5 %) : un terme (source, flux visqueux) laisse
+// hors du predicteur de Hancock donne une erreur O(dt) sur l'equilibre
+// -> erreur proportionnelle a la CFL (et ordre 1 en inviscide).
 
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
@@ -265,21 +264,20 @@ int main() {
     const double eMuscl = orderStudy(0.0, false);
     const double eWeno = orderStudy(0.0, true);
 
-    std::printf("== Sensibilite a la CFL (splitting du source) ==\n");
+    std::printf("== Sensibilite a la CFL (termes hors predicteur) ==\n");
     const double cInv = cflSensitivity(0.0, false);
     const double cVisc = cflSensitivity(0.01, false);
 
     const bool okOrder = vMuscl > 1.8 && vWeno > 1.8 && vGrav > 1.8 &&
                          eMuscl > 1.8;
-    const bool okCfl = std::fabs(cInv) < 0.05;
+    const bool okCfl = std::fabs(cInv) < 0.05 && std::fabs(cVisc) < 0.05;
     const bool ok = okOrder && okCfl;
     std::printf("\n%s — operateur Navier-Stokes ordre 2 : visqueux MUSCL "
                 "%.2f, WENO5 %.2f ; visqueux+gravite %.2f (gate 1.8)\n",
                 ok ? "PASS" : "FAIL", vMuscl, vWeno, vGrav);
     std::printf("  inviscide MUSCL %.2f (gate 1.8) ; sensibilite CFL "
-                "inviscide %+.1f %% (gate 5 %%)\n", eMuscl, 100 * cInv);
-    std::printf("  [info] inviscide WENO5 %.2f ; sensibilite CFL visqueux "
-                "%+.1f %% (flux visqueux hors predicteur)\n",
-                eWeno, 100 * cVisc);
+                "inviscide %+.1f %%, sensibilite CFL visqueux %+.1f %% "
+                "(gate 5 %%)\n", eMuscl, 100 * cInv, 100 * cVisc);
+    std::printf("  [info] inviscide WENO5 %.2f\n", eWeno);
     return ok ? 0 : 1;
 }

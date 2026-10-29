@@ -131,7 +131,10 @@ $$\mathbf F_v = \big(0,\ \tau_{xx},\ \tau_{xy},\ u\tau_{xx}+v\tau_{xy} + \kappa\
 with conductivity $\kappa = \dfrac{\mu\,\gamma}{(\gamma-1)\,\mathrm{Pr}}$
 (Pr = 0.72). Face gradients use **2nd-order central differences** (2-point
 normal, 4-point average for transverse) — hence a viscous operator of **order
-2** regardless of the inviscid scheme (verified by MMS, see §11).
+2** regardless of the inviscid scheme (verified by MMS, see §11). In the
+MUSCL-Hancock steps the t^n viscous divergence also enters the predictor
+(half dt), like the sources: otherwise a viscous equilibrium carries an O(dt)
+splitting error (the MMS error moved +14 % between CFL 0.4 and 0.2).
 
 ---
 
@@ -254,7 +257,7 @@ flowchart TD
 | Tool | What it checks |
 |---|---|
 | `convergence` | smooth Euler order: entropy wave (~5 WENO), vortex (~2); Sod (~1, discontinuity) |
-| `mms` | order of the **Navier–Stokes** operator via manufactured solutions: viscous order 2 (MUSCL 1.95, WENO5 1.95), + gravity source; inviscid source coupling order 2 and CFL-independent |
+| `mms` | order of the **Navier–Stokes** operator via manufactured solutions: viscous order 2 (MUSCL 2.02, WENO5 1.95), + gravity source; error CFL-independent (sources and viscous flux inside the Hancock predictor) |
 | `casedef_test` | equivalence of the declarative system to the historical presets |
 | lock-step `mlgpu_amr`, `dmr_amr`… | GPU **bit-identical** to the CPU |
 
