@@ -117,6 +117,22 @@ characteristic non-reflecting BC remains in the backlog.
     `detonation` (CJ to 0.8%).
   - [x] driver `mms` added to the CI CPU suite (Euler+viscous ×2 schemes +
     gravity)
+  - [x] **Revisited (source/predictor coupling).** A CFL sweep showed the
+    "steady inviscid ~1" was not numerical viscosity: the source was added
+    *after* `step2D`, outside the Hancock predictor, which shifts the face
+    states of an equilibrium by −dt/2·S → O(dt) error (error ∝ CFL, order 1).
+    The same split hit gravity (CPU and GPU): a fluid at rest drifted
+    (+1e-4 energy over `rt.ini`'s run at CFL 0.4). Fix: sources enter the
+    predictor as a half-dt term (`step2D(..., src)`, `predictorBody`), and
+    `stepWeno2D(..., src)` adds the source in every RK stage. Hydrostatic drift
+    → 5e-7 (fp32 floor), inviscid MMS order 1.0 → 1.95. The driver now measures
+    at T=0.5 (no steady state needed: the manufactured field is exact at all
+    t; the forced inviscid steady state is not even attracting), reads the
+    order on the finest pair, stops WENO5 at N=64 (fp32 stagnation above), and
+    gates the CFL sensitivity (inviscid < 5 %). The old viscous 2.10 was
+    flattered by the split error (~60 % of the error at N=128): now 1.95.
+  - [ ] Viscous flux in the predictor (CPU + GPU, all MUSCL paths): the
+    viscous MMS error still moves +14 % between CFL 0.4 and 0.2. Then gate it.
 
 ### v1.1 — See and measure *(demo + lab)*
 The project gains its eyes and its scientific instrumentation.

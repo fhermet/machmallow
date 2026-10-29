@@ -36,13 +36,18 @@ The numbers below are from the drivers (Apple M4, float32). They may vary by
 | Entropy wave | WENO5 | 3.72 | 5 (capped by RK3) |
 | 2D isentropic vortex | MUSCL / WENO5 | 2.09 / 1.73 | ~2 (1-pt face flux) |
 | Sod (discontinuity) | MUSCL / WENO5 | 0.91 / 0.91 | 1 |
-| **Viscous MMS** (`mms`) | MUSCL / WENO5 | **2.10 / 1.97** | 2 (central viscous) |
-| Viscous MMS + gravity | MUSCL | 2.10 | 2 |
+| **Viscous MMS** (`mms`) | MUSCL / WENO5 | **1.95 / 1.95** | 2 (central viscous) |
+| Viscous MMS + gravity | MUSCL | 1.93 | 2 |
+| Inviscid MMS (source coupling) | MUSCL | 1.95 | 2 (gate; was ~1 with the source outside the predictor) |
+| MMS error vs CFL (0.4 / 0.2, N=64) | MUSCL inviscid / viscous | +0.3 % / +14.4 % | ~0 (gate 5 % inviscid; viscous informative) |
 | `sod1d` (regression) | MUSCL | 0.90 | gate > 0.7 |
 
 > The viscous term caps at 2 (central flux, shared by both schemes); WENO's
 > high order only shows in grid-aligned smooth flow, and mainly gives a **much
-> smaller error constant**. Details: [`NUMERICS.md`](NUMERICS.md).
+> smaller error constant**. MMS orders are read on the finest grid pair
+> (N=16 is pre-asymptotic). The CFL check catches a source split outside the
+> Hancock predictor (O(dt) error: +100 %); the viscous flux is still outside
+> it, hence the residual viscous sensitivity. Details: [`NUMERICS.md`](NUMERICS.md).
 
 ### 1.2 Conservation
 

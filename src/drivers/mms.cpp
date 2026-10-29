@@ -5,17 +5,25 @@
 // Principe : on choisit une solution lisse periodique STATIONNAIRE
 // (rho, u, v, p sinusoidaux), on calcule analytiquement le terme source
 //   S = div(F_Euler) - div(F_visqueux)
-// qui rend cette solution stationnaire des equations, on l'injecte dans
-// le pas mono-grille step2D(mu), et on laisse relaxer vers l'etat
-// stationnaire discret. L'erreur L1 a l'etat stationnaire est la
-// troncature du schema -> elle converge a l'ordre du schema.
+// qui en fait une solution exacte des equations forcees A TOUT INSTANT.
+// On part de cette solution, on avance jusqu'a T = 0.5 avec le source
+// passe au schema (step2D / stepWeno2D : il entre dans le predicteur de
+// Hancock / dans chaque etage RK), et on mesure l'erreur L1 a T : c'est
+// l'erreur de troncature accumulee -> O(h^p). Pas besoin d'etat
+// stationnaire (et en inviscide l'etat stationnaire force n'est pas
+// attracteur : le calcul long diverge).
 //
 // Le source est calcule EN DOUBLE par differences finies d'ordre 4
 // (h = 1e-3) sur les champs analytiques : son erreur (~1e-12) est tres
 // inferieure a celle du schema teste, il est donc "exact".
 //
-// Gate : ordre observe >= 1.8 (MUSCL-Hancock + flux visqueux central,
-// ordre de conception 2), Euler seul (mu=0) ET visqueux (mu>0).
+// Gates : ordre observe (paire la plus fine) >= 1.8 (conception 2) en visqueux
+// (MUSCL, WENO5, MUSCL + gravite) ET en inviscide MUSCL ; et erreur
+// independante de la CFL en inviscide MUSCL (|e(0.4)/e(0.2) - 1| < 5 %) :
+// un source ajoute APRES le pas (hors predicteur) laisse une erreur O(dt)
+// -> ordre 1 et erreur proportionnelle a la CFL. En visqueux le flux
+// visqueux n'est pas encore dans le predicteur : la dependance a la CFL
+// y est affichee (informatif), pas encore une porte.
 
 #include "core/Boundary.hpp"
 #include "core/Grid.hpp"
@@ -32,7 +40,6 @@ using namespace mm;
 
 namespace {
 
-constexpr Real CFL = Real(0.4);
 constexpr double PI2 = 2.0 * M_PI;
 constexpr double G = 1.4;        // GAMMA en double
 constexpr double PR = 0.72;      // PRANDTL en double
@@ -130,14 +137,57 @@ Cons source(double x, double y, double mu, double gx, double gy) {
     return {Real(S[0]), Real(S[1]), Real(S[2]), Real(S[3])};
 }
 
-// Etude d'ordre par ERREUR DE SOLUTION a l'etat stationnaire : on part
-// de la solution manufacturee, on injecte le source S et on laisse
-// relaxer. L'etat stationnaire discret s'ecarte de la solution exacte de
-// la troncature du schema -> erreur L1 = O(h^p). (Mesure robuste en
-// float : pas de soustraction divisee par un petit dt.)
-double orderStudy(double mu, double tEnd, bool weno,
-                  double gx = 0, double gy = 0) {
-    const int Ns[] = {16, 32, 64, 128};
+// Erreur L1 (densite) a t = tEnd, partant de la solution manufacturee,
+// le source S passe au schema. Le source couvre aussi les fantomes : le
+// predicteur de Hancock lit l'anneau de fantomes.
+double solve(int N, double mu, double tEnd, bool weno, double gx, double gy,
+             Real cfl) {
+    const auto periodic = [](Grid& gg) {
+        fillPeriodicX(gg);
+        fillPeriodicY(gg);
+    };
+    Grid g(N, N, 0, 0, 1, 1);
+    std::vector<Cons> S(g.q.size());
+    for (int j = 0; j < g.toty(); ++j)
+        for (int i = 0; i < g.totx(); ++i) {
+            const std::size_t id = g.idx(i, j);
+            const Pm w = mfg(g.xc(i), g.yc(j));
+            g.q[id] = toCons({Real(w.rho), Real(w.u), Real(w.v), Real(w.p)});
+            S[id] = source(g.xc(i), g.yc(j), mu, gx, gy);
+        }
+    Scratch2D s;
+    ScratchW sw;
+    double t = 0;
+    while (t < tEnd * (1 - 1e-12)) {
+        const Real dt =
+            std::min(maxStableDt(g, cfl, Real(mu)), Real(tEnd - t));
+        if (weno) {
+            stepWeno2D(g, dt, sw, periodic, Real(mu), S.data());
+        } else {
+            periodic(g);
+            step2D(g, dt, s, Real(mu), Real(gx), Real(gy), nullptr,
+                   S.data());
+        }
+        t += dt;
+    }
+    double e = 0;
+    for (int j = NG; j < NG + N; ++j)
+        for (int i = NG; i < NG + N; ++i)
+            e += std::fabs(double(g.at(i, j).rho) - mfg(g.xc(i), g.yc(j)).rho);
+    return e / (double(N) * N);
+}
+
+constexpr double T_END = 0.5;
+
+// Ordre observe = celui de la paire de maillages la plus fine (regime
+// asymptotique ; N=16 est pre-asymptotique : en double, MUSCL visqueux
+// donne 1.61 -> 1.81 -> 1.92). La pente LSQ est affichee pour info.
+// WENO5 s'arrete a N=64 : a N=128 son increment par pas dt*(L+S) passe
+// sous l'ulp float32 et l'etat stagne sur la condition initiale (mesure :
+// L1 6.9e-7 en float contre 1.64e-5 en double).
+double orderStudy(double mu, bool weno, double gx = 0, double gy = 0) {
+    const std::vector<int> Ns =
+        weno ? std::vector<int>{16, 32, 64} : std::vector<int>{16, 32, 64, 128};
     std::vector<double> errs;
     std::printf("  %s, mu = %.3g%s :\n", weno ? "WENO5" : "MUSCL", mu,
                 (gx != 0 || gy != 0) ? ", gravite" : "");
@@ -145,47 +195,8 @@ double orderStudy(double mu, double tEnd, bool weno,
     std::snprintf(lab, sizeof lab, "%s %s%s", mu > 0 ? "viscous" : "inviscid",
                   weno ? "WENO5" : "MUSCL",
                   (gx != 0 || gy != 0) ? "+gravity" : "");
-    const auto periodic = [](Grid& gg) {
-        fillPeriodicX(gg);
-        fillPeriodicY(gg);
-    };
     for (int N : Ns) {
-        Grid g(N, N, 0, 0, 1, 1);
-        std::vector<Cons> S(g.q.size());
-        for (int j = NG; j < NG + N; ++j)
-            for (int i = NG; i < NG + N; ++i) {
-                const std::size_t id = g.idx(i, j);
-                g.q[id] = toCons({Real(mfg(g.xc(i), g.yc(j)).rho),
-                                  Real(mfg(g.xc(i), g.yc(j)).u),
-                                  Real(mfg(g.xc(i), g.yc(j)).v),
-                                  Real(mfg(g.xc(i), g.yc(j)).p)});
-                S[id] = source(g.xc(i), g.yc(j), mu, gx, gy);
-            }
-        Scratch2D s;
-        ScratchW sw;
-        double t = 0;
-        while (t < tEnd * (1 - 1e-12)) {
-            const Real dt = std::min(maxStableDt(g, CFL, Real(mu)),
-                                     Real(tEnd - t));
-            if (weno) {
-                stepWeno2D(g, dt, sw, periodic, Real(mu));
-            } else {
-                periodic(g);
-                step2D(g, dt, s, Real(mu), Real(gx), Real(gy));
-            }
-            for (int j = NG; j < NG + N; ++j) // injecter le source
-                for (int i = NG; i < NG + N; ++i) {
-                    const std::size_t id = g.idx(i, j);
-                    g.q[id] = g.q[id] + dt * S[id];
-                }
-            t += dt;
-        }
-        double e = 0; // erreur L1 (densite) vs solution manufacturee
-        for (int j = NG; j < NG + N; ++j)
-            for (int i = NG; i < NG + N; ++i)
-                e += std::fabs(double(g.at(i, j).rho) -
-                               mfg(g.xc(i), g.yc(j)).rho);
-        e /= double(N) * N;
+        const double e = solve(N, mu, T_END, weno, gx, gy, Real(0.4));
         if (FILE* mf = std::fopen("out/mms.csv", "a")) { // vv dump
             std::fprintf(mf, "%s,%d,%.6g\n", lab, N, e);
             std::fclose(mf);
@@ -206,9 +217,23 @@ double orderStudy(double mu, double tEnd, bool weno,
         sx += lx; sy += ly; sxx += lx * lx; sxy += lx * ly;
     }
     const double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
-    const double order = -slope;
-    std::printf("    -> ordre moyen (LSQ) = %.2f\n", order);
+    const double order = std::log2(errs[n - 2] / errs[n - 1]);
+    std::printf("    -> ordre (paire la plus fine) = %.2f  [LSQ %.2f]\n",
+                order, -slope);
     return order;
+}
+
+// Sensibilite a la CFL a maillage fixe : e(0.4)/e(0.2) - 1. Une erreur
+// purement spatiale (+ temporelle O(dt^2), negligeable ici) donne ~0 ;
+// une erreur de splitting O(dt) donne ~ +100 %.
+double cflSensitivity(double mu, bool weno, int N = 64) {
+    const double e4 = solve(N, mu, T_END, weno, 0, 0, Real(0.4));
+    const double e2 = solve(N, mu, T_END, weno, 0, 0, Real(0.2));
+    const double r = e4 / e2 - 1;
+    std::printf("  %s, mu = %.3g, N = %d : L1(cfl 0.4) = %.3e, "
+                "L1(cfl 0.2) = %.3e -> ecart %+.1f %%\n",
+                weno ? "WENO5" : "MUSCL", mu, N, e4, e2, 100 * r);
+    return r;
 }
 
 } // namespace
@@ -217,39 +242,44 @@ int main() {
     std::printf("MMS — verification Navier-Stokes (MUSCL-Hancock + HLLC)\n");
     std::printf("solution manufacturee lisse periodique stationnaire,\n"
                 "source = div(F_Euler) - div(F_visqueux) [FD ordre 4]\n\n");
-    // Visqueux : c'est ce que la MMS verifie (aucune autre porte ne couvre
-    // l'ordre de l'operateur Navier-Stokes). Le flux visqueux est central
-    // 2e ordre, commun aux deux schemas -> les deux doivent donner ~2.
     if (FILE* mf = std::fopen("out/mms.csv", "w")) { // vv dump (truncate)
         std::fprintf(mf, "label,N,L1\n");
         std::fclose(mf);
     }
+    // Visqueux : aucune autre porte ne couvre l'ordre de l'operateur
+    // Navier-Stokes. Le flux visqueux est central 2e ordre, commun aux
+    // deux schemas -> les deux doivent donner ~2.
     std::printf("== Operateur visqueux (gate ~2) ==\n");
-    const double vMuscl = orderStudy(0.01, 0.5, false);
-    const double vWeno = orderStudy(0.01, 0.5, true);
-    // Source de gravite (split, MUSCL) : la densite n'a pas de source de
-    // gravite -> son ordre 2 confirme que le couplage gravite (quantite de
-    // mouvement / energie -> vitesse / pression -> densite par les flux)
-    // est CONSISTANT. Un bug de signe ou de terme de travail casserait
-    // l'etat stationnaire et l'ordre.
+    const double vMuscl = orderStudy(0.01, false);
+    const double vWeno = orderStudy(0.01, true);
+    // Gravite : la densite n'a pas de source de gravite -> son ordre 2
+    // confirme que le couplage gravite (quantite de mouvement / energie ->
+    // vitesse / pression -> densite par les flux) est CONSISTANT.
     std::printf("== Operateur visqueux + source de gravite (gate ~2) ==\n");
-    const double vGrav = orderStudy(0.01, 0.5, false, 1.0, -0.5);
-    // Inviscide stationnaire : informatif. Sans viscosite physique,
-    // l'erreur de l'etat stationnaire est fixee par la viscosite NUMERIQUE
-    // du schema (dissipation des flux de face), 1er ordre pour les deux
-    // schemas sur cette solution -> ~1. Ce n'est PAS l'ordre transitoire de
-    // conception (MUSCL ~2, WENO5 ~4-5), lui verifie par `convergence`
-    // (advection d'une solution exacte : onde d'entropie, vortex).
-    std::printf("== Inviscide stationnaire (informatif, != ordre transitoire) ==\n");
-    const double eMuscl = orderStudy(0.0, 0.5, false);
-    const double eWeno = orderStudy(0.0, 0.5, true);
+    const double vGrav = orderStudy(0.01, false, 1.0, -0.5);
+    // Inviscide : ordre 2 en MUSCL des que le source est dans le
+    // predicteur (sinon erreur O(dt) -> ordre 1). WENO5 informatif (le
+    // transitoire de cette solution n'est pas son regime de conception ;
+    // l'ordre WENO est verifie par `convergence`).
+    std::printf("== Euler inviscide (MUSCL gate ~2, WENO5 informatif) ==\n");
+    const double eMuscl = orderStudy(0.0, false);
+    const double eWeno = orderStudy(0.0, true);
 
-    const bool ok = vMuscl > 1.8 && vWeno > 1.8 && vGrav > 1.8;
+    std::printf("== Sensibilite a la CFL (splitting du source) ==\n");
+    const double cInv = cflSensitivity(0.0, false);
+    const double cVisc = cflSensitivity(0.01, false);
+
+    const bool okOrder = vMuscl > 1.8 && vWeno > 1.8 && vGrav > 1.8 &&
+                         eMuscl > 1.8;
+    const bool okCfl = std::fabs(cInv) < 0.05;
+    const bool ok = okOrder && okCfl;
     std::printf("\n%s — operateur Navier-Stokes ordre 2 : visqueux MUSCL "
                 "%.2f, WENO5 %.2f ; visqueux+gravite %.2f (gate 1.8)\n",
                 ok ? "PASS" : "FAIL", vMuscl, vWeno, vGrav);
-    std::printf("  [info] inviscide stationnaire (visco. numerique) : "
-                "MUSCL %.2f, WENO5 %.2f ; ordre de conception via "
-                "`convergence`\n", eMuscl, eWeno);
+    std::printf("  inviscide MUSCL %.2f (gate 1.8) ; sensibilite CFL "
+                "inviscide %+.1f %% (gate 5 %%)\n", eMuscl, 100 * cInv);
+    std::printf("  [info] inviscide WENO5 %.2f ; sensibilite CFL visqueux "
+                "%+.1f %% (flux visqueux hors predicteur)\n",
+                eWeno, 100 * cVisc);
     return ok ? 0 : 1;
 }

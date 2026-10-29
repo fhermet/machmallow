@@ -100,7 +100,7 @@ flowchart LR
     E -- no --> G
     F --> G["conservative update<br/>U += dt/dx (F_i-1/2 − F_i+1/2)"]
     G --> H{"gravity / reaction ?"}
-    H -- gravity --> I["split source (midpoint)"]
+    H -- gravity --> I["split source (midpoint)<br/>+ half-dt term in the predictor"]
     H -- reaction --> J["Strang: R(dt/2)·hydro·R(dt/2)"]
     I --> K["U^n+1"]
     J --> K
